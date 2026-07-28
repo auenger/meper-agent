@@ -90,7 +90,62 @@ class KbUploadResponse(BaseModel):
 
     KB files are not separate DB entities (they live on the FS), so
     ``created`` is a list of relative paths written, not full objects.
+    For vector KBs, ``document_ids`` lists the created KnowledgeDocument ids.
     """
 
-    created: list[str] = Field(default_factory=list, description="成功写入的相对路径")
+    created: list[str] = Field(default_factory=list, description="成功写入的相对路径/文件名")
     errors: list[KbUploadErrorItem] = Field(default_factory=list)
+    document_ids: list[str] = Field(
+        default_factory=list, description="vector KB: 创建的文档 id 列表"
+    )
+
+
+# ── Vector KB: documents + retrieval ────────────────────────────────────
+
+
+class KbDocumentItem(BaseModel):
+    """A document in a vector KB (KnowledgeDocument metadata)."""
+
+    id: str
+    name: str
+    file_type: str
+    file_size: int = 0
+    parse_status: str = "pending"
+    parse_progress: int = 0
+    parse_error: str = ""
+    chunk_count: int = 0
+    created_at: str
+    updated_at: str
+
+
+class KbDocumentListResponse(BaseModel):
+    """Paginated document list for a vector KB."""
+
+    items: list[KbDocumentItem]
+    total: int
+    page: int
+    page_size: int
+
+
+class KbSearchRequest(BaseModel):
+    """Body for the vector KB retrieval-test endpoint."""
+
+    query: str = Field(..., min_length=1, description="检索查询文本")
+    top_k: int = Field(default=5, ge=1, le=50, description="返回结果数")
+
+
+class KbSearchResultItem(BaseModel):
+    """One retrieved chunk with citation metadata."""
+
+    text: str
+    score: float
+    doc_id: str = ""
+    source_file: str = ""
+    page: int | None = None
+
+
+class KbSearchResponse(BaseModel):
+    """Retrieval-test response."""
+
+    query: str
+    results: list[KbSearchResultItem]
