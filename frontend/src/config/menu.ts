@@ -28,6 +28,7 @@ export const MENU_ITEMS: MenuItem[] = [
   { key: 'skills', label: 'Skill', path: '/skills', icon: 'HighlightOutlined', group: 'tools' },
   { key: 'credentials', label: '凭据', path: '/credentials', icon: 'SafetyOutlined', group: 'tools' },
   { key: 'channels', label: '渠道', path: '/channels', icon: 'ApiOutlined', group: 'tools' },
+  { key: 'knowledge', label: '知识库', path: '/knowledge', icon: 'BookOutlined', group: 'tools' },
   // Single-page: users
   { key: 'users', label: '用户管理', path: '/users', icon: 'TeamOutlined' },
   // System group

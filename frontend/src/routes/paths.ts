@@ -14,6 +14,7 @@ export const PATHS = {
   TASKS: '/tasks',
   WORKFLOWS: '/workflows',
   TOOLS: '/tools',
+  KNOWLEDGE: '/knowledge',
   EXECUTION_STATS: '/execution-stats',
   API_KEYS: '/api-keys',
   USERS: '/users',

@@ -15,6 +15,7 @@ import TasksPage from '../pages/tasks-page'
 import WorkflowsPage from '../pages/workflows-page'
 import WorkflowDetailPage from '../pages/workflow-detail-page'
 import ToolsPage from '../pages/tools-page'
+import KnowledgePage from '../pages/knowledge-page'
 import SkillDetailPage from '../pages/skill-detail-page'
 import ExecutionStatsPage from '../pages/execution-stats-page'
 import ApiKeysPage from '../pages/api-keys-page'
@@ -45,6 +46,7 @@ export const routes = [
           { path: '/workflows', element: <WorkflowsPage /> },
           { path: '/workflows/:id', element: <WorkflowDetailPage /> },
           { path: '/tools', element: <ToolsPage /> },
+          { path: '/knowledge', element: <KnowledgePage /> },
           { path: '/skills/:id', element: <SkillDetailPage /> },
           { path: '/execution-stats', element: <ExecutionStatsPage /> },
           { path: '/api-keys', element: <ApiKeysPage /> },
