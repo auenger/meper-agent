@@ -40,6 +40,7 @@ class ModelService:
         auth_header_format: str = "Bearer {key}",
         default_params: dict | None = None,
         provider_tag: str = "",
+        task_type: str = "chat",
     ) -> dict:
         """Create a new Model record with encrypted API key.
 
@@ -54,6 +55,7 @@ class ModelService:
             auth_header_format: Auth header template (used when auth_type=custom).
             default_params: Default inference parameters.
             provider_tag: Optional grouping tag.
+            task_type: Model purpose ("chat" | "embedding" | "rerank").
 
         Returns:
             Created Model MongoDB document.
@@ -89,6 +91,7 @@ class ModelService:
             },
             provider_tag=provider_tag,
             status=ModelStatus.ACTIVE,
+            task_type=task_type,
         )
 
         doc = {
@@ -102,6 +105,7 @@ class ModelService:
             "auth_header_format": model.auth_header_format,
             "default_params": model.default_params,
             "status": model.status.value,
+            "task_type": model.task_type.value,
             "last_test_success": None,
             "last_test_at": "",
             "provider_tag": model.provider_tag,
@@ -153,6 +157,7 @@ class ModelService:
         page_size: int = 20,
         status: str | None = None,
         provider_tag: str | None = None,
+        task_type: str | None = None,
     ) -> tuple[list[dict], int]:
         """List Models with pagination and optional filtering.
 
@@ -161,6 +166,7 @@ class ModelService:
             page_size: Items per page (max 100).
             status: Optional status filter ("active" / "inactive").
             provider_tag: Optional provider tag filter.
+            task_type: Optional model purpose filter ("chat" / "embedding" / "rerank").
 
         Returns:
             Tuple of (model_docs, total_count).
@@ -171,6 +177,8 @@ class ModelService:
             filter_query["status"] = status
         if provider_tag:
             filter_query["provider_tag"] = {"$regex": re.escape(provider_tag), "$options": "i"}
+        if task_type:
+            filter_query["task_type"] = task_type
 
         total = await col.count_documents(filter_query)
         cursor = (
@@ -199,6 +207,7 @@ class ModelService:
         auth_header_format: str = "Bearer {key}",
         default_params: dict | None = None,
         provider_tag: str = "",
+        task_type: str = "chat",
     ) -> dict | None:
         """Update an existing Model (full replacement via PUT).
 
@@ -213,6 +222,7 @@ class ModelService:
             auth_header_format: New auth header template (for custom auth).
             default_params: New default parameters.
             provider_tag: New provider tag.
+            task_type: New model purpose ("chat" | "embedding" | "rerank").
 
         Returns:
             Updated Model document (with masked api_key), or None if not found.
@@ -264,6 +274,7 @@ class ModelService:
                 "context_window": 128000,
             },
             "provider_tag": provider_tag,
+            "task_type": task_type,
             "version": new_version,
             "updated_at": now_iso,
         }

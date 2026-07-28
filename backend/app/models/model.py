@@ -47,6 +47,20 @@ class AuthType(StrEnum):
     CUSTOM = "custom"
 
 
+class ModelTaskType(StrEnum):
+    """What a Model is used for.
+
+    - ``chat``: Conversational/completion LLM (the default — backward
+      compatible with all pre-existing models).
+    - ``embedding``: Text embedding model used by vector knowledge bases.
+    - ``rerank``: Cross-encoder reranker used to re-rank retrieved chunks.
+    """
+
+    CHAT = "chat"
+    EMBEDDING = "embedding"
+    RERANK = "rerank"
+
+
 class Model(BaseModel):
     """MongoDB model document.
 
@@ -92,6 +106,12 @@ class Model(BaseModel):
         description="Default inference parameters (temperature, max_tokens, context_window, ...)",
     )
     status: ModelStatus = Field(default=ModelStatus.ACTIVE)
+    # What this model is used for. chat = conversational LLM (default);
+    # embedding / rerank = used by vector knowledge bases.
+    task_type: ModelTaskType = Field(
+        default=ModelTaskType.CHAT,
+        description="Model purpose: chat | embedding | rerank",
+    )
     # Result of the most recent connectivity test. None = never tested.
     # Set only by the test endpoint, never by create/update forms.
     last_test_success: bool | None = Field(default=None)

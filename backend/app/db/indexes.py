@@ -28,7 +28,8 @@ async def create_indexes() -> None:
         "model_id", unique=True, name="idx_models_model_id"
     )
     await db.models.create_index("status", name="idx_models_status")
-    logger.info("Created indexes: idx_models_model_id, idx_models_status")
+    await db.models.create_index("task_type", name="idx_models_task_type")
+    logger.info("Created indexes: idx_models_model_id, idx_models_status, idx_models_task_type")
 
     # Tools collection (Story 5.1 — Skill data model)
     await db.tools.create_index("name", unique=True, name="idx_tools_name")

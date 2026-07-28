@@ -5,7 +5,7 @@ from urllib.parse import urlparse
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.models.model import AuthType, CompatibilityType, ModelStatus
+from app.models.model import AuthType, CompatibilityType, ModelStatus, ModelTaskType
 
 
 def _validate_base_url(v: str) -> str:
@@ -71,6 +71,10 @@ class ModelCreate(BaseModel):
         max_length=100,
         description="Optional grouping tag (e.g. 'DeepSeek', 'OpenAI')",
     )
+    task_type: ModelTaskType = Field(
+        default=ModelTaskType.CHAT,
+        description="Model purpose: chat | embedding | rerank",
+    )
 
     @field_validator("base_url", mode="after")
     @classmethod
@@ -123,6 +127,10 @@ class ModelUpdate(BaseModel):
         max_length=100,
         description="Optional grouping tag",
     )
+    task_type: ModelTaskType = Field(
+        default=ModelTaskType.CHAT,
+        description="Model purpose: chat | embedding | rerank",
+    )
 
     @field_validator("base_url", mode="after")
     @classmethod
@@ -143,6 +151,7 @@ class ModelResponse(BaseModel):
     auth_header_format: str = ""
     default_params: dict = Field(default_factory=dict)
     status: ModelStatus
+    task_type: ModelTaskType = ModelTaskType.CHAT
     last_test_success: bool | None = None
     last_test_at: str = ""
     provider_tag: str = ""

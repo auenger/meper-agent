@@ -2,7 +2,7 @@
 from fastapi import APIRouter, Depends, Query
 
 from app.core.security import get_current_user, require_any_role
-from app.models.model import AuthType, CompatibilityType, ModelStatus
+from app.models.model import AuthType, CompatibilityType, ModelStatus, ModelTaskType
 from app.schemas.model import (
     ModelCreate,
     ModelListResponse,
@@ -33,6 +33,7 @@ def _doc_to_response(doc: dict) -> ModelResponse:
         auth_header_format=doc.get("auth_header_format", "Bearer {key}"),
         default_params=doc.get("default_params", {}),
         status=ModelStatus(doc["status"]),
+        task_type=ModelTaskType(doc.get("task_type", "chat")),
         last_test_success=doc.get("last_test_success"),  # None for legacy docs
         last_test_at=doc.get("last_test_at", ""),
         provider_tag=doc.get("provider_tag", ""),
@@ -55,6 +56,7 @@ async def list_models(
     page_size: int = Query(20, ge=1, le=200, description="Items per page"),
     status: ModelStatus | None = Query(None, description="Filter by status"),
     provider_tag: str | None = Query(None, description="Filter by provider tag"),
+    task_type: ModelTaskType | None = Query(None, description="Filter by model purpose (chat/embedding/rerank)"),
     _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
 ) -> ModelListResponse:
     """List all Models with pagination and optional filtering."""
@@ -63,6 +65,7 @@ async def list_models(
         page_size=page_size,
         status=status.value if status else None,
         provider_tag=provider_tag,
+        task_type=task_type.value if task_type else None,
     )
 
     models = [_doc_to_response(doc) for doc in items]
@@ -95,6 +98,7 @@ async def create_model(
         auth_header_format=body.auth_header_format,
         default_params=body.default_params,
         provider_tag=body.provider_tag,
+        task_type=body.task_type.value,
     )
     return _doc_to_response(doc)
 
@@ -178,6 +182,7 @@ async def update_model(
         auth_header_format=body.auth_header_format,
         default_params=body.default_params,
         provider_tag=body.provider_tag,
+        task_type=body.task_type.value,
     )
     if doc is None:
         raise NotFoundError(
