@@ -1143,10 +1143,12 @@ _NODE_EXECUTOR_MAP: dict[str, type[BaseNodeExecutor]] = {
     "human": None,  # lazy-loaded in get_node_executor to avoid circular import
     "parallel": ParallelNodeExecutor,
     "subflow": SubflowNodeExecutor,
+    "kb_search": None,  # lazy-loaded (lives in nodes/ subdir, imports BaseNodeExecutor)
 }
 
 # Lazy import cache
 _human_executor_cls: type[BaseNodeExecutor] | None = None
+_kb_search_executor_cls: type[BaseNodeExecutor] | None = None
 
 
 def get_node_executor(node_type: str, node_id: str, node_config: dict[str, Any]) -> BaseNodeExecutor:
@@ -1155,7 +1157,7 @@ def get_node_executor(node_type: str, node_id: str, node_config: dict[str, Any])
     Raises ``ValueError`` for unknown node types.
     """
     cls = _NODE_EXECUTOR_MAP.get(node_type)
-    if cls is None and node_type != "human":
+    if cls is None and node_type not in ("human", "kb_search"):
         raise ValueError(f"未知的节点类型: {node_type}")
 
     if node_type == "human":
@@ -1164,5 +1166,12 @@ def get_node_executor(node_type: str, node_id: str, node_config: dict[str, Any])
             from app.engine.workflow.nodes.human import HumanNodeExecutor
             _human_executor_cls = HumanNodeExecutor
         return _human_executor_cls(node_id=node_id, node_config=node_config)
+
+    if node_type == "kb_search":
+        global _kb_search_executor_cls
+        if _kb_search_executor_cls is None:
+            from app.engine.workflow.nodes.kb_search import KbSearchNodeExecutor
+            _kb_search_executor_cls = KbSearchNodeExecutor
+        return _kb_search_executor_cls(node_id=node_id, node_config=node_config)
 
     return cls(node_id=node_id, node_config=node_config)  # type: ignore[return-value]
