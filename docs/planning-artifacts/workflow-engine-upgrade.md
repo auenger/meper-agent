@@ -532,15 +532,17 @@ engine/tool/
 ├── kb_manager.py              # [已有] tree 型 KbManager（kb_glob/grep/read），不动
 ├── kb_fs.py                   # [已有] tree 型文件操作，不动
 ├── kb_search_manager.py       # [新增] vector 型 KbSearchManager（kb_search 工具）
-├── kb_vector_store.py         # [新增] Qdrant 向量存储封装
+├── kb_vector_store.py         # [新增] Qdrant 向量存储封装（dense+sparse 双向量）
+├── kb_retriever.py            # [新增] 检索编排：召回 → rerank → 过滤
 ├── kb_parser/                 # [新增] 文档解析层
 │   ├── base.py                # BaseParser 抽象类
 │   ├── pdf_parser.py          # PDF → 文本（pymupdf，按页流式）
 │   ├── word_parser.py         # Word → 文本（python-docx）
 │   ├── markdown_parser.py     # Markdown
 │   ├── txt_parser.py          # 纯文本
+│   ├── cleaner.py             # [新增] 文档清洗（去页眉页脚/水印/冗余空行）
 │   └── chunker.py             # 切片（RecursiveCharacterTextSplitter + tiktoken）
-├── embedding_factory.py       # [新增] embedding 客户端工厂（复用 Model 表）
+├── vector_factory.py          # [新增] 向量模型工厂（embedding + reranker + sparse）
 
 services/
 ├── kb_service.py              # [改] 按 type 分支：tree 走原逻辑，vector 走新逻辑
@@ -594,15 +596,18 @@ workers/tasks/
 }
 ```
 
-#### Qdrant 向量存储（单 collection + payload 过滤）
+#### Qdrant 向量存储（单 collection + dense/sparse 双向量 + payload 过滤）
 
-平台**全局一个 Qdrant collection** `kb_chunks`，所有 vector KB 的切片共用，靠 payload 中的 `kb_id` 字段隔离：
+平台**全局一个 Qdrant collection** `kb_chunks`，所有 vector KB 的切片共用，靠 payload 中的 `kb_id` 字段隔离。每个 point 同时存 **dense（语义）+ sparse（BM25 关键词）双向量**，支持混合检索：
 
 ```json
 // Qdrant point 结构
 {
     "id": "<uuid>",
-    "vector": [0.012, -0.034, "..."],   // 维度由 embedding 模型确定（建 collection 时锁定）
+    "vector": {
+        "dense":  [0.012, -0.034, "..."],          // dense 向量，维度由 embedding 模型确定（建 collection 时锁定）
+        "sparse": {"indices": [12, 88, 240], "values": [0.31, 0.55, 0.12]}  // sparse 向量（BM25 词频）
+    },
     "payload": {
         "kb_id": "kb_xxx",
         "doc_id": "kbdoc_xxx",
@@ -614,20 +619,33 @@ workers/tasks/
 }
 ```
 
-检索时用 `kb_id` 做过滤：
+- **dense 向量**：embedding 模型生成，捕捉语义（"型号" 能匹配到 "产品"）
+- **sparse 向量**：BM25 稀疏向量，捕捉精确匹配（"型号ABC-123" 精确命中，弥补 dense 对专有名词/编号的失灵）
+- 检索时用 `kb_id` 做过滤：
 ```python
 Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 ```
 
 > **为什么单 collection**：embedding 模型平台级全局唯一，维度统一，单 collection + payload 过滤管理最简单。代价是换 embedding 模型需重建整个 collection（MVP 接受此限制）。
+>
+> **为什么双向量**：Qdrant 原生支持单 collection 内多向量命名空间，dense + sparse 一次查询即可做混合检索（RRF 融合），无需额外全文检索引擎。sparse 向量生成可用 Qdrant 内置的 BM25 或 fastembed。
 
-### 5.5 embedding 配置（平台级全局唯一）
+### 5.5 向量模型配置（embedding + reranker，平台级全局唯一）
 
-- 在 Model 表配置一个 `task_type=embedding` 的模型（复用现有 Model 表 + AES 加密体系）。
-- 通过环境变量 `KB_EMBEDDING_MODEL_ID` 指向该模型的 `model_` id。
-- **平台级唯一**：所有 vector KB 共用同一 embedding 模型 → 维度统一 → 单 collection 可行。
-- 走 OpenAI 兼容 `/v1/embeddings` 接口（DeepSeek/通义/OpenAI 均支持），用 `langchain_openai.OpenAIEmbeddings`。
-- 启动时校验 `KB_EMBEDDING_MODEL_ID` 已配且指向 embedding 类型（未配则告警，不阻断启动）。
+向量检索用到三类模型，统一复用 Model 表 + AES 加密体系，通过 `task_type` 字段区分：
+
+| 模型类型 | task_type | 用途 | 来源 | 环境变量 |
+|---|---|---|---|---|
+| **embedding** | `embedding` | 生成 dense 向量 | 外部（OpenAI 兼容 `/v1/embeddings`） | `KB_EMBEDDING_MODEL_ID` |
+| **reranker** | `rerank` | 召回结果二次精排 | 外部（cross-encoder API） | `KB_RERANKER_MODEL_ID` |
+| **sparse** | — | BM25 稀疏向量 | Qdrant 内置 / fastembed（无需配置模型） | — |
+
+配置规则：
+- **平台级唯一**：embedding 和 reranker 各全局一个 → 维度统一 → 单 collection 可行。
+- embedding 走 `langchain_openai.OpenAIEmbeddings`；reranker 走 cross-encoder 接口（如硅基流动/Jina/Cohere 提供的 rerank API）。
+- reranker **MVP 可选**：若未配置 `KB_RERANKER_MODEL_ID`，检索跳过 rerank，直接用向量召回结果（降级运行，不报错）。
+- sparse 向量无需配置模型，用 Qdrant 内置的 BM25 sparse instantiation（`SparseVectorInput`）或 fastembed 本地生成。
+- 启动时校验：`KB_EMBEDDING_MODEL_ID` 必须配置且指向 embedding 类型（未配告警）；`KB_RERANKER_MODEL_ID` 可选。
 
 ### 5.6 chunk 策略（平台级固定默认值）
 
@@ -642,6 +660,8 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 
 每个 chunk 携带 metadata：`{kb_id, doc_id, chunk_index, source_file, page}`，检索结果可溯源。
 
+> **中文分词补充**：sparse（BM25）向量对中文需正确分词，MVP 用 jieba 分词后生成 sparse 向量，提升中文关键词命中。
+
 ### 5.7 文档处理 Pipeline（大文件友好 + 异步）
 
 ```
@@ -655,9 +675,13 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 
 2. 异步索引（Celery 任务，必须用 workers/loop.py 的 run_async 包装）
    ├── status=parsing：parser 按页/段落流式解析（PDF 用 pymupdf 逐页，不一次性 load）
-   ├── status=embedding：切片 → 分批调 embedding API（每批 64 chunk，单批失败可重试）
-   │   └── 每批完成更新 parse_progress
-   ├── 存入 Qdrant collection（带 kb_id/doc_id/source_file/page payload）
+   ├── 文档清洗（cleaner）：去除页眉页脚/水印/导航/冗余空行/乱码，提升切片和检索质量
+   ├── 切片（chunker）：tiktoken 计 token + 中文分隔符 → list[chunk]
+   ├── status=embedding：为每个 chunk 生成双向量
+   │   ├── dense 向量：分批调 embedding API（每批 64 chunk，单批失败可重试）
+   │   └── sparse 向量：BM25 稀疏向量（jieba 分词 + Qdrant 内置 sparse / fastembed）
+   │       └── 每批完成更新 parse_progress
+   ├── 存入 Qdrant collection（point 同时含 dense+sparse 向量 + payload）
    └── status=completed：更新 chunk_count + progress=100；失败则 status=failed + parse_error
 
 3. 提供重新索引（reindex）接口：对 failed 文档可重试整篇索引
@@ -665,31 +689,44 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 
 **为什么异步**：embedding API 调用耗时，HTTP 请求不能阻塞；Celery 任务严格照抄 `workers/tasks/workflow_execution.py` 的同步包装异步模式（`def task(): return run_async(_async())`），否则 motor/qdrant client 跨 event loop 报错。
 
-### 5.8 检索实现
+### 5.8 检索实现（混合召回 + Rerank 精排）
 
-```python
-# engine/tool/kb_vector_store.py
-async def search(
-    kb_id: str, query: str,
-    top_k: int = settings.KB_VECTOR_TOP_K,            # 默认 5
-    score_threshold: float = settings.KB_VECTOR_SCORE_THRESHOLD,  # 默认 0.5
-) -> list[dict]:
-    """单 KB 向量检索，返回带来源的切片。"""
-    embeddings = await get_embedding_client()
-    store = get_vector_store(embeddings)
-    results = await store.asimilarity_search_with_score(
-        query, k=top_k,
-        filter=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
-    )
-    return [
-        {"text": doc.page_content, "score": score,
-         "doc_id": doc.metadata["doc_id"], "source_file": doc.metadata["source_file"],
-         "page": doc.metadata.get("page")}
-        for doc, score in results if score >= score_threshold
-    ]
+检索分三阶段，由 `engine/tool/kb_retriever.py` 编排：
+
+```
+查询 → ① 混合召回（dense+sparse，top_K，K 较大如 20）
+     → ② Rerank 精排（cross-encoder 重排，若未配置则跳过）
+     → ③ 阈值过滤 + 截断 top_k
 ```
 
-Agent 的 `kb_search` 工具和 Workflow 的 `kb_search` 节点都调用此函数。
+```python
+# engine/tool/kb_retriever.py
+async def retrieve(
+    kb_id: str, query: str,
+    top_k: int = settings.KB_VECTOR_TOP_K,            # 最终返回数，默认 5
+    recall_k: int = settings.KB_VECTOR_RECALL_K,      # 召回数，默认 20
+    score_threshold: float = settings.KB_VECTOR_SCORE_THRESHOLD,
+) -> list[dict]:
+    """单 KB 混合检索 + rerank，返回带来源的切片。"""
+    # ① 混合召回：Qdrant 单次查询同时用 dense + sparse，RRF 融合
+    recall = await kb_vector_store.hybrid_search(
+        kb_id, query, k=recall_k,
+        filter=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
+    )
+    # ② Rerank（可选，未配置 reranker 则降级跳过）
+    if settings.KB_RERANKER_MODEL_ID:
+        recall = await reranker.rerank(query, recall)
+    # ③ 阈值过滤 + 截断
+    return [
+        {"text": r.text, "score": r.score,
+         "doc_id": r.doc_id, "source_file": r.source_file, "page": r.page}
+        for r in recall if r.score >= score_threshold
+    ][:top_k]
+```
+
+- **混合召回**：Qdrant 的 `query_points` 支持一次请求同时查 dense 和 sparse 向量，内置 RRF 融合排序，无需自己写融合逻辑。
+- **Rerank 降级**：未配置 reranker 时直接用召回结果（已做 RRF 融合），保证系统可用性。
+- Agent 的 `kb_search` 工具和 Workflow 的 `kb_search` 节点都调用此函数。
 
 ### 5.9 使用方式
 
@@ -707,18 +744,22 @@ Agent 的 `kb_search` 工具和 Workflow 的 `kb_search` 节点都调用此函�
 **MVP 做：**
 - KnowledgeBase 加 `type` 字段，tree/vector 并存
 - vector KB CRUD + 文档上传（PDF / Word / Markdown / TXT，≤ 50MB）
-- 异步解析（按页/段流式）→ 切片（tiktoken + 中文分隔符）→ 分批 embedding → Qdrant 存储
-- 向量检索（Qdrant similarity_search + kb_id 过滤），结果带评分和来源
+- 异步解析（按页/段流式）→ **文档清洗**（去页眉页脚/水印/冗余）→ 切片（tiktoken + 中文分隔符）→ 分批生成 **dense+sparse 双向量** → Qdrant 存储
+- **混合检索**（dense+sparse 双召回 + RRF 融合，Qdrant 原生支持）
+- **Rerank 精排**（cross-encoder 二次精排，未配置时降级跳过）
 - Agent 的 `kb_search` 工具 + Workflow 的 `kb_search` 节点
 - 复用 FileRef 体系存原始文件，支持失败重试（reindex）
 
-**MVP 不做（Post-MVP）：**
-- 关键词检索 + 混合检索（RRF 融合）—— MVP 仅向量检索
-- 多模态文档（图片 OCR、表格解析）
+**可选增强（按需做，非 MVP 阻塞项）：**
+- 查询改写（HyDE / 多查询生成 / 查询分解）—— 提升多轮对话和模糊问题召回
+- 语义切片（按标题层级/段落边界切分）—— 替代固定 token 切分，保持语义完整
+- 元数据抽取 + 过滤（LLM 抽取章节/作者/日期/标签，支持按属性过滤检索）
+- 多模态文档（图片 OCR、PDF 表格解析）
+
+**明确不做（Post-MVP）：**
 - 文档级权限控制
 - 增量更新（文档修改后只更新变化切片）
-- 重排序（Reranker 二次精排）
-- 语义切片（按段落/标题自动切分）、KB 级 chunk 参数配置
+- KB 级 chunk 参数配置（保持平台级固定）
 
 ---
 
@@ -834,11 +875,13 @@ Agent 的 `kb_search` 工具和 Workflow 的 `kb_search` 节点都调用此函�
 
 | 组件 | 用途 | 备注 |
 |------|------|------|
-| qdrant-client | Qdrant 向量库客户端 | 自建 docker，替代 Atlas Vector Search |
-| langchain-qdrant | Qdrant 向量存储封装 | 封装 similarity_search + payload 过滤 |
+| qdrant-client | Qdrant 向量库客户端 | 自建 docker，替代 Atlas Vector Search；支持 dense+sparse 双向量 |
+| langchain-qdrant | Qdrant 向量存储封装 | 封装 similarity_search + payload 过滤；已有 |
 | langchain-openai | embedding 客户端 | OpenAIEmbeddings，走兼容接口；已有 |
 | langchain-text-splitters | 文档切片 | RecursiveCharacterTextSplitter；已有 |
 | tiktoken | token 计数 | chunk 按 token 切分；已有 |
+| jieba | 中文分词 | 生成 sparse(BM25) 向量前分词，提升中文关键词命中 |
+| fastembed | sparse 向量生成（备选） | Qdrant 内置 BM25 的本地备选方案 |
 | pymupdf | PDF 文本提取 | 按页流式解析，性能优于 pdfplumber |
 | python-docx | Word 文档解析 | — |
 | httpx | HTTP 请求工具底层 | 异步支持好 |
