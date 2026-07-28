@@ -33,14 +33,26 @@ class KnowledgeBaseService:
 
     @staticmethod
     async def create_kb(
-        name: str, description: str, owner_user_id: str = ""
+        name: str,
+        description: str,
+        owner_user_id: str = "",
+        type: str = "tree",
     ) -> dict:
-        """Create a KB record + its on-disk directory."""
+        """Create a KB record.
+
+        - tree: also creates the on-disk ``.md`` directory.
+        - vector: records the embedding model id; no FS directory is used.
+        """
         now = utc_now().isoformat()
+        kb_type = type if type in ("tree", "vector") else "tree"
         doc = {
             "_id": generate_id("kb"),
             "name": name,
             "description": description,
+            "type": kb_type,
+            "embedding_model_id": (
+                settings.KB_EMBEDDING_MODEL_ID if kb_type == "vector" else ""
+            ),
             "owner_user_id": owner_user_id,
             "status": "active",
             "file_count": 0,
@@ -49,8 +61,9 @@ class KnowledgeBaseService:
             "updated_at": now,
         }
         await KnowledgeBaseService._collection().insert_one(doc)
-        kb_fs.ensure_kb_dir(doc["_id"])
-        logger.info("kb_created", kb_id=doc["_id"], name=name)
+        if kb_type == "tree":
+            kb_fs.ensure_kb_dir(doc["_id"])
+        logger.info("kb_created", kb_id=doc["_id"], name=name, type=kb_type)
         return doc
 
     @staticmethod
@@ -125,8 +138,22 @@ class KnowledgeBaseService:
 
         result = await col.delete_one({"_id": kb_id})
         if result.deleted_count > 0:
-            kb_fs.delete_kb_dir(kb_id)
-            logger.info("kb_deleted", kb_id=kb_id)
+            kb_type = existing.get("type", "tree")
+            if kb_type == "vector":
+                # Vector KB: purge Qdrant points + document metadata records.
+                from app.engine.tool import kb_vector_store
+                from app.services.knowledge_document_service import (
+                    KnowledgeDocumentService,
+                )
+
+                try:
+                    await kb_vector_store.delete_by_kb(kb_id)
+                except Exception as exc:  # Qdrant unreachable — still delete the KB
+                    logger.warning("kb_qdrant_purge_failed", kb_id=kb_id, error=str(exc))
+                await KnowledgeDocumentService.delete_by_kb(kb_id)
+            else:
+                kb_fs.delete_kb_dir(kb_id)
+            logger.info("kb_deleted", kb_id=kb_id, type=kb_type)
             return True
         return False
 
@@ -189,18 +216,40 @@ class KnowledgeBaseService:
 
     @staticmethod
     async def upload_files(
-        kb_id: str, files: list[tuple[str, bytes]]
+        kb_id: str,
+        files: list[tuple[str, bytes]],
+        uploaded_by: str = "",
     ) -> dict:
-        """Write a batch of ``(rel_path, raw_bytes)`` .md files into the KB.
+        """Upload a batch of files into a KB.
 
-        Returns ``{"created": [rel_path...], "errors": [{filename, error}...]}``.
+        Behavior depends on KB type:
+        - tree: writes ``.md`` files to the on-disk directory (legacy logic).
+        - vector: stores the original file via FileRef, creates a
+          KnowledgeDocument (pending), and dispatches a Celery indexing task.
+
+        Returns ``{"created": [...], "errors": [...], "document_ids": [...]}``.
+        For tree KB, ``document_ids`` is empty and ``created`` holds rel paths;
+        for vector KB, ``created`` holds filenames and ``document_ids`` the
+        created KnowledgeDocument ids.
         """
         col = KnowledgeBaseService._collection()
-        if await col.find_one({"_id": kb_id}) is None:
+        kb_doc = await col.find_one({"_id": kb_id})
+        if kb_doc is None:
             raise NotFoundError(
                 code="KB_NOT_FOUND", message=f"知识库 {kb_id} 不存在"
             )
 
+        kb_type = kb_doc.get("type", "tree")
+        if kb_type == "vector":
+            return await KnowledgeBaseService._upload_vector(
+                kb_id, kb_doc, files, uploaded_by
+            )
+        return await KnowledgeBaseService._upload_tree(kb_id, files)
+
+    @staticmethod
+    async def _upload_tree(kb_id: str, files: list[tuple[str, bytes]]) -> dict:
+        """Tree KB upload — write ``.md`` files to the FS (legacy logic)."""
+        col = KnowledgeBaseService._collection()
         created: list[str] = []
         errors: list[dict] = []
         max_file = settings.KB_MAX_FILE_SIZE
@@ -243,7 +292,90 @@ class KnowledgeBaseService:
             created_count=len(created),
             error_count=len(errors),
         )
-        return {"created": created, "errors": errors}
+        return {"created": created, "errors": errors, "document_ids": []}
+
+    @staticmethod
+    async def _upload_vector(
+        kb_id: str,
+        kb_doc: dict,
+        files: list[tuple[str, bytes]],
+        uploaded_by: str,
+    ) -> dict:
+        """Vector KB upload — store original + create pending doc + dispatch index task."""
+        from app.models.file_library import FileConsumerKind
+        from app.services.file_service import FileService
+        from app.services.file_storage import LocalFileStorage
+        from app.services.knowledge_document_service import (
+            KnowledgeDocumentService,
+        )
+
+        owner = kb_doc.get("owner_user_id") or uploaded_by or "system"
+        file_service = FileService(storage=LocalFileStorage())
+
+        allowed = {t.strip().lstrip(".").lower()
+                   for t in settings.KB_VECTOR_ALLOWED_TYPES.split(",")}
+        max_file = settings.KB_VECTOR_MAX_FILE_SIZE
+
+        created: list[str] = []
+        errors: list[dict] = []
+        document_ids: list[str] = []
+
+        for rel_path, raw in files:
+            filename = rel_path.replace("\\", "/").split("/")[-1] or rel_path
+            if not filename:
+                continue
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if ext not in allowed:
+                errors.append(
+                    {"filename": filename, "error": f"不支持的文件类型 .{ext}（支持 pdf/docx/md/txt）"}
+                )
+                continue
+            if len(raw) > max_file:
+                errors.append(
+                    {"filename": filename, "error": f"文件过大（>{max_file} bytes）"}
+                )
+                continue
+            try:
+                # Store original file (FileRef, sha256-deduped).
+                mime = _guess_mime(ext)
+                fref = await file_service.create(
+                    data=raw,
+                    filename=filename,
+                    mime_type=mime,
+                    owner_user_id=owner,
+                    origin_kind=FileConsumerKind.KNOWLEDGE_BASE,
+                    origin_id=kb_id,
+                )
+                await file_service.add_usage(
+                    fref.id, FileConsumerKind.KNOWLEDGE_BASE, kb_id
+                )
+                # Create pending document record.
+                doc = await KnowledgeDocumentService.create(
+                    knowledge_base_id=kb_id,
+                    file_ref_id=fref.id,
+                    name=filename,
+                    file_type=ext,
+                    file_size=len(raw),
+                    uploaded_by=uploaded_by,
+                )
+                document_ids.append(doc.id)
+                created.append(filename)
+                # Dispatch async indexing (Celery).
+                _dispatch_index_task(doc.id)
+            except Exception as exc:
+                logger.exception("kb_vector_upload_failed", filename=filename)
+                errors.append({"filename": filename, "error": f"上传失败: {exc}"})
+
+        await KnowledgeBaseService._collection().update_one(
+            {"_id": kb_id}, {"$set": {"updated_at": utc_now().isoformat()}}
+        )
+        logger.info(
+            "kb_vector_uploaded",
+            kb_id=kb_id,
+            accepted=len(created),
+            error_count=len(errors),
+        )
+        return {"created": created, "errors": errors, "document_ids": document_ids}
 
     @staticmethod
     async def recompute_stats(kb_id: str) -> dict:
@@ -253,3 +385,35 @@ class KnowledgeBaseService:
             {"$set": {"file_count": file_count, "total_size": total_size}},
         )
         return {"file_count": file_count, "total_size": total_size}
+
+
+# ── module-level helpers ────────────────────────────────────────────────
+
+_MIME_MAP = {
+    "pdf": "application/pdf",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "md": "text/markdown",
+    "markdown": "text/markdown",
+    "txt": "text/plain",
+}
+
+
+def _guess_mime(ext: str) -> str:
+    """Map a file extension to a MIME type (best-effort)."""
+    return _MIME_MAP.get(ext.lower(), "application/octet-stream")
+
+
+def _dispatch_index_task(doc_id: str) -> None:
+    """Dispatch the Celery indexing task for a document.
+
+    Imported lazily so the service module doesn't hard-depend on the worker
+    at import time (and tests can monkeypatch this). If Celery isn't running
+    the task is still enqueued (picked up when a worker is available).
+    """
+    try:
+        from app.workers.tasks.kb_indexing import index_kb_document
+
+        index_kb_document.delay(doc_id)
+    except Exception as exc:  # Celery broker down — surface loudly.
+        logger.error("kb_index_dispatch_failed", doc_id=doc_id, error=str(exc))
+        raise RuntimeError(f"无法派发索引任务，请检查 Celery 是否运行: {exc}") from exc
