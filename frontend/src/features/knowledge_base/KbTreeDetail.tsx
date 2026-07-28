@@ -108,9 +108,9 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
   })
 
   return (
-    <div className="h-full flex flex-col rounded-xl border border-line bg-white overflow-hidden">
+    <div className="h-full flex flex-col rounded-xl bg-white shadow-sm overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-line-2 shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 bg-surface/60 shrink-0">
         <span className="text-[11px] font-mono text-gray-500 truncate">{filePath}</span>
         <div className="flex items-center gap-2">
           {isDirty && <span className="text-[10px] text-amber-500 font-semibold">未保存</span>}
@@ -152,7 +152,7 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
         className="flex-1 w-full p-4 bg-transparent text-gray-800 font-mono text-xs leading-relaxed resize-none focus:outline-none"
         spellCheck={false}
       />
-      <div className="px-4 py-1.5 border-t border-line-2 text-[10px] text-gray-400 shrink-0">{local.length} 字符</div>
+      <div className="px-4 py-1.5 bg-surface/60 text-[10px] text-gray-400 shrink-0">{local.length} 字符</div>
     </div>
   )
 }
@@ -200,8 +200,8 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
   return (
     <div className="flex gap-4 h-full min-h-0">
       {/* File tree card */}
-      <div className="w-72 shrink-0 flex flex-col rounded-xl border border-line bg-white overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-line-2 shrink-0">
+      <div className="w-72 shrink-0 flex flex-col rounded-xl bg-white shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-surface/60 shrink-0">
           <span className="text-xs text-gray-500 font-semibold">目录</span>
           <label className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-blue-600 hover:bg-blue-500 text-white cursor-pointer font-semibold transition">
             {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <UploadIcon style={{ fontSize: 12 }} />}
@@ -230,18 +230,18 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
       <div className="flex-1 min-w-0">
         {effectivePath ? (
           contentQ.isLoading ? (
-            <div className="flex items-center justify-center h-full text-gray-400 border border-line rounded-xl bg-white">
+            <div className="flex items-center justify-center h-full text-gray-400 rounded-xl bg-white shadow-sm">
               <LoaderIcon spin style={{ fontSize: 16, marginRight: 8 }} /> 加载…
             </div>
           ) : contentQ.data ? (
             <KbFileEditor key={effectivePath} kbId={kb.id} filePath={effectivePath} initialContent={contentQ.data.content} />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-line rounded-xl bg-white">
+            <div className="flex items-center justify-center h-full text-gray-400 text-sm rounded-xl bg-white shadow-sm">
               文件不存在
             </div>
           )
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-line rounded-xl bg-white">
+          <div className="flex items-center justify-center h-full text-gray-400 text-sm rounded-xl bg-white shadow-sm">
             选择左侧文件查看内容
           </div>
         )}

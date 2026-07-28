@@ -58,7 +58,7 @@ function DocRow({
   const inFlight = IN_FLIGHT.includes(doc.parse_status)
   const Icon = meta.icon
   return (
-    <div className="bg-surface border border-line-2 rounded-lg p-3 space-y-2">
+    <div className="bg-surface rounded-lg p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -170,8 +170,8 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   return (
     <div className="flex gap-4 h-full min-h-0">
       {/* Documents card */}
-      <div className="flex-1 flex flex-col rounded-xl border border-line bg-white overflow-hidden min-w-0">
-        <div className="flex items-center justify-between px-3 py-2.5 border-b border-line-2 shrink-0">
+      <div className="flex-1 flex flex-col rounded-xl bg-white shadow-sm overflow-hidden min-w-0">
+        <div className="flex items-center justify-between px-3 py-2.5 bg-surface/60 shrink-0">
           <h3 className="text-xs font-bold text-gray-900 flex items-center gap-2">
             <FileTextOutlined style={{ fontSize: 14 }} className="text-emerald-500" />
             文档 ({docs.length})
@@ -214,8 +214,8 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
       </div>
 
       {/* Retrieval test card */}
-      <div className="flex-1 flex flex-col rounded-xl border border-line bg-white overflow-hidden min-w-0">
-        <div className="px-3 py-2.5 border-b border-line-2 shrink-0">
+      <div className="flex-1 flex flex-col rounded-xl bg-white shadow-sm overflow-hidden min-w-0">
+        <div className="px-3 py-2.5 bg-surface/60 shrink-0">
           <h3 className="text-xs font-bold text-gray-900 flex items-center gap-2">
             <SearchOutlined style={{ fontSize: 14 }} className="text-blue-500" />
             检索测试
@@ -249,7 +249,7 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
                 <p className="text-xs text-gray-400 py-6 text-center">无匹配结果（可能文档尚未索引完成或阈值过高）。</p>
               ) : (
                 searchResults.map((r, i) => (
-                  <div key={i} className="bg-surface border border-line-2 rounded-lg p-3 space-y-1.5">
+                  <div key={i} className="bg-surface rounded-lg p-3 space-y-1.5">
                     <div className="flex items-center justify-between text-[10px] font-mono">
                       <span className="text-gray-500 truncate">{r.source_file}{r.page ? ` · P${r.page}` : ''}</span>
                       <span className="text-emerald-500 shrink-0 ml-2">{r.score.toFixed(3)}</span>
