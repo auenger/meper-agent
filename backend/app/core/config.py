@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
+    # Qdrant (vector store for vector-type knowledge bases).
+    # Supports dense+sparse (BM25) hybrid search; requires Qdrant >= 1.10.
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: str = ""  # optional; set if Qdrant requires auth
+
     # JWT
     JWT_SECRET_KEY: str = "dev-only-not-for-production-replace-me"
     JWT_ALGORITHM: str = "HS256"
@@ -112,6 +117,30 @@ class Settings(BaseSettings):
     KB_GREP_MAX_MATCHES: int = 200
     KB_READ_MAX_BYTES: int = 16_384
     KB_MAX_FILE_SIZE: int = 2 * 1024 * 1024  # 2 MB per uploaded .md
+
+    # ── Vector Knowledge Base (RAG) ──────────────────────────────────────
+    # Embedding/reranker are external models referenced by Model table _id
+    # (model_xxx). Embedding is required for vector KB to work; reranker is
+    # optional — retrieval degrades gracefully (skips rerank) when unset.
+    KB_EMBEDDING_MODEL_ID: str = ""
+    KB_RERANKER_MODEL_ID: str = ""
+
+    # Qdrant collection (single shared collection; kb_id payload filters KBs).
+    KB_QDRANT_COLLECTION: str = "kb_chunks"
+
+    # Chunking — platform-level fixed defaults (token-based via tiktoken).
+    KB_VECTOR_CHUNK_SIZE: int = 800       # tokens per chunk
+    KB_VECTOR_CHUNK_OVERLAP: int = 100    # tokens of overlap between chunks
+    KB_VECTOR_EMBED_BATCH: int = 64       # chunks per embedding API call
+
+    # Retrieval — two-stage: hybrid recall (dense+sparse, RRF) → rerank → filter.
+    KB_VECTOR_TOP_K: int = 5              # final results returned
+    KB_VECTOR_RECALL_K: int = 20          # candidates before rerank
+    KB_VECTOR_SCORE_THRESHOLD: float = 0.5
+
+    # Vector KB upload limits.
+    KB_VECTOR_MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB per uploaded doc
+    KB_VECTOR_ALLOWED_TYPES: str = "pdf,docx,md,markdown,txt"
 
     @model_validator(mode="after")
     def _default_internal_dirs_from_host(self) -> "Settings":

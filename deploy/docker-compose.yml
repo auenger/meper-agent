@@ -51,6 +51,8 @@ services:
         condition: service_started
       redis:
         condition: service_started
+      qdrant:
+        condition: service_started
     restart: unless-stopped
 
   celery-worker:
@@ -78,6 +80,7 @@ services:
     depends_on:
       - redis
       - mongodb
+      - qdrant
     restart: unless-stopped
 
   mongodb:
@@ -103,6 +106,16 @@ services:
     volumes:
       - ${REDIS_DATA_DIR:-${HOME}/.agent-flow/redis}:/data
       - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    restart: unless-stopped
+
+  qdrant:
+    # Pin to >=1.10 — built-in BM25 sparse instantiation for hybrid search.
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - ${QDRANT_DATA_DIR:-${HOME}/.agent-flow/qdrant}:/qdrant/storage
     restart: unless-stopped
 
   # One-time init service: create admin user
