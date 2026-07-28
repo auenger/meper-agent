@@ -41,6 +41,8 @@ class KnowledgeBaseResponse(BaseModel):
     id: str
     name: str
     description: str = ""
+    type: str = "tree"
+    embedding_model_id: str = ""
     owner_user_id: str = ""
     status: str = "active"
     file_count: int = 0
@@ -63,6 +65,10 @@ class KnowledgeBaseCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
+    type: str = Field(
+        default="tree",
+        description="tree (Markdown 文件树，agent 探索) / vector (RAG 语义检索)",
+    )
 
 
 class KnowledgeBaseUpdate(BaseModel):

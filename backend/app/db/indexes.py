@@ -42,7 +42,15 @@ async def create_indexes() -> None:
     # name is NOT unique — KB uses _id (kb_ prefix) as the directory name, not name.
     await db.knowledge_bases.create_index("status", name="idx_kb_status")
     await db.knowledge_bases.create_index("owner_user_id", name="idx_kb_owner")
-    logger.info("Created indexes: idx_kb_status, idx_kb_owner")
+    await db.knowledge_bases.create_index("type", name="idx_kb_type")
+    logger.info("Created indexes: idx_kb_status, idx_kb_owner, idx_kb_type")
+
+    # Knowledge Documents collection (vector KB per-document metadata).
+    await db.knowledge_documents.create_index(
+        "knowledge_base_id", name="idx_kb_docs_kb_id"
+    )
+    await db.knowledge_documents.create_index("parse_status", name="idx_kb_docs_status")
+    logger.info("Created indexes: idx_kb_docs_kb_id, idx_kb_docs_status")
 
     # MCP connections collection (Story 5.3 — MCP connection management)
     await db.mcp_connections.create_index("name", unique=True, name="idx_mcp_conn_name")

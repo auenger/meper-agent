@@ -20,6 +20,7 @@ class FileConsumerKind(StrEnum):
     SESSION_MESSAGE = "session_message"  # 聊天消息附件
     WORKFLOW_RUN = "workflow_run"  # Workflow 运行时引用
     CRON_JOB = "cron_job"  # 定时任务配置（长期持有）
+    KNOWLEDGE_BASE = "knowledge_base"  # 向量知识库文档（长期持有）
 
 
 class FileRef(BaseModel):
