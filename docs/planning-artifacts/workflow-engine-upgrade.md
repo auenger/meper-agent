@@ -628,7 +628,7 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 
 > **为什么单 collection**：embedding 模型平台级全局唯一，维度统一，单 collection + payload 过滤管理最简单。代价是换 embedding 模型需重建整个 collection（MVP 接受此限制）。
 >
-> **为什么双向量**：Qdrant 原生支持单 collection 内多向量命名空间，dense + sparse 一次查询即可做混合检索（RRF 融合），无需额外全文检索引擎。sparse 向量生成可用 Qdrant 内置的 BM25 或 fastembed。
+> **为什么双向量**：Qdrant 原生支持单 collection 内多向量命名空间，dense + sparse 一次查询即可做混合检索（RRF 融合），无需额外全文检索引擎。sparse 向量由 **Qdrant 内置 BM25**（≥1.10）在服务端生成，backend 只需传分词后文本。
 
 ### 5.5 向量模型配置（embedding + reranker，平台级全局唯一）
 
@@ -638,13 +638,13 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 |---|---|---|---|---|
 | **embedding** | `embedding` | 生成 dense 向量 | 外部（OpenAI 兼容 `/v1/embeddings`） | `KB_EMBEDDING_MODEL_ID` |
 | **reranker** | `rerank` | 召回结果二次精排 | 外部（cross-encoder API） | `KB_RERANKER_MODEL_ID` |
-| **sparse** | — | BM25 稀疏向量 | Qdrant 内置 / fastembed（无需配置模型） | — |
+| **sparse** | — | BM25 稀疏向量 | Qdrant 内置 BM25（≥1.10，服务端生成，无需配置模型） | — |
 
 配置规则：
 - **平台级唯一**：embedding 和 reranker 各全局一个 → 维度统一 → 单 collection 可行。
 - embedding 走 `langchain_openai.OpenAIEmbeddings`；reranker 走 cross-encoder 接口（如硅基流动/Jina/Cohere 提供的 rerank API）。
 - reranker **MVP 可选**：若未配置 `KB_RERANKER_MODEL_ID`，检索跳过 rerank，直接用向量召回结果（降级运行，不报错）。
-- sparse 向量无需配置模型，用 Qdrant 内置的 BM25 sparse instantiation（`SparseVectorInput`）或 fastembed 本地生成。
+- sparse 向量无需配置模型，由 **Qdrant 内置 BM25**（≥1.10）在服务端生成，backend 只需传 jieba 分词后的文本。
 - 启动时校验：`KB_EMBEDDING_MODEL_ID` 必须配置且指向 embedding 类型（未配告警）；`KB_RERANKER_MODEL_ID` 可选。
 
 ### 5.6 chunk 策略（平台级固定默认值）
@@ -679,7 +679,7 @@ Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
    ├── 切片（chunker）：tiktoken 计 token + 中文分隔符 → list[chunk]
    ├── status=embedding：为每个 chunk 生成双向量
    │   ├── dense 向量：分批调 embedding API（每批 64 chunk，单批失败可重试）
-   │   └── sparse 向量：BM25 稀疏向量（jieba 分词 + Qdrant 内置 sparse / fastembed）
+   │   └── sparse 向量：BM25 稀疏向量（jieba 分词后交 Qdrant 内置 BM25 服务端生成）
    │       └── 每批完成更新 parse_progress
    ├── 存入 Qdrant collection（point 同时含 dense+sparse 向量 + payload）
    └── status=completed：更新 chunk_count + progress=100；失败则 status=failed + parse_error
@@ -875,13 +875,12 @@ async def retrieve(
 
 | 组件 | 用途 | 备注 |
 |------|------|------|
-| qdrant-client | Qdrant 向量库客户端 | 自建 docker，替代 Atlas Vector Search；支持 dense+sparse 双向量 |
+| qdrant-client | Qdrant 向量库客户端 | 自建 docker（≥1.10，内置 BM25），替代 Atlas Vector Search；支持 dense+sparse 双向量 |
 | langchain-qdrant | Qdrant 向量存储封装 | 封装 similarity_search + payload 过滤；已有 |
 | langchain-openai | embedding 客户端 | OpenAIEmbeddings，走兼容接口；已有 |
 | langchain-text-splitters | 文档切片 | RecursiveCharacterTextSplitter；已有 |
 | tiktoken | token 计数 | chunk 按 token 切分；已有 |
-| jieba | 中文分词 | 生成 sparse(BM25) 向量前分词，提升中文关键词命中 |
-| fastembed | sparse 向量生成（备选） | Qdrant 内置 BM25 的本地备选方案 |
+| jieba | 中文分词 | sparse 向量生成前分词，提升中文关键词命中 |
 | pymupdf | PDF 文本提取 | 按页流式解析，性能优于 pdfplumber |
 | python-docx | Word 文档解析 | — |
 | httpx | HTTP 请求工具底层 | 异步支持好 |

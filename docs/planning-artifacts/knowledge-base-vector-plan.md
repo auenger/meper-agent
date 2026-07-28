@@ -43,12 +43,11 @@
 - `pymupdf`（导入名 `fitz`）
 - `python-docx`
 - `qdrant-client`
-- `jieba`（中文分词，生成 sparse 向量）
-- `fastembed`（可选，sparse 向量生成的本地备选方案）
+- `jieba`（中文分词，sparse 向量分词用）
 
 ### 0b. 部署
 **文件**：`deploy/docker-compose.yml`，仿 redis 块（行 98-106），在 redis 后追加 `qdrant:` 服务：
-- `image: qdrant/qdrant:latest`
+- `image: qdrant/qdrant:v1.13`（**固定版本 ≥1.10**，内置 BM25 sparse instantiation；不用 `latest` 避免版本漂移）
 - 端口 `6333:6333`(HTTP) + `6334:6334`(gRPC)
 - 卷挂 `${QDRANT_DATA_DIR:-${HOME}/.agent-flow/qdrant}:/qdrant/storage`
 - backend + celery-worker 的 `depends_on` 追加 `qdrant`
@@ -109,7 +108,7 @@ async def get_reranker() -> RerankerClient | None:
 - `get_vector_store(embeddings) -> QdrantVectorStore`：`langchain_qdrant.QdrantVectorStore`（异步），collection=`settings.KB_QDRANT_COLLECTION`。**建 collection 时配置 dense（cosine）+ sparse（BM25）双向量场**。首次写入自动建 collection
 - `add_chunks(kb_id, doc_id, chunks)`：分批 upsert（每批 `KB_VECTOR_EMBED_BATCH`）
   - dense 向量：embedding 模型生成
-  - sparse 向量：jieba 分词 → BM25 稀疏向量（Qdrant 内置 sparse instantiation 或 fastembed）
+  - sparse 向量：jieba 分词后交 **Qdrant 内置 BM25** 生成（服务端计算，backend 不参与）
   - payload：`{kb_id, doc_id, chunk_index, text, source_file, page}`
 - `hybrid_search(kb_id, query, k, filter)`：**单次查询同时用 dense+sparse**，Qdrant 内置 RRF 融合排序返回
 - `delete_by_doc(doc_id)`：按 doc_id payload 删 point
