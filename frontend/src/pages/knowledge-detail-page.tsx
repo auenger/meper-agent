@@ -42,9 +42,9 @@ export default function KnowledgeDetailPage() {
   const type = (kb.type === 'vector' ? 'vector' : 'tree') as KbType
 
   return (
-    <div className="animate-[fadeIn_0.3s_ease-out]">
+    <div className="animate-[fadeIn_0.3s_ease-out] h-full flex flex-col">
       {/* Header: back + breadcrumb */}
-      <div className="flex items-center gap-3 mb-5">
+      <div className="flex items-center gap-3 mb-4 shrink-0">
         <Button
           type="text"
           shape="circle"
@@ -70,8 +70,10 @@ export default function KnowledgeDetailPage() {
         </div>
       </div>
 
-      {/* Body */}
-      {type === 'vector' ? <KbVectorDetail kb={kb} /> : <KbTreeDetail kb={kb} />}
+      {/* Body — fills remaining height; cards scroll internally */}
+      <div className="flex-1 min-h-0">
+        {type === 'vector' ? <KbVectorDetail kb={kb} /> : <KbTreeDetail kb={kb} />}
+      </div>
     </div>
   )
 }

@@ -108,9 +108,9 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
   })
 
   return (
-    <div className="h-full flex flex-col rounded-xl border border-gray-200 bg-white overflow-hidden">
+    <div className="h-full flex flex-col rounded-xl border border-line bg-white overflow-hidden">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-gray-100 shrink-0">
+      <div className="flex items-center justify-between px-4 py-2 border-b border-line-2 shrink-0">
         <span className="text-[11px] font-mono text-gray-500 truncate">{filePath}</span>
         <div className="flex items-center gap-2">
           {isDirty && <span className="text-[10px] text-amber-500 font-semibold">未保存</span>}
@@ -152,7 +152,7 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
         className="flex-1 w-full p-4 bg-transparent text-gray-800 font-mono text-xs leading-relaxed resize-none focus:outline-none"
         spellCheck={false}
       />
-      <div className="px-4 py-1.5 border-t border-gray-100 text-[10px] text-gray-400 shrink-0">{local.length} 字符</div>
+      <div className="px-4 py-1.5 border-t border-line-2 text-[10px] text-gray-400 shrink-0">{local.length} 字符</div>
     </div>
   )
 }
@@ -198,48 +198,50 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
   }
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-180px)] min-h-[400px]">
-      {/* File tree + upload */}
-      <div className="w-72 shrink-0 rounded-xl border border-gray-200 bg-white overflow-y-auto p-3">
-        <div className="flex items-center justify-between mb-2 px-1">
-          <span className="text-[11px] text-gray-400 font-semibold">文件</span>
+    <div className="flex gap-4 h-full min-h-0">
+      {/* File tree card */}
+      <div className="w-72 shrink-0 flex flex-col rounded-xl border border-line bg-white overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2.5 border-b border-line-2 shrink-0">
+          <span className="text-xs text-gray-500 font-semibold">目录</span>
           <label className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-blue-600 hover:bg-blue-500 text-white cursor-pointer font-semibold transition">
             {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <UploadIcon style={{ fontSize: 12 }} />}
             上传
             <input type="file" accept=".md,.markdown" multiple className="hidden" onChange={handleUpload} />
           </label>
         </div>
-        {isLoading ? (
-          <div className="flex items-center justify-center py-8 text-gray-400">
-            <LoaderIcon spin style={{ fontSize: 16, marginRight: 8 }} /> 加载文件…
-          </div>
-        ) : (treeData?.files ?? []).length === 0 ? (
-          <p className="text-[11px] text-gray-400 px-1 py-4 text-center">还没有文件，点击「上传」添加 .md</p>
-        ) : (
-          <div className="space-y-0.5">
-            {(treeData?.files ?? []).map((node) => (
-              <KbTreeRow key={node.key} node={node} depth={0} selected={effectivePath} onSelect={setSelectedPath} />
-            ))}
-          </div>
-        )}
+        <div className="flex-1 overflow-y-auto p-2">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8 text-gray-400">
+              <LoaderIcon spin style={{ fontSize: 16, marginRight: 8 }} /> 加载文件…
+            </div>
+          ) : (treeData?.files ?? []).length === 0 ? (
+            <p className="text-[11px] text-gray-400 px-1 py-4 text-center">还没有文件，点击「上传」添加 .md</p>
+          ) : (
+            <div className="space-y-0.5">
+              {(treeData?.files ?? []).map((node) => (
+                <KbTreeRow key={node.key} node={node} depth={0} selected={effectivePath} onSelect={setSelectedPath} />
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Editor */}
+      {/* Editor card */}
       <div className="flex-1 min-w-0">
         {effectivePath ? (
           contentQ.isLoading ? (
-            <div className="flex items-center justify-center h-full text-gray-400">
+            <div className="flex items-center justify-center h-full text-gray-400 border border-line rounded-xl bg-white">
               <LoaderIcon spin style={{ fontSize: 16, marginRight: 8 }} /> 加载…
             </div>
           ) : contentQ.data ? (
             <KbFileEditor key={effectivePath} kbId={kb.id} filePath={effectivePath} initialContent={contentQ.data.content} />
           ) : (
-            <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-gray-200 rounded-xl bg-white">
+            <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-line rounded-xl bg-white">
               文件不存在
             </div>
           )
         ) : (
-          <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-gray-200 rounded-xl bg-white">
+          <div className="flex items-center justify-center h-full text-gray-400 text-sm border border-line rounded-xl bg-white">
             选择左侧文件查看内容
           </div>
         )}
