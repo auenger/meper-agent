@@ -15,7 +15,7 @@
 - 触发机制单一（仅 API/Agent 调用）
 - 节点类型不足（缺 HTTP、代码执行、迭代、LLM 独立调用等）
 - 工具定位模糊（内置能力与开发者扩展混杂）
-- 知识库能力 DEFERRED
+- 知识库能力不完整（已有 tree 型 Markdown KB，缺向量语义检索）
 - 无消息通知通道
 - 无调试测试能力
 
@@ -140,14 +140,13 @@
 
 #### 知识库检索节点
 
-从绑定的知识库中检索相关文档片段。
+从绑定的 **vector 型知识库**中语义检索相关文档片段（tree 型 KB 不可用此节点，仅供 Agent 探索）。
 
 配置项：
-- 选择知识库（支持跨多个知识库检索）
+- 选择 vector 型知识库（可多选）
 - 查询文本（支持 `{{变量引用}}`）
-- 检索模式：向量 / 关键词 / 混合
-- TopK（返回结果数量）
-- 相似度阈值
+- TopK（返回结果数量，默认 5）
+- 相似度阈值（默认 0.5，平台级配置）
 - 输出：结果列表（文本 + 来源文档 + 页码 + 评分）→ 变量池
 
 ### 2.5 工具节点设计
@@ -474,241 +473,252 @@ class BaseChannel:
 
 ---
 
-## 5. 知识库（完整本地实现，考虑到时间问题可以直接在第三方rag上做二次开发）
+## 5. 知识库（两类并存：tree 型 + vector 型）
+
+> **设计演进说明**：本节已从最初「MongoDB Atlas Vector Search 单一方案」重写为「Qdrant + 两类 KB 并存」方案。原因：(1) 生产为自建 MongoDB，Atlas Vector Search 的 `$vectorSearch` 不可用；(2) 平台已落地一套 tree 型 Markdown KB（`kb_glob/grep/read`），不应推翻，应与之并存。
 
 ### 5.1 设计定位
 
-知识库是**平台级基础设施**，Agent 和 Workflow 均可使用。MVP 采用本地完整实现，基于 MongoDB Atlas Vector Search。
+知识库是**平台级基础设施**。平台支持**两类知识库并存**，二者定位不同、调用方式不同，由用户在创建时选择类型：
 
-### 5.2 后端架构
+|  | **tree 型**（已落地） | **vector 型**（本节新增） |
+|---|---|---|
+| 存储 | 文件系统 `.md` 目录树 | Qdrant 向量 + MongoDB 文档元数据 |
+| Agent 工具 | `kb_glob` / `kb_grep` / `kb_read`（探索式，**保留现有**） | `kb_search`（语义检索，新增） |
+| Workflow 节点 | ❌ 不可用 | ✅ `kb_search` 节点（新增） |
+| 适用场景 | 结构化文档，需要 agent 自主浏览文件结构/读全文 | 大文档语义检索、FAQ |
+| 支持格式 | 仅 `.md` | PDF / Word / Markdown / TXT |
+
+**核心原则**：不追求"对调用方屏蔽类型差异"，而是**通过清晰的 KB 描述让用户/agent 明确每个 KB 该怎么用**。`KnowledgeBase.type` 字段区分类型，现有 tree 型代码完全不动，vector 型是纯增量。
+
+### 5.2 工具注入模型（关键设计）
+
+Agent 绑定知识库后注入的工具数量**与 KB 个数无关，是固定的**。一个 agent 最多注入 4 个工具：
 
 ```
-knowledge/
-├── __init__.py
-├── models.py                  # 数据模型
-│   ├── KnowledgeBase          # 知识库
-│   ├── Document               # 文档
-│   ├── Chunk                  # 切片
-│   └── RetrievalResult        # 检索结果
-├── parser/                    # 文档解析层
+绑定任意数量的 KB → 最多注入这 4 个工具（固定数量）：
+
+tree 型 KB（如果绑了）→ 注入 3 个探索工具：
+  ├── kb_glob(pattern, kb_id?)    列出文件
+  ├── kb_grep(pattern, kb_id?)    正则搜索
+  └── kb_read(path, kb_id?)       读全文
+
+vector 型 KB（如果绑了）→ 注入 1 个检索工具：
+  └── kb_search(query, kb_id?)    语义检索
+```
+
+**机制**（复用现有 `engine/tool/kb_manager.py` 的 `KbManager` 模式）：
+
+1. **KB 个数不影响工具个数**。管理器构造时接收一个 `{kb_id → 信息}` 的 dict，但 `make_tools()` 永远只返回固定数量的工具。
+2. **靠可选 `kb_id` 参数区分调哪个 KB**。LLM 传 `kb_id="kb_xxx"` 只查该 KB；不传则跨所有绑定的同类型 KB。
+3. **靠工具描述让 LLM 自主选择**。工具描述里列出所有可用 KB（带 name + description），让 agent 据此决定调用哪个——契合"让 agent 自己选择调用哪些知识库"。
+
+```python
+# 工具描述示例（vector 型）
+description = (
+    "在向量知识库中语义检索相关文档片段，返回 文本+评分+来源。"
+    " 适用于大文档语义检索、FAQ。"
+    " 可用知识库: kb_a01=产品手册 — 公司产品使用手册; kb_a02=FAQ — 常见问题库"
+)
+```
+
+一个 agent 可同时绑定 tree + vector 两类 KB，两类工具（`kb_glob/grep/read` 与 `kb_search`）同时注入，工具名天然不冲突。
+
+### 5.3 后端架构
+
+```
+# vector 型 KB 新增/修改的文件（tree 型文件保持不变）
+engine/tool/
+├── kb_manager.py              # [已有] tree 型 KbManager（kb_glob/grep/read），不动
+├── kb_fs.py                   # [已有] tree 型文件操作，不动
+├── kb_search_manager.py       # [新增] vector 型 KbSearchManager（kb_search 工具）
+├── kb_vector_store.py         # [新增] Qdrant 向量存储封装
+├── kb_parser/                 # [新增] 文档解析层
 │   ├── base.py                # BaseParser 抽象类
-│   ├── pdf_parser.py          # PDF → 文本（pymupdf）
+│   ├── pdf_parser.py          # PDF → 文本（pymupdf，按页流式）
 │   ├── word_parser.py         # Word → 文本（python-docx）
-│   ├── markdown_parser.py     # Markdown → 文本
+│   ├── markdown_parser.py     # Markdown
 │   ├── txt_parser.py          # 纯文本
-│   └── pipeline.py            # 解析 Pipeline：上传→解析→切片→嵌入→存储
-├── chunker/                   # 切片策略层
-│   ├── base.py                # BaseChunker 抽象类
-│   ├── fixed_size_chunker.py  # 固定长度 + 重叠切片
-│   └── config.py              # chunk_size / overlap / separator
-├── embedder/                  # 嵌入层
-│   ├── base.py                # BaseEmbedder 抽象类
-│   ├── llm_embedder.py        # 调用 LLM 嵌入模型
-│   └── config.py              # 嵌入模型选择 + 维度配置
-├── retriever/                 # 检索层
-│   ├── base.py                # BaseRetriever 抽象类
-│   ├── vector_retriever.py    # 向量检索（MongoDB Atlas Vector Search）
-│   ├── keyword_retriever.py   # 关键词检索（MongoDB text search）
-│   ├── hybrid_retriever.py    # 混合检索 + RRF 融合排序
-│   └── config.py              # TopK / 阈值 / 检索模式
-├── api/
-│   ├── knowledge_bases.py     # 知识库 CRUD
-│   ├── documents.py           # 文档上传/删除/查询
-│   └── retrieval.py           # 检索 API（内部调用）
-└── services/
-    ├── kb_service.py          # 知识库业务逻辑
-    └── document_service.py    # 文档处理业务逻辑
+│   └── chunker.py             # 切片（RecursiveCharacterTextSplitter + tiktoken）
+├── embedding_factory.py       # [新增] embedding 客户端工厂（复用 Model 表）
+
+services/
+├── kb_service.py              # [改] 按 type 分支：tree 走原逻辑，vector 走新逻辑
+├── knowledge_document_service.py  # [新增] 文档元数据 CRUD
+
+models/
+├── knowledge_base.py          # [改] 加 type / embedding_model_id 字段
+├── knowledge_document.py      # [新增] 文档元数据模型
+
+workers/tasks/
+└── kb_indexing.py             # [新增] Celery 异步索引任务（必须用 run_async 包装）
 ```
 
-### 5.3 数据模型
+### 5.4 数据模型
 
-#### KnowledgeBase 集合
+#### KnowledgeBase 集合（在现有模型上扩展 type 字段）
 
 ```json
 {
     "_id": "kb_xxx",
     "name": "产品手册",
     "description": "公司产品使用手册知识库",
-    "config": {
-        "chunk_size": 500,
-        "chunk_overlap": 50,
-        "embedding_model": "text-embedding-3-small",
-        "embedding_dimensions": 1536,
-        "separator": "\n\n"
-    },
-    "stats": {
-        "document_count": 12,
-        "chunk_count": 1456,
-        "total_size_bytes": 5242880
-    },
+    "type": "vector",                  // 新增：tree / vector（默认 tree，向后兼容）
+    "embedding_model_id": "model_xxx", // 新增：仅 vector 型，取平台全局配置
     "status": "active",
-    "created_by": "user_xxx",
+    "owner_user_id": "user_xxx",
+    "file_count": 12,                  // tree 型：.md 文件数
     "created_at": "2026-07-02T10:00:00Z",
     "updated_at": "2026-07-02T10:00:00Z"
 }
 ```
 
-#### Document 集合
+> tree 型字段（file_count / total_size）含义不变；vector 型统计从 KnowledgeDocument 聚合。
+
+#### KnowledgeDocument 集合（新增，仅 vector 型）
 
 ```json
 {
-    "_id": "doc_xxx",
+    "_id": "kbdoc_xxx",
     "knowledge_base_id": "kb_xxx",
+    "file_ref_id": "file_xxx",         // 关联 FileRef（原始文件，复用 file_library 体系）
     "name": "用户手册v2.pdf",
     "file_type": "pdf",
     "file_size": 1048576,
-    "file_path": "/data/uploads/kb_xxx/doc_xxx.pdf",
-    "parse_status": "completed",
-    "parse_error": null,
+    "parse_status": "completed",       // pending / parsing / embedding / completed / failed
+    "parse_progress": 100,             // 0-100
+    "parse_error": "",
     "chunk_count": 120,
     "uploaded_by": "user_xxx",
     "created_at": "2026-07-02T10:00:00Z"
 }
 ```
 
-#### Chunk 集合
+#### Qdrant 向量存储（单 collection + payload 过滤）
+
+平台**全局一个 Qdrant collection** `kb_chunks`，所有 vector KB 的切片共用，靠 payload 中的 `kb_id` 字段隔离：
 
 ```json
+// Qdrant point 结构
 {
-    "_id": "chunk_xxx",
-    "knowledge_base_id": "kb_xxx",
-    "document_id": "doc_xxx",
-    "index": 0,
-    "text": "这是一段切片文本...",
-    "embedding": [0.012, -0.034, "..."],
-    "token_count": 380,
-    "metadata": {
-        "page": 1,
-        "section": "第一章",
-        "source_file": "用户手册v2.pdf"
-    },
-    "created_at": "2026-07-02T10:00:00Z"
-}
-```
-
-#### MongoDB Atlas Vector Search Index
-
-```json
-{
-    "mappings": {
-        "dynamic": false,
-        "fields": {
-            "embedding": {
-                "type": "knnVector",
-                "dimensions": 1536,
-                "similarity": "cosine"
-            },
-            "knowledge_base_id": { "type": "token" }
-        }
+    "id": "<uuid>",
+    "vector": [0.012, -0.034, "..."],   // 维度由 embedding 模型确定（建 collection 时锁定）
+    "payload": {
+        "kb_id": "kb_xxx",
+        "doc_id": "kbdoc_xxx",
+        "chunk_index": 0,
+        "text": "这是一段切片文本...",
+        "source_file": "用户手册v2.pdf",
+        "page": 1
     }
 }
 ```
 
-### 5.4 文档处理 Pipeline
-
-```
-上传文档 → 解析 → 切片 → 嵌入 → 索引完成
-
-1. 上传
-   ├── 接收文件（单文件 ≤ 50MB）
-   ├── 支持格式：PDF / Word / Markdown / TXT
-   ├── 存入文件系统
-   └── 创建 document 记录（status=pending）
-
-2. 解析（异步 Celery 任务）
-   ├── 根据 file_type 选择对应 Parser
-   ├── 提取纯文本 + 元数据（页码/章节等）
-   └── 更新 document 记录
-
-3. 切片
-   ├── 根据知识库 config（chunk_size / overlap / separator）
-   ├── 每个切片记录 source metadata
-   └── 批量创建 chunk 记录
-
-4. 嵌入（异步，批量）
-   ├── 调用配置的 embedding 模型
-   ├── 批量嵌入（batch_size 可配置）
-   └── 更新 chunk 的 embedding 字段
-
-5. 索引完成
-   ├── MongoDB Atlas Vector Search 自动索引
-   └── 更新 knowledge_base stats + status
+检索时用 `kb_id` 做过滤：
+```python
+Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))])
 ```
 
-### 5.5 检索实现
+> **为什么单 collection**：embedding 模型平台级全局唯一，维度统一，单 collection + payload 过滤管理最简单。代价是换 embedding 模型需重建整个 collection（MVP 接受此限制）。
+
+### 5.5 embedding 配置（平台级全局唯一）
+
+- 在 Model 表配置一个 `task_type=embedding` 的模型（复用现有 Model 表 + AES 加密体系）。
+- 通过环境变量 `KB_EMBEDDING_MODEL_ID` 指向该模型的 `model_` id。
+- **平台级唯一**：所有 vector KB 共用同一 embedding 模型 → 维度统一 → 单 collection 可行。
+- 走 OpenAI 兼容 `/v1/embeddings` 接口（DeepSeek/通义/OpenAI 均支持），用 `langchain_openai.OpenAIEmbeddings`。
+- 启动时校验 `KB_EMBEDDING_MODEL_ID` 已配且指向 embedding 类型（未配则告警，不阻断启动）。
+
+### 5.6 chunk 策略（平台级固定默认值）
+
+切片参数在**平台级固定**（不暴露给 KB 级配置），原因：单 collection 要求维度一致，统一切片粒度利于管理。
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| chunk_size | **800 token** | 用 `tiktoken` 计 token（非字符），准确控制 embedding 成本 |
+| chunk_overlap | **100 token** | 切片间重叠，保证上下文连续 |
+| 分隔符优先级 | `["\n\n", "\n", "。", "！", "？", "；", "，", " ", ""]` | 中文友好，避免硬切中文句子 |
+| 算法 | `RecursiveCharacterTextSplitter`（langchain，已安装） | 按分隔符递归切分 |
+
+每个 chunk 携带 metadata：`{kb_id, doc_id, chunk_index, source_file, page}`，检索结果可溯源。
+
+### 5.7 文档处理 Pipeline（大文件友好 + 异步）
+
+```
+上传文档（同步 API）→ 异步索引（Celery 任务）→ 索引完成
+
+1. 上传（同步 API）
+   ├── FastAPI UploadFile 内部 SpooledTemporaryFile，>1MB 自动落盘，不撑内存
+   ├── 校验格式（pdf/docx/md/txt）+ 大小（≤ 50MB）
+   ├── 复用 FileService.create 存原始文件（FileRef + sha256 去重）
+   └── 创建 KnowledgeDocument（status=pending）
+
+2. 异步索引（Celery 任务，必须用 workers/loop.py 的 run_async 包装）
+   ├── status=parsing：parser 按页/段落流式解析（PDF 用 pymupdf 逐页，不一次性 load）
+   ├── status=embedding：切片 → 分批调 embedding API（每批 64 chunk，单批失败可重试）
+   │   └── 每批完成更新 parse_progress
+   ├── 存入 Qdrant collection（带 kb_id/doc_id/source_file/page payload）
+   └── status=completed：更新 chunk_count + progress=100；失败则 status=failed + parse_error
+
+3. 提供重新索引（reindex）接口：对 failed 文档可重试整篇索引
+```
+
+**为什么异步**：embedding API 调用耗时，HTTP 请求不能阻塞；Celery 任务严格照抄 `workers/tasks/workflow_execution.py` 的同步包装异步模式（`def task(): return run_async(_async())`），否则 motor/qdrant client 跨 event loop 报错。
+
+### 5.8 检索实现
 
 ```python
-class HybridRetriever:
-    """混合检索：向量 + 关键词 + RRF 融合"""
-
-    async def retrieve(
-        self,
-        knowledge_base_id: str,
-        query: str,
-        top_k: int = 5,
-        score_threshold: float = 0.5,
-        mode: str = "hybrid"  # vector / keyword / hybrid
-    ) -> list[RetrievalResult]:
-        if mode in ("vector", "hybrid"):
-            query_embedding = await self.embedder.embed(query)
-            vector_results = await self.vector_retriever.search(
-                knowledge_base_id, query_embedding, top_k=top_k * 2
-            )
-
-        if mode in ("keyword", "hybrid"):
-            keyword_results = await self.keyword_retriever.search(
-                knowledge_base_id, query, top_k=top_k * 2
-            )
-
-        if mode == "hybrid":
-            results = self._rrf_fusion(vector_results, keyword_results, k=60)
-        elif mode == "vector":
-            results = vector_results
-        else:
-            results = keyword_results
-
-        results = [r for r in results if r.score >= score_threshold]
-        return results[:top_k]
-
-    def _rrf_fusion(self, *result_lists, k=60):
-        """RRF: score = sum(1 / (k + rank_i))"""
-        scores = {}
-        for results in result_lists:
-            for rank, result in enumerate(results):
-                key = (result.chunk.document_id, result.chunk.id)
-                scores[key] = scores.get(key, 0) + 1.0 / (k + rank + 1)
-        sorted_keys = sorted(scores, key=scores.get, reverse=True)
-        return [self._build_result(key, scores[key]) for key in sorted_keys]
+# engine/tool/kb_vector_store.py
+async def search(
+    kb_id: str, query: str,
+    top_k: int = settings.KB_VECTOR_TOP_K,            # 默认 5
+    score_threshold: float = settings.KB_VECTOR_SCORE_THRESHOLD,  # 默认 0.5
+) -> list[dict]:
+    """单 KB 向量检索，返回带来源的切片。"""
+    embeddings = await get_embedding_client()
+    store = get_vector_store(embeddings)
+    results = await store.asimilarity_search_with_score(
+        query, k=top_k,
+        filter=Filter(must=[FieldCondition(key="kb_id", match=MatchValue(value=kb_id))]),
+    )
+    return [
+        {"text": doc.page_content, "score": score,
+         "doc_id": doc.metadata["doc_id"], "source_file": doc.metadata["source_file"],
+         "page": doc.metadata.get("page")}
+        for doc, score in results if score >= score_threshold
+    ]
 ```
 
-### 5.6 使用方式
+Agent 的 `kb_search` 工具和 Workflow 的 `kb_search` 节点都调用此函数。
 
-**Agent 使用：**
-- Agent 配置中绑定知识库 → 推理时自动检索，结果注入 System Prompt context
-- Agent 也可通过工具主动检索：`knowledge_search(query, kb_ids[], top_k)`
+### 5.9 使用方式
 
-**Workflow 使用：**
-- 知识库检索节点 → 选择知识库 + 查询文本（变量引用）+ TopK + 阈值
-- 检索结果输出到变量池，可传递给 LLM 节点作为 context
+**Agent 使用**（两类工具按绑定的 KB 类型分别注入）：
+- 绑定 tree 型 KB → 注入 `kb_glob` / `kb_grep` / `kb_read`，agent 自主探索
+- 绑定 vector 型 KB → 注入 `kb_search(query, kb_id?, top_k?)`，agent 语义检索
+- 工具描述列出所有可用 KB（带名称+描述），agent 据此自主选择调用哪个
 
-### 5.7 MVP 范围
+**Workflow 使用**（仅 vector 型）：
+- `kb_search` 节点：选择 vector KB + 查询文本（支持 `{{变量引用}}`）+ TopK
+- 检索结果（切片列表）输出到变量池，可传递给 LLM 节点作为 context
+
+### 5.10 MVP 范围
 
 **MVP 做：**
-- 知识库 CRUD
-- 文档上传（PDF / Word / Markdown / TXT，≤ 50MB）
-- 自动解析 → 切片 → 嵌入 → 存储
-- 向量 + 关键词混合检索（RRF 融合）
-- 检索结果带相关度评分和来源引用
-- Workflow 知识库检索节点
-- Agent 绑定知识库自动检索
+- KnowledgeBase 加 `type` 字段，tree/vector 并存
+- vector KB CRUD + 文档上传（PDF / Word / Markdown / TXT，≤ 50MB）
+- 异步解析（按页/段流式）→ 切片（tiktoken + 中文分隔符）→ 分批 embedding → Qdrant 存储
+- 向量检索（Qdrant similarity_search + kb_id 过滤），结果带评分和来源
+- Agent 的 `kb_search` 工具 + Workflow 的 `kb_search` 节点
+- 复用 FileRef 体系存原始文件，支持失败重试（reindex）
 
 **MVP 不做（Post-MVP）：**
+- 关键词检索 + 混合检索（RRF 融合）—— MVP 仅向量检索
 - 多模态文档（图片 OCR、表格解析）
 - 文档级权限控制
-- 知识库 MCP Server 对外暴露
 - 增量更新（文档修改后只更新变化切片）
 - 重排序（Reranker 二次精排）
-- 语义切片（按段落/标题自动切分）
+- 语义切片（按段落/标题自动切分）、KB 级 chunk 参数配置
 
 ---
 
@@ -738,7 +748,8 @@ class HybridRetriever:
 |------|-------|----------|
 | 工具（内置） | ✅（REACT 推理中调用） | ✅（工具节点配置调用） |
 | Skill（专属技能） | ✅（REACT 推理自主选择） | ❌（通过 Agent 节点间接使用） |
-| 知识库 | ✅ | ✅ |
+| 知识库（tree 型） | ✅（kb_glob/grep/read 探索） | ❌ |
+| 知识库（vector 型） | ✅（kb_search 检索） | ✅（kb_search 节点） |
 | 消息通道 | ✅（系统工具） | ✅（消息通知工具节点） |
 | 多轮推理 | ✅ | ❌（通过 Agent 节点） |
 | 定时执行 | ❌ | ✅（触发节点） |
@@ -823,11 +834,17 @@ class HybridRetriever:
 
 | 组件 | 用途 | 备注 |
 |------|------|------|
-| pymupdf | PDF 文本提取 | 性能优于 pdfplumber |
+| qdrant-client | Qdrant 向量库客户端 | 自建 docker，替代 Atlas Vector Search |
+| langchain-qdrant | Qdrant 向量存储封装 | 封装 similarity_search + payload 过滤 |
+| langchain-openai | embedding 客户端 | OpenAIEmbeddings，走兼容接口；已有 |
+| langchain-text-splitters | 文档切片 | RecursiveCharacterTextSplitter；已有 |
+| tiktoken | token 计数 | chunk 按 token 切分；已有 |
+| pymupdf | PDF 文本提取 | 按页流式解析，性能优于 pdfplumber |
 | python-docx | Word 文档解析 | — |
 | httpx | HTTP 请求工具底层 | 异步支持好 |
 | playwright / beautifulsoup4 | 网页抓取 | 按需选择 |
 | jinja2 (sandbox) | 模板渲染（通知/变量） | 已有 |
-| MongoDB Atlas Vector Search | 向量检索 | 已有基础设施 |
-| Celery | 文档处理异步任务 | 已有 |
+| Celery | 文档处理异步任务 | 已有；索引任务必须用 run_async 包装 |
 | redis | 任务队列 | 已有 |
+
+> **向量库选型变更**：原方案用 MongoDB Atlas Vector Search（`$vectorSearch`），但生产为自建 MongoDB，该能力不可用，故改用 Qdrant（自建 docker）。详见第 5 节。
