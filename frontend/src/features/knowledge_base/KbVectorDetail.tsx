@@ -173,11 +173,11 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   ]
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5" style={{ minHeight: 'calc(100vh - 220px)' }}>
+    <div className="flex gap-5" style={{ height: 'calc(100vh - 220px)' }}>
       {/* Documents */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <span className="font-medium text-gray-900">文档 ({docs.length})</span>
+      <div className="flex-1 flex flex-col rounded-lg border border-gray-200 bg-white overflow-hidden">
+        <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 bg-gray-50 shrink-0">
+          <span className="font-medium text-gray-900 text-sm">文档 ({docs.length})</span>
           <Space>
             <Button size="small" icon={<ReloadOutlined />} onClick={() => docsQ.refetch()}>刷新</Button>
             <Upload {...uploadProps}>
@@ -187,49 +187,57 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
             </Upload>
           </Space>
         </div>
-        <Table<KbDocument>
-          rowKey="id"
-          columns={columns}
-          dataSource={docs}
-          loading={docsQ.isLoading}
-          size="small"
-          pagination={false}
-          showHeader={false}
-          locale={{ emptyText: <Empty description="暂无文档，上传 PDF/Word/Markdown 开始" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-        />
+        <div className="flex-1 overflow-auto">
+          <Table<KbDocument>
+            rowKey="id"
+            columns={columns}
+            dataSource={docs}
+            loading={docsQ.isLoading}
+            size="small"
+            pagination={false}
+            showHeader={false}
+            locale={{ emptyText: <Empty description="暂无文档，上传 PDF/Word/Markdown 开始" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+          />
+        </div>
       </div>
 
       {/* Retrieval test */}
-      <div className="space-y-3">
-        <span className="font-medium text-gray-900 flex items-center gap-1.5">
-          <SearchOutlined className="text-gray-400" /> 检索测试
-        </span>
-        <Input.Search
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="输入查询文本…"
-          enterButton="检索"
-          loading={searchM.isPending}
-          onSearch={() => query.trim() && searchM.mutate()}
-        />
-        {searchResults !== null && (
-          <List<KbSearchResultItem>
-            size="small"
-            locale={{ emptyText: '无匹配结果（可能文档尚未索引完成或阈值过高）' }}
-            dataSource={searchResults}
-            renderItem={(item) => (
-              <List.Item className="!px-0">
-                <div className="w-full rounded-lg border border-gray-100 p-2.5 bg-gray-50/50">
-                  <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
-                    <span className="truncate">{item.source_file}{item.page ? ` · P${item.page}` : ''}</span>
-                    <Tag color="green" style={{ marginInlineEnd: 0 }}>{item.score.toFixed(3)}</Tag>
-                  </div>
-                  <p className="text-sm text-gray-700 leading-relaxed line-clamp-4">{item.text}</p>
-                </div>
-              </List.Item>
-            )}
+      <div className="flex-1 flex flex-col rounded-lg border border-gray-200 bg-white overflow-hidden">
+        <div className="px-3 py-2 border-b border-gray-100 bg-gray-50 shrink-0">
+          <span className="font-medium text-gray-900 text-sm flex items-center gap-1.5">
+            <SearchOutlined className="text-gray-400" /> 检索测试
+          </span>
+        </div>
+        <div className="p-3 shrink-0">
+          <Input.Search
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="输入查询文本…"
+            enterButton="检索"
+            loading={searchM.isPending}
+            onSearch={() => query.trim() && searchM.mutate()}
           />
-        )}
+        </div>
+        <div className="flex-1 overflow-auto px-3 pb-3">
+          {searchResults !== null && (
+            <List<KbSearchResultItem>
+              size="small"
+              locale={{ emptyText: '无匹配结果（可能文档尚未索引完成或阈值过高）' }}
+              dataSource={searchResults}
+              renderItem={(item) => (
+                <List.Item className="!px-0">
+                  <div className="w-full rounded-lg border border-gray-100 p-2.5 bg-gray-50/50">
+                    <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                      <span className="truncate">{item.source_file}{item.page ? ` · P${item.page}` : ''}</span>
+                      <Tag color="green" style={{ marginInlineEnd: 0 }}>{item.score.toFixed(3)}</Tag>
+                    </div>
+                    <p className="text-sm text-gray-700 leading-relaxed line-clamp-4">{item.text}</p>
+                  </div>
+                </List.Item>
+              )}
+            />
+          )}
+        </div>
       </div>
     </div>
   )
