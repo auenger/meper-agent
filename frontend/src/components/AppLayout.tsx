@@ -153,12 +153,15 @@ export default function AppLayout() {
   }).filter(Boolean) as NavGroup[]
 
   /* ─── Resolve active group & child ─── */
-  // Support dynamic routes like /agents/:id → group "agent", /workflows/:id → group "workflow"
+  // Support dynamic routes like /agents/:id → group "agent", /workflows/:id → group "workflow",
+  // /knowledge/:id → group "tools"
   const basePath = currentPath.startsWith('/agents/')
     ? '/agents'
     : currentPath.startsWith('/workflows/')
       ? '/workflows'
-      : currentPath
+      : currentPath.startsWith('/knowledge/')
+        ? '/knowledge'
+        : currentPath
   const activeGroupKey = PATH_TO_GROUP[basePath] || 'dashboard'
   const activeGroup = visibleGroups.find((g) => g.key === activeGroupKey)
 

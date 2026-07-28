@@ -1,14 +1,21 @@
 /**
- * KbTreeDetail — Drawer for a tree-type KB (Markdown file tree).
+ * KbTreeDetail — tree-type KB content (file tree + editor).
  *
- * Left: file tree (getFileTree), click a file to load content.
- * Right: editor (TextArea), save (updateFileContent) / delete file.
- * Top: upload .md files (preserves relative paths).
+ * Pure content component (no Drawer shell) — rendered inside
+ * KnowledgeDetailPage. Layout: left file tree, right editor.
+ *
+ * - File tree via getFileTree (antd Tree)
+ * - Click a file → load content (getFileContent) into the editor
+ * - Save (updateFileContent) / delete (deleteFile)
+ * - Upload .md files (preserves relative paths)
+ *
+ * The editor is isolated in <FileEditor key={path} /> so switching files
+ * remounts it — the draft state resets cleanly without effect-setState.
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Drawer, Tree, Input, Button, Space, Upload, Empty, Spin, Popconfirm, App as AntdApp,
+  Tree, Input, Button, Space, Upload, Empty, Spin, Popconfirm, App as AntdApp,
 } from 'antd'
 import type { UploadProps } from 'antd'
 import type { DataNode } from 'antd/es/tree'
@@ -20,13 +27,13 @@ import {
   type KnowledgeBase, type KbFileTreeNode,
 } from '../../services/knowledge-api'
 
-/* ─── Convert backend tree → antd TreeDataNode ─── */
+/* ─── Convert backend tree → antd DataNode ─── */
 function toTreeData(nodes: KbFileTreeNode[]): DataNode[] {
   return nodes.map((n) => ({
     key: n.key,
     title: (
       <Space size={4}>
-        {n.is_leaf ? <FileTextOutlined className="text-slate-400" /> : <FolderOutlined className="text-amber-500" />}
+        {n.is_leaf ? <FileTextOutlined className="text-gray-400" /> : <FolderOutlined className="text-amber-500" />}
         <span>{n.title}</span>
       </Space>
     ),
@@ -35,7 +42,6 @@ function toTreeData(nodes: KbFileTreeNode[]): DataNode[] {
   }))
 }
 
-/* ─── Collect all leaf paths (for selection default) ─── */
 function firstLeafPath(nodes: KbFileTreeNode[]): string | null {
   for (const n of nodes) {
     if (n.is_leaf) return n.key
@@ -47,65 +53,97 @@ function firstLeafPath(nodes: KbFileTreeNode[]): string | null {
   return null
 }
 
-export default function KbTreeDetail({
-  kb,
-  onClose,
+/* ─── Editor for one file (remounts on path change via key) ─── */
+function FileEditor({
+  kbId,
+  path,
+  initialContent,
 }: {
-  kb: KnowledgeBase
-  onClose: () => void
+  kbId: string
+  path: string
+  initialContent: string
 }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
-  const [selectedPath, setSelectedPath] = useState<string | null>(null)
-  const [draft, setDraft] = useState('')
-  const [dirty, setDirty] = useState(false)
+  const [draft, setDraft] = useState(initialContent)
+  const dirty = draft !== initialContent
 
-  /* ─── File tree ─── */
-  const treeQ = useQuery({
-    queryKey: knowledgeKeys.files(kb.id),
-    queryFn: () => knowledgeApi.getFileTree(kb.id),
-  })
-
-  // Auto-select first leaf on load
-  if (!selectedPath && treeQ.data?.files?.length) {
-    const first = firstLeafPath(treeQ.data.files)
-    if (first) setSelectedPath(first)
-  }
-
-  /* ─── File content ─── */
-  const contentQ = useQuery({
-    queryKey: knowledgeKeys.fileContent(kb.id, selectedPath ?? ''),
-    queryFn: () => knowledgeApi.getFileContent(kb.id, selectedPath!),
-    enabled: !!selectedPath,
-  })
-
-  // Sync loaded content into draft (when selection changes or content loads)
-  if (selectedPath && contentQ.data && !dirty) {
-    if (draft !== contentQ.data.content) setDraft(contentQ.data.content)
-  }
-
-  /* ─── Mutations ─── */
   const saveM = useMutation({
-    mutationFn: () => knowledgeApi.updateFileContent(kb.id, selectedPath!, draft),
+    mutationFn: () => knowledgeApi.updateFileContent(kbId, path, draft),
     onSuccess: () => {
       message.success('已保存')
-      setDirty(false)
-      queryClient.invalidateQueries({ queryKey: knowledgeKeys.fileContent(kb.id, selectedPath!) })
-      queryClient.invalidateQueries({ queryKey: knowledgeKeys.files(kb.id) })
+      queryClient.invalidateQueries({ queryKey: knowledgeKeys.fileContent(kbId, path) })
+      queryClient.invalidateQueries({ queryKey: knowledgeKeys.files(kbId) })
+      // Re-sync: the mutation left draft as-is; content cache is invalidated so
+      // a re-read would return the saved value. dirty is derived, so once the
+      // cache refetches initialContent matches draft again.
     },
     onError: (e: unknown) => message.error(e instanceof Error ? e.message : '保存失败'),
   })
 
   const deleteFileM = useMutation({
-    mutationFn: (path: string) => knowledgeApi.deleteFile(kb.id, path),
+    mutationFn: () => knowledgeApi.deleteFile(kbId, path),
     onSuccess: () => {
       message.success('文件已删除')
-      queryClient.invalidateQueries({ queryKey: knowledgeKeys.files(kb.id) })
-      setSelectedPath(null)
-      setDraft('')
-      setDirty(false)
+      queryClient.invalidateQueries({ queryKey: knowledgeKeys.files(kbId) })
     },
     onError: (e: unknown) => message.error(e instanceof Error ? e.message : '删除失败'),
+  })
+
+  return (
+    <div className="flex-1 flex flex-col rounded-lg border border-gray-200 bg-white overflow-hidden">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 bg-gray-50">
+        <span className="text-xs font-mono text-gray-600 truncate">{path}</span>
+        <Space size={4}>
+          <Button
+            size="small" type="primary" icon={<SaveOutlined />}
+            loading={saveM.isPending} disabled={!dirty}
+            onClick={() => saveM.mutate()}
+          >
+            保存
+          </Button>
+          <Popconfirm
+            title="删除文件" description={`删除 ${path}？`}
+            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+            onConfirm={() => deleteFileM.mutate()}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} />
+          </Popconfirm>
+        </Space>
+      </div>
+      <Input.TextArea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        className="flex-1 !resize-none !border-0 !rounded-none font-mono text-xs"
+        style={{ height: '100%' }}
+        spellCheck={false}
+      />
+    </div>
+  )
+}
+
+/* ─── Main ─── */
+export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
+  const { message } = AntdApp.useApp()
+  const queryClient = useQueryClient()
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+
+  const treeQ = useQuery({
+    queryKey: knowledgeKeys.files(kb.id),
+    queryFn: () => knowledgeApi.getFileTree(kb.id),
+  })
+
+  // Effective selected path: explicit user selection, else auto-pick the first
+  // leaf once the tree loads (derived — no effect-setState needed).
+  const effectivePath = useMemo(() => {
+    if (selectedPath) return selectedPath
+    return treeQ.data?.files?.length ? firstLeafPath(treeQ.data.files) : null
+  }, [selectedPath, treeQ.data])
+
+  const contentQ = useQuery({
+    queryKey: knowledgeKeys.fileContent(kb.id, effectivePath ?? ''),
+    queryFn: () => knowledgeApi.getFileContent(kb.id, effectivePath!),
+    enabled: !!effectivePath,
   })
 
   const uploadM = useMutation({
@@ -128,38 +166,16 @@ export default function KbTreeDetail({
     },
   }
 
-  const handleSelect = (path: string) => {
-    if (dirty && selectedPath !== path) {
-      // Discard unsaved changes silently on switch (could prompt, but keep simple)
-      setDirty(false)
-    }
-    setSelectedPath(path)
-    setDirty(false)
-  }
-
   return (
-    <Drawer
-      title={
-        <Space>
-          <span>{kb.name}</span>
-          <span className="text-xs text-slate-400">文档树</span>
-        </Space>
-      }
-      placement="right"
-      width={760}
-      open
-      onClose={onClose}
-    >
+    <div>
       {/* Upload bar */}
       <div className="mb-3">
         <Upload {...uploadProps}>
-          <Button icon={<UploadOutlined />} loading={uploadM.isPending}>
-            上传 .md 文件
-          </Button>
+          <Button icon={<UploadOutlined />} loading={uploadM.isPending}>上传 .md 文件</Button>
         </Upload>
       </div>
 
-      <div className="flex gap-3" style={{ height: 'calc(100vh - 160px)' }}>
+      <div className="flex gap-3" style={{ height: 'calc(100vh - 220px)' }}>
         {/* File tree */}
         <div className="w-56 shrink-0 overflow-auto rounded-lg border border-gray-200 p-2 bg-white">
           {treeQ.isLoading ? (
@@ -167,8 +183,8 @@ export default function KbTreeDetail({
           ) : treeQ.data?.files?.length ? (
             <Tree
               treeData={toTreeData(treeQ.data.files)}
-              selectedKeys={selectedPath ? [selectedPath] : []}
-              onSelect={(keys) => keys[0] && handleSelect(String(keys[0]))}
+              selectedKeys={effectivePath ? [effectivePath] : []}
+              onSelect={(keys) => keys[0] && setSelectedPath(String(keys[0]))}
               defaultExpandAll
               blockNode
             />
@@ -177,50 +193,28 @@ export default function KbTreeDetail({
           )}
         </div>
 
-        {/* Editor */}
-        <div className="flex-1 flex flex-col rounded-lg border border-gray-200 bg-white overflow-hidden">
-          {selectedPath ? (
-            <>
-              <div className="flex items-center justify-between px-3 py-2 border-b border-gray-100 bg-gray-50">
-                <span className="text-xs font-mono text-slate-600 truncate">{selectedPath}</span>
-                <Space size={4}>
-                  <Button
-                    size="small"
-                    type="primary"
-                    icon={<SaveOutlined />}
-                    loading={saveM.isPending}
-                    disabled={!dirty}
-                    onClick={() => saveM.mutate()}
-                  >
-                    保存
-                  </Button>
-                  <Popconfirm
-                    title="删除文件"
-                    description={`删除 ${selectedPath}？`}
-                    okText="删除"
-                    okButtonProps={{ danger: true }}
-                    cancelText="取消"
-                    onConfirm={() => deleteFileM.mutate(selectedPath)}
-                  >
-                    <Button size="small" danger icon={<DeleteOutlined />} />
-                  </Popconfirm>
-                </Space>
-              </div>
-              <Input.TextArea
-                value={draft}
-                onChange={(e) => { setDraft(e.target.value); setDirty(true) }}
-                className="flex-1 !resize-none !border-0 !rounded-none font-mono text-xs"
-                style={{ height: '100%' }}
-                spellCheck={false}
-              />
-            </>
+        {/* Editor (remounts per file via key) */}
+        {effectivePath ? (
+          contentQ.isLoading ? (
+            <div className="flex-1 flex items-center justify-center"><Spin /></div>
+          ) : contentQ.data ? (
+            <FileEditor
+              key={effectivePath}
+              kbId={kb.id}
+              path={effectivePath}
+              initialContent={contentQ.data.content}
+            />
           ) : (
-            <div className="flex-1 flex items-center justify-center text-slate-400 text-sm">
-              选择左侧文件查看内容
+            <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+              文件不存在
             </div>
-          )}
-        </div>
+          )
+        ) : (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
+            选择左侧文件查看内容
+          </div>
+        )}
       </div>
-    </Drawer>
+    </div>
   )
 }

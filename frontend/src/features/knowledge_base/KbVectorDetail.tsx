@@ -1,16 +1,18 @@
 /**
- * KbVectorDetail — Drawer for a vector-type KB (RAG over Qdrant).
+ * KbVectorDetail — vector-type KB content (documents + retrieval test).
  *
- * Three sections:
- *   1. Document list (name / status / progress / chunks / actions) with polling
- *      while any doc is in-flight (pending/parsing/embedding).
- *   2. Upload (pdf/docx/md/txt) → fires async indexing on backend.
- *   3. Retrieval test (query → top-k chunks with score + source).
+ * Pure content component (no Drawer shell) — rendered inside
+ * KnowledgeDetailPage. Layout: left document list, right retrieval test.
+ *
+ * - Document list (name / status / progress / chunks) with polling while any
+ *   doc is in-flight (pending/parsing/embedding).
+ * - Upload (pdf/docx/md/txt) → fires async indexing on backend.
+ * - Retrieval test (query → top-k chunks with score + source).
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Drawer, Table, Tag, Progress, Button, Space, Upload, Input, List,
+  Table, Tag, Progress, Button, Space, Upload, Input, List,
   Empty, Popconfirm, App as AntdApp, Tooltip,
 } from 'antd'
 import type { ColumnsType } from 'antd/es/table'
@@ -42,13 +44,7 @@ const STATUS_META: Record<KbDocStatus, { label: string; color: string }> = {
 
 const IN_FLIGHT: KbDocStatus[] = ['pending', 'parsing', 'embedding']
 
-export default function KbVectorDetail({
-  kb,
-  onClose,
-}: {
-  kb: KnowledgeBase
-  onClose: () => void
-}) {
+export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
@@ -117,10 +113,10 @@ export default function KbVectorDetail({
       render: (name: string, r) => (
         <Space direction="vertical" size={0}>
           <Space size={6}>
-            <FileTextOutlined className="text-slate-400" />
-            <span className="font-medium text-[#0F172A] text-sm">{name}</span>
+            <FileTextOutlined className="text-gray-400" />
+            <span className="font-medium text-gray-900 text-sm">{name}</span>
           </Space>
-          <span className="text-xs text-[#94A3B8]">
+          <span className="text-xs text-gray-400">
             {r.file_type.toUpperCase()} · {formatSize(r.file_size)}
             {r.chunk_count > 0 && ` · ${r.chunk_count} 切片`}
           </span>
@@ -165,11 +161,8 @@ export default function KbVectorDetail({
             </Tooltip>
           )}
           <Popconfirm
-            title="删除文档"
-            description={`删除 ${r.name}？该文档的所有切片和向量将被清除。`}
-            okText="删除"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
+            title="删除文档" description={`删除 ${r.name}？该文档的所有切片和向量将被清除。`}
+            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
             onConfirm={() => deleteDocM.mutate(r.id)}
           >
             <Button size="small" type="text" danger icon={<DeleteOutlined />} />
@@ -180,49 +173,37 @@ export default function KbVectorDetail({
   ]
 
   return (
-    <Drawer
-      title={
-        <Space>
-          <span>{kb.name}</span>
-          <Tag color="green" style={{ marginInlineEnd: 0 }}>向量库</Tag>
-        </Space>
-      }
-      placement="right"
-      width={680}
-      open
-      onClose={onClose}
-    >
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5" style={{ minHeight: 'calc(100vh - 220px)' }}>
       {/* Documents */}
-      <div className="flex items-center justify-between mb-2">
-        <span className="font-medium text-[#0F172A]">文档 ({docs.length})</span>
-        <Space>
-          <Button size="small" icon={<ReloadOutlined />} onClick={() => docsQ.refetch()}>
-            刷新
-          </Button>
-          <Upload {...uploadProps}>
-            <Button type="primary" size="small" icon={<UploadOutlined />} loading={uploadM.isPending}>
-              上传
-            </Button>
-          </Upload>
-        </Space>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <span className="font-medium text-gray-900">文档 ({docs.length})</span>
+          <Space>
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => docsQ.refetch()}>刷新</Button>
+            <Upload {...uploadProps}>
+              <Button type="primary" size="small" icon={<UploadOutlined />} loading={uploadM.isPending}>
+                上传
+              </Button>
+            </Upload>
+          </Space>
+        </div>
+        <Table<KbDocument>
+          rowKey="id"
+          columns={columns}
+          dataSource={docs}
+          loading={docsQ.isLoading}
+          size="small"
+          pagination={false}
+          showHeader={false}
+          locale={{ emptyText: <Empty description="暂无文档，上传 PDF/Word/Markdown 开始" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
+        />
       </div>
-      <Table<KbDocument>
-        rowKey="id"
-        columns={columns}
-        dataSource={docs}
-        loading={docsQ.isLoading}
-        size="small"
-        pagination={false}
-        showHeader={false}
-        locale={{ emptyText: <Empty description="暂无文档，上传 PDF/Word/Markdown 开始" image={Empty.PRESENTED_IMAGE_SIMPLE} /> }}
-      />
 
       {/* Retrieval test */}
-      <div className="mt-6">
-        <div className="font-medium text-[#0F172A] mb-2 flex items-center gap-1.5">
-          <SearchOutlined className="text-slate-500" />
-          检索测试
-        </div>
+      <div className="space-y-3">
+        <span className="font-medium text-gray-900 flex items-center gap-1.5">
+          <SearchOutlined className="text-gray-400" /> 检索测试
+        </span>
         <Input.Search
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -233,24 +214,23 @@ export default function KbVectorDetail({
         />
         {searchResults !== null && (
           <List<KbSearchResultItem>
-            className="mt-2"
             size="small"
             locale={{ emptyText: '无匹配结果（可能文档尚未索引完成或阈值过高）' }}
             dataSource={searchResults}
             renderItem={(item) => (
               <List.Item className="!px-0">
                 <div className="w-full rounded-lg border border-gray-100 p-2.5 bg-gray-50/50">
-                  <div className="flex items-center justify-between text-xs text-slate-500 mb-1">
+                  <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
                     <span className="truncate">{item.source_file}{item.page ? ` · P${item.page}` : ''}</span>
                     <Tag color="green" style={{ marginInlineEnd: 0 }}>{item.score.toFixed(3)}</Tag>
                   </div>
-                  <p className="text-sm text-[#334155] leading-relaxed line-clamp-4">{item.text}</p>
+                  <p className="text-sm text-gray-700 leading-relaxed line-clamp-4">{item.text}</p>
                 </div>
               </List.Item>
             )}
           />
         )}
       </div>
-    </Drawer>
+    </div>
   )
 }
