@@ -32,6 +32,7 @@ import { McpManagePage } from './components/McpManagePage';
 import { SkillDetailPage } from './components/SkillDetailPage';
 import { KnowledgeBasePage } from './components/KnowledgeBasePage';
 import { KbDetailPage } from './components/KbDetailPage';
+import { KbVectorDetailPage } from './components/KbVectorDetailPage';
 import { UserManagement } from './components/UserManagement';
 import { SystemSettings } from './components/SystemSettings';
 import { ModelsPage } from './components/ModelsPage';
@@ -95,7 +96,7 @@ export default function App() {
   // Sub-state for the Skill detail view (tools tab → open a Skill's files).
   const [openSkill, setOpenSkill] = useState<{ id: string; name: string } | null>(null);
   // Sub-state for the Knowledge Base detail view (list → click card → files).
-  const [openKb, setOpenKb] = useState<{ id: string; name: string } | null>(null);
+  const [openKb, setOpenKb] = useState<{ id: string; name: string; type: 'tree' | 'vector' } | null>(null);
   // Sub-state for the workflow editor (list → click card → editor).
   const [openWorkflow, setOpenWorkflow] = useState<string | null>(null);
   // Sub-state for the Agent detail / live-test split view + editor.
@@ -545,13 +546,21 @@ export default function App() {
 
           {activeTab === 'knowledge' && (
             openKb ? (
-              <KbDetailPage
-                kbId={openKb.id}
-                kbName={openKb.name}
-                onBack={() => setOpenKb(null)}
-              />
+              openKb.type === 'vector' ? (
+                <KbVectorDetailPage
+                  kbId={openKb.id}
+                  kbName={openKb.name}
+                  onBack={() => setOpenKb(null)}
+                />
+              ) : (
+                <KbDetailPage
+                  kbId={openKb.id}
+                  kbName={openKb.name}
+                  onBack={() => setOpenKb(null)}
+                />
+              )
             ) : (
-              <KnowledgeBasePage onOpenKb={(kb) => setOpenKb({ id: kb.id, name: kb.name })} />
+              <KnowledgeBasePage onOpenKb={(kb) => setOpenKb({ id: kb.id, name: kb.name, type: kb.type })} />
             )
           )}
 

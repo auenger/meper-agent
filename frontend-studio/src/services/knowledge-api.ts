@@ -12,6 +12,8 @@ export interface KnowledgeBase {
   id: string
   name: string
   description: string
+  type: 'tree' | 'vector'
+  embedding_model_id: string
   owner_user_id: string
   status: string
   file_count: number
@@ -23,6 +25,7 @@ export interface KnowledgeBase {
 export interface KnowledgeBaseCreateInput {
   name: string
   description?: string
+  type?: 'tree' | 'vector'
 }
 
 export interface KnowledgeBaseUpdateInput {
@@ -68,14 +71,52 @@ export interface KbFileUpdatePayload {
 }
 
 export interface KbUploadResult {
-  /** Relative paths written (KB files are not separate DB entities). */
+  /** Relative paths written (tree KB) / filenames accepted (vector KB). */
   created: string[]
   errors: KbUploadError[]
+  /** vector KB only: created KnowledgeDocument ids. */
+  document_ids: string[]
 }
 
 export interface KbUploadError {
   filename: string
   error: string
+}
+
+/* ─── Vector KB: documents + retrieval ─── */
+
+export interface KbDocument {
+  id: string
+  name: string
+  file_type: string
+  file_size: number
+  parse_status: 'pending' | 'parsing' | 'embedding' | 'completed' | 'failed'
+  parse_progress: number
+  parse_error: string
+  chunk_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface KbDocumentListResponse {
+  items: KbDocument[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface KbSearchResultItem {
+  text: string
+  score: number
+  doc_id: string
+  source_file: string
+  page: number | null
+  kb_id?: string
+}
+
+export interface KbSearchResponse {
+  query: string
+  results: KbSearchResultItem[]
 }
 
 /* ─── API methods ─── */
@@ -173,6 +214,41 @@ export const knowledgeApi = {
     )
     return res.data
   },
+
+  /* ── Vector KB: document management + retrieval ── */
+
+  /** GET /api/v1/knowledge-bases/{id}/documents */
+  async listDocuments(kbId: string, page = 1, pageSize = 50): Promise<KbDocumentListResponse> {
+    const res = await apiClient.get<KbDocumentListResponse>(
+      `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents`,
+      { params: { page, page_size: pageSize } },
+    )
+    return res.data
+  },
+
+  /** DELETE /api/v1/knowledge-bases/{id}/documents/{docId} */
+  async deleteDocument(kbId: string, docId: string): Promise<void> {
+    await apiClient.delete(
+      `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}`,
+    )
+  },
+
+  /** POST /api/v1/knowledge-bases/{id}/documents/{docId}/reindex */
+  async reindexDocument(kbId: string, docId: string): Promise<{ status: string }> {
+    const res = await apiClient.post<{ status: string }>(
+      `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}/reindex`,
+    )
+    return res.data
+  },
+
+  /** POST /api/v1/knowledge-bases/{id}/search */
+  async search(kbId: string, query: string, topK = 5): Promise<KbSearchResponse> {
+    const res = await apiClient.post<KbSearchResponse>(
+      `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/search`,
+      { query, top_k: topK },
+    )
+    return res.data
+  },
 }
 
 /* ─── Query key factory ─── */
@@ -185,4 +261,5 @@ export const knowledgeKeys = {
   detail: (id: string) => [...knowledgeKeys.details(), id] as const,
   files: (id: string) => [...knowledgeKeys.detail(id), 'files'] as const,
   fileContent: (id: string, path: string) => [...knowledgeKeys.detail(id), 'file', path] as const,
+  documents: (id: string) => [...knowledgeKeys.detail(id), 'documents'] as const,
 }
