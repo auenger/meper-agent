@@ -149,7 +149,7 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
       <textarea
         value={local}
         onChange={(e) => setLocal(e.target.value)}
-        className="flex-1 w-full p-4 bg-transparent text-gray-800 font-mono text-xs leading-relaxed resize-none focus:outline-none"
+        className="flex-1 w-full p-4 bg-transparent border-0 text-gray-800 font-mono text-xs leading-relaxed resize-none focus:outline-none"
         spellCheck={false}
       />
       <div className="px-4 py-1.5 bg-surface/60 text-[10px] text-gray-400 shrink-0">{local.length} 字符</div>

@@ -48,6 +48,14 @@ html, body {
   color: rgb(var(--c-txt));
 }
 
+/* preflight is disabled (corePlugins.preflight: false), so native form
+   elements keep the browser's default dark border. Clear it for the ones we
+   render raw (textarea). antd components manage their own borders and are
+   unaffected; scoped here rather than globally to avoid disturbing antd. */
+textarea {
+  border: 0;
+}
+
 #root {
   min-height: 100vh;
 }
