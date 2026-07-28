@@ -55,20 +55,20 @@ async def retrieve(
         return []
 
     # 1. Embed the query (dense) — sparse uses the raw text server-side.
-    from app.engine.vector_factory import get_embedding_client
+    from app.engine.kb.vector.factory import get_embedding_client
 
     embeddings = get_embedding_client()
     query_vector = await embeddings.aembed_query(query)
 
     # 2. Hybrid recall (dense + sparse, RRF-fused) via Qdrant.
-    from app.engine.tool import kb_vector_store
+    from app.engine.kb.vector import store as kb_vector_store
 
     recalled = await kb_vector_store.hybrid_search(kb_id, query, query_vector, k=recall_k)
     if not recalled:
         return []
 
     # 3. Optional rerank.
-    from app.engine.vector_factory import get_reranker
+    from app.engine.kb.vector.factory import get_reranker
 
     reranker = get_reranker()
     if reranker is not None:

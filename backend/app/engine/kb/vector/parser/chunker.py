@@ -15,7 +15,7 @@ from __future__ import annotations
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from app.core.config import settings
-from app.engine.tool.kb_parser.base import ParseResult
+from app.engine.kb.vector.parser.base import ParseResult
 
 # CJK-friendly separator priority: paragraphs → lines → Chinese sentence
 # enders → comma → space → (last resort) any character.

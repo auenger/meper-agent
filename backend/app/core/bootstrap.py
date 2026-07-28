@@ -132,7 +132,7 @@ async def background_boot() -> tuple[TaskSchedulerService, TriggerSchedulerServi
     """
     # Vector KB model config check (warning only — lets admins configure
     # the embedding model after first deploy; vector KB stays disabled).
-    from app.engine.vector_factory import validate_vector_model_config
+    from app.engine.kb.vector.factory import validate_vector_model_config
 
     ok, msg = validate_vector_model_config()
     if not ok:

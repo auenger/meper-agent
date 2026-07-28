@@ -30,9 +30,9 @@ def index_kb_document(doc_id: str) -> dict[str, Any]:
 
 
 async def _index_async(doc_id: str) -> dict[str, Any]:
-    from app.engine.tool import kb_vector_store
-    from app.engine.tool.kb_parser import clean, parse, split
-    from app.engine.vector_factory import get_embedding_client
+    from app.engine.kb.vector import store as kb_vector_store
+    from app.engine.kb.vector.factory import get_embedding_client
+    from app.engine.kb.vector.parser import clean, parse, split
     from app.models.knowledge_document import EMBEDDING, PARSING
     from app.services.file_service import FileService
     from app.services.file_storage import LocalFileStorage

@@ -388,7 +388,7 @@ async def delete_document(
 ) -> None:
     """Delete a document: removes its Qdrant points + metadata record."""
     from app.core.errors import NotFoundError
-    from app.engine.tool import kb_vector_store
+    from app.engine.kb.vector import store as kb_vector_store
     from app.services.knowledge_document_service import KnowledgeDocumentService
 
     await _require_vector_kb(kb_id)
@@ -447,7 +447,7 @@ async def search_kb(
     _: UserResponse = Depends(require_permission("knowledge:read")),
 ) -> KbSearchResponse:
     """Run a hybrid (dense+sparse) retrieval + optional rerank for testing."""
-    from app.engine.tool.kb_retriever import retrieve
+    from app.engine.kb.vector.retriever import retrieve
 
     await _require_vector_kb(kb_id)
     results = await retrieve(kb_id, body.query, top_k=body.top_k)

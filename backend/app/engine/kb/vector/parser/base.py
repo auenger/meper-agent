@@ -37,19 +37,19 @@ def parse(file_bytes: bytes, file_type: str) -> ParseResult:
     ft = (file_type or "").lower().lstrip(".")
     # Alias common variants.
     if ft in ("md", "markdown"):
-        from app.engine.tool.kb_parser.markdown_parser import parse_markdown
+        from app.engine.kb.vector.parser.markdown_parser import parse_markdown
 
         return parse_markdown(file_bytes)
     if ft == "txt":
-        from app.engine.tool.kb_parser.txt_parser import parse_txt
+        from app.engine.kb.vector.parser.txt_parser import parse_txt
 
         return parse_txt(file_bytes)
     if ft == "pdf":
-        from app.engine.tool.kb_parser.pdf_parser import parse_pdf
+        from app.engine.kb.vector.parser.pdf_parser import parse_pdf
 
         return parse_pdf(file_bytes)
     if ft in ("docx", "doc"):
-        from app.engine.tool.kb_parser.word_parser import parse_word
+        from app.engine.kb.vector.parser.word_parser import parse_word
 
         return parse_word(file_bytes)
     raise ValueError(f"不支持的文件类型: {file_type}（支持 pdf/docx/md/txt）")

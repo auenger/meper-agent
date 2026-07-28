@@ -30,7 +30,7 @@ class KbSearchNodeExecutor(BaseNodeExecutor):
     """Retrieve chunks from one or more vector KBs."""
 
     async def execute(self, variables: dict[str, Any]) -> NodeResult:
-        from app.engine.tool.kb_retriever import retrieve
+        from app.engine.kb.vector.retriever import retrieve
         from app.engine.workflow.expression import ExpressionEngine
 
         cfg = self.node_config or {}

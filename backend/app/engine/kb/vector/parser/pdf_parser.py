@@ -6,7 +6,7 @@ citations can point back to the source page.
 """
 from __future__ import annotations
 
-from app.engine.tool.kb_parser.base import ParseResult, TextBlock
+from app.engine.kb.vector.parser.base import ParseResult, TextBlock
 
 
 def parse_pdf(file_bytes: bytes) -> ParseResult:

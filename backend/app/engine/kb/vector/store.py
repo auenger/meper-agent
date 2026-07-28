@@ -89,7 +89,7 @@ async def get_dense_dim() -> int:
     Embeds a throwaway token and returns the resulting vector length. Used
     once at collection-creation time to size the dense vector field.
     """
-    from app.engine.vector_factory import get_embedding_client
+    from app.engine.kb.vector.factory import get_embedding_client
 
     embeddings = get_embedding_client()
     vec = await embeddings.aembed_query("dimension probe")

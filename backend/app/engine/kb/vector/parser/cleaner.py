@@ -14,7 +14,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from app.engine.tool.kb_parser.base import ParseResult, TextBlock
+from app.engine.kb.vector.parser.base import ParseResult, TextBlock
 
 # Lines that are almost certainly page furniture, not content.
 _FURNITURE_RE = re.compile(

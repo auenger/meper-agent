@@ -1,7 +1,7 @@
 """KnowledgeBase business logic — CRUD + Markdown file management.
 
 Tree-style KB: each KB is a directory of ``.md`` files on disk
-(:mod:`app.engine.tool.kb_fs`); MongoDB stores only metadata. Agents
+(:mod:`app.engine.kb.tree.fs`); MongoDB stores only metadata. Agents
 bind KBs via ``Agent.knowledge_base_ids``.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from loguru import logger
 from app.core.config import settings
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.db.mongodb import get_database
-from app.engine.tool import kb_fs
+from app.engine.kb.tree import fs as kb_fs
 from app.models.base import generate_id, utc_now
 from app.services.tool_service import ToolService
 
@@ -141,7 +141,7 @@ class KnowledgeBaseService:
             kb_type = existing.get("type", "tree")
             if kb_type == "vector":
                 # Vector KB: purge Qdrant points + document metadata records.
-                from app.engine.tool import kb_vector_store
+                from app.engine.kb.vector import store as kb_vector_store
                 from app.services.knowledge_document_service import (
                     KnowledgeDocumentService,
                 )

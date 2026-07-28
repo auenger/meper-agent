@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import io
 
-from app.engine.tool.kb_parser.base import ParseResult, TextBlock
+from app.engine.kb.vector.parser.base import ParseResult, TextBlock
 
 
 def parse_word(file_bytes: bytes) -> ParseResult:

@@ -3,7 +3,7 @@
 Two KB types coexist:
 
 - ``tree`` (default): a directory of ``.md`` files on the filesystem
-  (managed by ``engine/tool/kb_fs.py``). Agents explore it at runtime via
+  (managed by ``engine/kb/tree/fs.py``). Agents explore it at runtime via
   ``kb_glob`` / ``kb_grep`` / ``kb_read``. MongoDB stores only metadata.
 - ``vector``: documents are parsed → cleaned → chunked → embedded and
   stored as dense+sparse vectors in Qdrant (``kb_chunks`` collection),

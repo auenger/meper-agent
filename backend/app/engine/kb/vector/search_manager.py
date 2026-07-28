@@ -51,7 +51,7 @@ class KbSearchManager:
 
         Returns a JSON string of ``[{kb_id, text, score, source_file, page}]``.
         """
-        from app.engine.tool.kb_retriever import retrieve
+        from app.engine.kb.vector.retriever import retrieve
 
         target_ids = [kb_id] if kb_id and kb_id in self._kb_infos else list(self._kb_infos)
         all_results: list[dict] = []

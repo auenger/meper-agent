@@ -175,9 +175,9 @@ async def resolve_harness_context(
     kb_ids = agent.get("knowledge_base_ids") or []
     if kb_ids:
         from app.db.mongodb import get_database
-        from app.engine.tool.kb_fs import get_kb_base_path
-        from app.engine.tool.kb_manager import KbManager
-        from app.engine.tool.kb_search_manager import KbSearchManager
+        from app.engine.kb.tree.fs import get_kb_base_path
+        from app.engine.kb.tree.manager import KbManager
+        from app.engine.kb.vector.search_manager import KbSearchManager
 
         kb_docs = await get_database()["knowledge_bases"].find(
             {"_id": {"$in": kb_ids}}
