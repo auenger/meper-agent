@@ -119,11 +119,16 @@ class Settings(BaseSettings):
     KB_MAX_FILE_SIZE: int = 2 * 1024 * 1024  # 2 MB per uploaded .md
 
     # ── Vector Knowledge Base (RAG) ──────────────────────────────────────
-    # Embedding/reranker are external models referenced by Model table _id
-    # (model_xxx). Embedding is required for vector KB to work; reranker is
-    # optional — retrieval degrades gracefully (skips rerank) when unset.
-    KB_EMBEDDING_MODEL_ID: str = ""
-    KB_RERANKER_MODEL_ID: str = ""
+    # Embedding/reranker are configured directly via env vars (base_url +
+    # model + api_key) — they are platform-global singletons, so they don't
+    # need Model table entries. Embedding is REQUIRED for vector KB to work;
+    # reranker is OPTIONAL — retrieval degrades gracefully (skips rerank).
+    KB_EMBEDDING_BASE_URL: str = ""
+    KB_EMBEDDING_MODEL: str = ""
+    KB_EMBEDDING_API_KEY: str = ""
+    KB_RERANKER_BASE_URL: str = ""
+    KB_RERANKER_MODEL: str = ""
+    KB_RERANKER_API_KEY: str = ""
 
     # Qdrant collection (single shared collection; kb_id payload filters KBs).
     KB_QDRANT_COLLECTION: str = "kb_chunks"

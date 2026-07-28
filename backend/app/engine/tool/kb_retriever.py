@@ -57,7 +57,7 @@ async def retrieve(
     # 1. Embed the query (dense) — sparse uses the raw text server-side.
     from app.engine.vector_factory import get_embedding_client
 
-    embeddings = await get_embedding_client()
+    embeddings = get_embedding_client()
     query_vector = await embeddings.aembed_query(query)
 
     # 2. Hybrid recall (dense + sparse, RRF-fused) via Qdrant.
@@ -68,7 +68,9 @@ async def retrieve(
         return []
 
     # 3. Optional rerank.
-    reranker = await _get_reranker_cached()
+    from app.engine.vector_factory import get_reranker
+
+    reranker = get_reranker()
     if reranker is not None:
         try:
             recalled = await _rerank(reranker, query, recalled)
@@ -109,14 +111,6 @@ async def _rerank(
     # Re-sort by the new (rerank) score.
     candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
     return candidates
-
-
-# Reranker is fetched once per retrieve() call (cheap lookup); no caching
-# needed at module level since get_reranker() already guards on settings.
-async def _get_reranker_cached():
-    from app.engine.vector_factory import get_reranker
-
-    return await get_reranker()
 
 
 __all__ = ["retrieve"]

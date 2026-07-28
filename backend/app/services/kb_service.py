@@ -41,7 +41,7 @@ class KnowledgeBaseService:
         """Create a KB record.
 
         - tree: also creates the on-disk ``.md`` directory.
-        - vector: records the embedding model id; no FS directory is used.
+        - vector: records the configured embedding model name; no FS directory.
         """
         now = utc_now().isoformat()
         kb_type = type if type in ("tree", "vector") else "tree"
@@ -51,7 +51,7 @@ class KnowledgeBaseService:
             "description": description,
             "type": kb_type,
             "embedding_model_id": (
-                settings.KB_EMBEDDING_MODEL_ID if kb_type == "vector" else ""
+                settings.KB_EMBEDDING_MODEL if kb_type == "vector" else ""
             ),
             "owner_user_id": owner_user_id,
             "status": "active",

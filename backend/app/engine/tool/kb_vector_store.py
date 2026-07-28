@@ -91,7 +91,7 @@ async def get_dense_dim() -> int:
     """
     from app.engine.vector_factory import get_embedding_client
 
-    embeddings = await get_embedding_client()
+    embeddings = get_embedding_client()
     vec = await embeddings.aembed_query("dimension probe")
     return len(vec)
 

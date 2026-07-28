@@ -1,27 +1,22 @@
 """Vector model factories — embedding + reranker clients for vector KBs.
 
-Both factories resolve a Model table record by its ``_id`` (referenced via
-``settings.KB_EMBEDDING_MODEL_ID`` / ``settings.KB_RERANKER_MODEL_ID``),
-decrypt the stored API key, and build the appropriate client.
+Both clients are configured directly via environment variables
+(``KB_EMBEDDING_*`` / ``KB_RERANKER_*``), since embedding and reranker are
+platform-global singletons — they don't need Model table entries. This keeps
+deployment simple: set base_url + model + api_key in ``.env`` and vector KBs
+work, with no UI-side model configuration step.
 
 Embedding is REQUIRED for vector KBs to function. Reranker is OPTIONAL —
 ``get_reranker()`` returns ``None`` when unconfigured, and the retrieval
 pipeline degrades gracefully (skips the rerank stage).
-
-All clients target OpenAI-compatible endpoints (``/v1/embeddings``) for
-embedding and SiliconFlow/Jina-style ``/v1/rerank`` for rerank, which the
-majority of Chinese/foreign providers expose.
 """
 from __future__ import annotations
-
-from typing import Any
 
 import httpx
 from langchain_core.embeddings import Embeddings
 from loguru import logger
 
 from app.core.config import settings
-from app.models.model import ModelTaskType
 
 
 class RerankerClient:
@@ -32,14 +27,13 @@ class RerankerClient:
         body: {"model": ..., "query": ..., "documents": [...], "top_n": ...}
         resp: {"results": [{"index": i, "relevance_score": s}, ...]}
 
-    The base_url stored on the Model record is expected to end with ``/v1``
-    (matching how embedding/chat clients are configured). We strip a trailing
-    slash and append ``/rerank``.
+    The base_url is expected to end with ``/v1`` (matching how embedding
+    clients are configured). We strip a trailing slash and append ``/rerank``.
     """
 
-    def __init__(self, base_url: str, model_id: str, api_key: str) -> None:
+    def __init__(self, base_url: str, model: str, api_key: str) -> None:
         self._url = base_url.rstrip("/") + "/rerank"
-        self._model = model_id
+        self._model = model
         self._api_key = api_key
 
     async def rerank(
@@ -55,7 +49,7 @@ class RerankerClient:
         descending by score. The ``original_index`` points back into the
         input ``documents`` list so callers can map back to source chunks.
         """
-        payload: dict[str, Any] = {
+        payload: dict = {
             "model": self._model,
             "query": query,
             "documents": documents,
@@ -85,104 +79,58 @@ class RerankerClient:
         return ranked
 
 
-async def _resolve_model_doc(model_ref: str, expected_task: ModelTaskType) -> dict | None:
-    """Resolve a Model table record by _id and validate its task_type.
+def get_embedding_client() -> Embeddings:
+    """Build the embedding client from ``KB_EMBEDDING_*`` env vars.
 
-    Returns the doc with a decrypted ``api_key`` (for internal use only —
-    must never be returned through the API layer), or None if not found /
-    misconfigured.
+    Required for vector KBs. Raises ValueError if unconfigured so callers
+    fail loudly rather than silently producing broken indexes.
     """
-    if not model_ref or not model_ref.startswith("model_"):
-        return None
-    try:
-        from app.services.model_service import ModelService
-
-        doc = await ModelService.get_model_config_by_id(model_ref)
-    except Exception as exc:
-        logger.error("vector_factory_resolve_failed", model_ref=model_ref, error=str(exc))
-        return None
-    if doc is None:
-        return None
-    if doc.get("task_type") != expected_task.value:
-        logger.warning(
-            "vector_factory_task_type_mismatch",
-            model_ref=model_ref,
-            expected=expected_task.value,
-            actual=doc.get("task_type"),
-        )
-        return None
-    return doc
-
-
-async def get_embedding_client() -> Embeddings:
-    """Build the embedding client from ``settings.KB_EMBEDDING_MODEL_ID``.
-
-    Required for vector KBs. Raises ValueError if unconfigured or
-    misconfigured so callers fail loudly rather than silently producing
-    broken indexes.
-    """
-    model_ref = settings.KB_EMBEDDING_MODEL_ID
-    doc = await _resolve_model_doc(model_ref, ModelTaskType.EMBEDDING)
-    if doc is None:
+    base_url = settings.KB_EMBEDDING_BASE_URL
+    model = settings.KB_EMBEDDING_MODEL
+    api_key = settings.KB_EMBEDDING_API_KEY
+    if not (base_url and model and api_key):
         raise ValueError(
-            "KB_EMBEDDING_MODEL_ID 未配置或指向的模型不是 embedding 类型 "
-            "(需在 Model 表配置一个 task_type=embedding 的模型)"
+            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL / KB_EMBEDDING_API_KEY "
+            "未完整配置 — vector 知识库不可用（请在 .env 中填入 embedding 模型信息）"
         )
     from langchain_openai import OpenAIEmbeddings
 
-    logger.debug("embedding_client_built", model=doc["model_id"])
-    return OpenAIEmbeddings(
-        model=doc["model_id"],
-        base_url=doc["base_url"],
-        api_key=doc["api_key"],
-    )
+    logger.debug("embedding_client_built", model=model)
+    return OpenAIEmbeddings(model=model, base_url=base_url, api_key=api_key)
 
 
-async def get_reranker() -> RerankerClient | None:
-    """Build the reranker client from ``settings.KB_RERANKER_MODEL_ID``.
+def get_reranker() -> RerankerClient | None:
+    """Build the reranker client from ``KB_RERANKER_*`` env vars.
 
     Optional. Returns None when unconfigured so the retrieval pipeline can
-    degrade gracefully (skip rerank). Also returns None (with a warning) if
-    misconfigured, rather than raising — rerank is a quality optimization,
-    not a correctness requirement.
+    degrade gracefully (skip rerank).
     """
-    model_ref = settings.KB_RERANKER_MODEL_ID
-    if not model_ref:
+    base_url = settings.KB_RERANKER_BASE_URL
+    model = settings.KB_RERANKER_MODEL
+    api_key = settings.KB_RERANKER_API_KEY
+    if not (base_url and model and api_key):
         return None
-    doc = await _resolve_model_doc(model_ref, ModelTaskType.RERANK)
-    if doc is None:
-        logger.warning("reranker_unavailable_degrading", model_ref=model_ref)
-        return None
-    logger.debug("reranker_client_built", model=doc["model_id"])
-    return RerankerClient(
-        base_url=doc["base_url"],
-        model_id=doc["model_id"],
-        api_key=doc["api_key"],
-    )
+    logger.debug("reranker_client_built", model=model)
+    return RerankerClient(base_url=base_url, model=model, api_key=api_key)
 
 
 def validate_vector_model_config() -> tuple[bool, str]:
     """Startup-time validation of vector model config.
 
     Returns ``(ok, message)``. ``ok`` is False only when embedding (required)
-    is missing; reranker (optional) missing is reported but ok=True.
+    is missing; reranker (optional) missing is fine (ok=True).
 
     Called from lifespan startup — logs a warning instead of raising so the
     app still boots (lets admins configure the model after first deploy).
     """
-    emb = settings.KB_EMBEDDING_MODEL_ID
-    if not emb or not emb.startswith("model_"):
+    if not (
+        settings.KB_EMBEDDING_BASE_URL
+        and settings.KB_EMBEDDING_MODEL
+        and settings.KB_EMBEDDING_API_KEY
+    ):
         return False, (
-            "KB_EMBEDDING_MODEL_ID 未配置 — vector 知识库不可用 "
-            "(需在 Model 表配置 task_type=embedding 的模型并填入其 _id)"
-        )
-    rr = settings.KB_RERANKER_MODEL_ID
-    if rr and not rr.startswith("model_"):
-        # Not fatal — we just won't rerank.
-        logger.warning(
-            "reranker_config_invalid_ignored",
-            value=rr,
-            hint="应为 model_ 前缀的 Model _id；当前值将被忽略，检索降级跳过 rerank",
+            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL / KB_EMBEDDING_API_KEY "
+            "未完整配置 — vector 知识库不可用（请在 .env 中填入 embedding 模型信息）"
         )
     return True, ""
 

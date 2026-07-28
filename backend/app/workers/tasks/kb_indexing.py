@@ -68,7 +68,7 @@ async def _index_async(doc_id: str) -> dict[str, Any]:
 
         # 4. Embed chunks in batches (dense vectors).
         await KnowledgeDocumentService.update_status(doc_id, EMBEDDING, progress=10)
-        embeddings = await get_embedding_client()
+        embeddings = get_embedding_client()
         from app.core.config import settings
 
         batch = settings.KB_VECTOR_EMBED_BATCH
