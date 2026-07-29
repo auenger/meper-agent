@@ -5,9 +5,10 @@ vector KB's chunks, isolated by a ``kb_id`` payload field. Each point stores
 TWO named vectors:
 
 - ``dense``  — semantic embedding (dims from the embedding model, cosine).
-- ``sparse`` — BM25 keyword vector. With Qdrant >= 1.10 we pass the raw
-  text via ``models.Document`` and let Qdrant's server-side BM25 inference
-  build the sparse vector (no client-side tokenization needed).
+- ``sparse`` — BM25 keyword vector, generated **client-side** by
+  :mod:`sparse_vector` (jieba tokenization + BM25-style weighting). Self-hosted
+  Qdrant lacks the server-side sparse-inference service (a Cloud feature), so
+  we pre-compute sparse vectors and store them alongside the dense ones.
 
 Hybrid retrieval uses ``query_points`` with two prefetches (dense + sparse)
 fused by RRF, all in one round-trip.
@@ -18,11 +19,14 @@ vector config on first use.
 """
 from __future__ import annotations
 
+import uuid
+
 from loguru import logger
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.http import models as qmodels
 
 from app.core.config import settings
+from app.engine.kb.vector import sparse_vector
 
 # ── client singleton ────────────────────────────────────────────────────
 
@@ -131,15 +135,16 @@ async def add_chunks(
         points: list[qmodels.PointStruct] = []
         for i, ch in enumerate(batch):
             global_idx = start + i
+            # Client-side BM25 sparse vector (self-hosted Qdrant has no
+            # server-side inference service, so we pre-compute it).
+            sparse = sparse_vector.encode(ch["text"])
+            vector_field: dict = {"dense": dense_vectors[start + i]}
+            if sparse is not None:
+                vector_field["sparse"] = sparse
             points.append(
                 qmodels.PointStruct(
                     id=_point_id(kb_id, doc_id, global_idx),
-                    vector={
-                        "dense": dense_vectors[start + i],
-                        # Pass the raw text as a Document so Qdrant's BM25
-                        # inference builds the sparse vector server-side.
-                        "sparse": qmodels.Document(text=ch["text"]),
-                    },
+                    vector=vector_field,
                     payload={
                         "kb_id": kb_id,
                         "doc_id": doc_id,
@@ -182,17 +187,23 @@ async def hybrid_search(
         must=[qmodels.FieldCondition(key="kb_id", match=qmodels.MatchValue(value=kb_id))]
     )
 
+    # Client-side BM25 sparse vector for the query (same encoder as indexing).
+    sparse_query = sparse_vector.encode(query)
+
+    prefetch: list[qmodels.Prefetch] = [
+        # Dense (semantic) recall.
+        qmodels.Prefetch(query=dense_vector, using="dense", limit=k, filter=flt),
+    ]
+    if sparse_query is not None:
+        # Sparse (BM25 keyword) recall — fused with dense via RRF.
+        prefetch.append(
+            qmodels.Prefetch(query=sparse_query, using="sparse", limit=k, filter=flt)
+        )
+
     result = await client.query_points(
         collection_name=settings.KB_QDRANT_COLLECTION,
-        prefetch=[
-            # Dense (semantic) recall.
-            qmodels.Prefetch(query=dense_vector, using="dense", limit=k, filter=flt),
-            # Sparse (BM25 keyword) recall — Qdrant tokenizes the text server-side.
-            qmodels.Prefetch(
-                query=qmodels.Document(text=query), using="sparse", limit=k, filter=flt
-            ),
-        ],
-        # RRF fusion of the two recall sets.
+        prefetch=prefetch,
+        # RRF fusion of the recall sets (1 or 2 depending on sparse availability).
         query=qmodels.FusionQuery(fusion=qmodels.Fusion.RRF),
         limit=k,
         with_payload=True,
@@ -252,13 +263,19 @@ async def count_by_kb(kb_id: str) -> int:
 # ── helpers ─────────────────────────────────────────────────────────────
 
 
-def _point_id(kb_id: str, doc_id: str, chunk_index: int) -> str:
-    """Deterministic string id for a chunk point.
+# Fixed namespace for deterministic point-id generation (uuid5).
+_POINT_NS = uuid.uuid5(uuid.NAMESPACE_DNS, "agent-flow.kb.chunk")
 
-    Stable across re-indexing of the same doc (idempotent upsert overwrites
-    the same point rather than creating duplicates).
+
+def _point_id(kb_id: str, doc_id: str, chunk_index: int) -> str:
+    """Deterministic UUID for a chunk point.
+
+    Qdrant point ids must be unsigned ints or UUIDs (string ids like
+    "kb:doc:0" are rejected by the server). uuid5 gives a stable UUID per
+    (kb, doc, chunk) so re-indexing overwrites the same point (idempotent).
     """
-    return f"{kb_id}:{doc_id}:{chunk_index}"
+    name = f"{kb_id}:{doc_id}:{chunk_index}"
+    return str(uuid.uuid5(_POINT_NS, name))
 
 
 __all__ = [

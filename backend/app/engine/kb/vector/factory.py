@@ -100,8 +100,18 @@ def get_embedding_client() -> Embeddings:
     # client lib even for local providers (Ollama ignores it). "not-required"
     # keeps the real key out of logs.
     api_key = settings.KB_EMBEDDING_API_KEY or "not-required"
+    # check_embedding_ctx_length=False disables langchain's pre-tokenization
+    # (which encodes text to token-id arrays before sending). The OpenAI API
+    # accepts token ids, but Ollama's /v1/embeddings compatibility layer only
+    # accepts string input — without this, Ollama returns
+    # "invalid input type" (400).
     logger.debug("embedding_client_built", model=model, base_url=base_url)
-    return OpenAIEmbeddings(model=model, base_url=base_url, api_key=api_key)
+    return OpenAIEmbeddings(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        check_embedding_ctx_length=False,
+    )
 
 
 def get_reranker() -> RerankerClient | None:
