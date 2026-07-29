@@ -250,18 +250,6 @@ export const knowledgeApi = {
     return res.data
   },
 
-  /** PUT /knowledge-bases/{id}/documents/{docId} — replace source file + re-index */
-  async replaceDocument(kbId: string, docId: string, file: File): Promise<{ status: string }> {
-    const formData = new FormData()
-    formData.append('file', file)
-    const res = await apiClient.put<{ status: string }>(
-      `${BASE}/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}`,
-      formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } },
-    )
-    return res.data
-  },
-
   /** POST /knowledge-bases/{id}/search */
   async search(kbId: string, query: string, topK = 5): Promise<KbSearchResponse> {
     const res = await apiClient.post<KbSearchResponse>(

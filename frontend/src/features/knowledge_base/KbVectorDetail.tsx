@@ -15,7 +15,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Popconfirm, Modal, Spin, App as AntdApp } from 'antd'
 import {
   UploadOutlined, ReloadOutlined, DeleteOutlined, SearchOutlined, FileTextOutlined,
-  EditOutlined, EyeOutlined, LoadingOutlined as LoaderIcon, CheckCircleFilled, CloseCircleFilled,
+  EyeOutlined, LoadingOutlined as LoaderIcon, CheckCircleFilled, CloseCircleFilled,
 } from '@ant-design/icons'
 import {
   knowledgeApi, knowledgeKeys,
@@ -47,14 +47,12 @@ function DocRow({
   doc,
   onReindex,
   onDelete,
-  onReplace,
   onView,
   reindexing,
 }: {
   doc: KbDocument
   onReindex: () => void
   onDelete: () => void
-  onReplace: (file: File) => void
   onView: () => void
   reindexing: boolean
 }) {
@@ -97,24 +95,6 @@ function DocRow({
             >
               <ReloadOutlined spin={reindexing} style={{ fontSize: 13 }} />
             </button>
-          )}
-          {!IN_FLIGHT.includes(doc.parse_status) && (
-            <label
-              className="p-1 rounded text-blue-500 hover:text-blue-600 hover:bg-blue-50 transition cursor-pointer"
-              title="替换文件并重新索引"
-            >
-              <EditOutlined style={{ fontSize: 13 }} />
-              <input
-                type="file"
-                accept=".pdf,.docx,.md,.markdown,.txt"
-                className="hidden"
-                onChange={(e) => {
-                  const f = e.target.files?.[0]
-                  if (f) onReplace(f)
-                  e.currentTarget.value = ''
-                }}
-              />
-            </label>
           )}
           <Popconfirm
             title="删除文档" description={`删除 ${doc.name}？该文档的所有切片和向量将被清除。`}
@@ -194,16 +174,6 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
     onError: (e: unknown) => message.error(e instanceof Error ? e.message : '重试失败'),
   })
 
-  const replaceM = useMutation({
-    mutationFn: ({ docId, file }: { docId: string; file: File }) =>
-      knowledgeApi.replaceDocument(kb.id, docId, file),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kb.id) })
-      message.success('已替换文件，后台重新索引中…')
-    },
-    onError: (e: unknown) => message.error(e instanceof Error ? e.message : '替换失败'),
-  })
-
   const searchM = useMutation({
     mutationFn: () => knowledgeApi.search(kb.id, query, 5),
     onSuccess: (res) => setSearchResults(res.results),
@@ -254,7 +224,6 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
                   doc={doc}
                   onReindex={() => reindexM.mutate(doc.id)}
                   onDelete={() => deleteDocM.mutate(doc.id)}
-                  onReplace={(file) => replaceM.mutate({ docId: doc.id, file })}
                   onView={() => setViewDoc(doc)}
                   reindexing={reindexM.isPending}
                 />
