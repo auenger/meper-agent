@@ -12,8 +12,9 @@ this module only owns the LLM-side and compression-side nodes.
 from typing import TYPE_CHECKING, Any, cast
 
 import structlog
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
 from agent_flow_harness.engine.context import (
     compress_messages,
@@ -89,7 +90,18 @@ async def compress_node(
                 before=before,
                 after=len(current_messages),
             )
-        return {"messages": current_messages}
+            # Replace the whole message history rather than appending. The
+            # ``add_messages`` reducer is append-by-default; without
+            # ``RemoveMessage(REMOVE_ALL_MESSAGES)`` the trimmed history would
+            # pile up after the old one, and a summary SystemMessage produced
+            # by the strategy would land mid-list → non-consecutive system
+            # messages rejected by langchain-anthropic.
+            return {
+                "messages": [
+                    RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages,
+                ],
+            }
+        return {}
 
     # Fallback: built-in compress_messages
     model_name = extract_model_name(llm) if llm is not None else ""
@@ -105,7 +117,12 @@ async def compress_node(
             before=before,
             after=len(current_messages),
         )
-        return {"messages": current_messages}
+        # Same replace-not-append rationale as the strategy branch above.
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages,
+            ],
+        }
 
     # No compression needed — return empty patch (state unchanged).
     return {}
@@ -137,6 +154,14 @@ async def llm_node(
     # Middleware: before_llm (may rewrite messages).
     call_state: AgentState = cast("AgentState", {**state})
     call_state = await chain.run_before_llm(call_state)
+
+    # Defence-in-depth: guarantee all SystemMessages are contiguous at the
+    # front before hitting the model. langchain-anthropic rejects any
+    # message list whose system messages are split by non-system turns
+    # ("Received multiple non-consecutive system messages."). Compression,
+    # middleware, or future system-injection points could otherwise scatter
+    # them; normalise here as a final guarantee. Only reorders when needed.
+    call_state["messages"] = _system_messages_first(call_state["messages"])
 
     # LLM call.
     response: AIMessage = await llm_with_tools.ainvoke(call_state["messages"])
@@ -170,6 +195,27 @@ async def llm_node(
         }
 
     return {"messages": [response], "step_count": step_count}
+
+
+def _system_messages_first(messages: list[Any]) -> list[Any]:
+    """Move every SystemMessage to the front, keeping relative order.
+
+    Returns the original list unchanged when the system messages are already
+    leading and contiguous (the common case), avoiding a needless copy on the
+    hot path.
+    """
+    from langchain_core.messages import SystemMessage
+
+    from agent_flow_harness.context_engineering.split import split_system_history
+
+    system_msgs, history = split_system_history(messages)
+    n = len(system_msgs)
+    if n == 0:
+        return messages
+    # Already leading and contiguous? Skip the rebuild.
+    if n <= len(messages) and all(isinstance(m, SystemMessage) for m in messages[:n]):
+        return messages
+    return [*system_msgs, *history]
 
 
 __all__ = ["compress_node", "llm_node"]

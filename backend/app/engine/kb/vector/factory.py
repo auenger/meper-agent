@@ -82,20 +82,25 @@ class RerankerClient:
 def get_embedding_client() -> Embeddings:
     """Build the embedding client from ``KB_EMBEDDING_*`` env vars.
 
-    Required for vector KBs. Raises ValueError if unconfigured so callers
-    fail loudly rather than silently producing broken indexes.
+    Required for vector KBs. ``base_url`` and ``model`` are mandatory;
+    ``api_key`` is optional (local providers like Ollama / LM Studio don't
+    require one). Raises ValueError if unconfigured so callers fail loudly
+    rather than silently producing broken indexes.
     """
     base_url = settings.KB_EMBEDDING_BASE_URL
     model = settings.KB_EMBEDDING_MODEL
-    api_key = settings.KB_EMBEDDING_API_KEY
-    if not (base_url and model and api_key):
+    if not (base_url and model):
         raise ValueError(
-            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL / KB_EMBEDDING_API_KEY "
-            "未完整配置 — vector 知识库不可用（请在 .env 中填入 embedding 模型信息）"
+            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL 未完整配置 — "
+            "vector 知识库不可用（请在 .env 中填入 embedding 模型信息）"
         )
     from langchain_openai import OpenAIEmbeddings
 
-    logger.debug("embedding_client_built", model=model)
+    # api_key defaults to a dummy value when unset — required by the OpenAI
+    # client lib even for local providers (Ollama ignores it). "not-required"
+    # keeps the real key out of logs.
+    api_key = settings.KB_EMBEDDING_API_KEY or "not-required"
+    logger.debug("embedding_client_built", model=model, base_url=base_url)
     return OpenAIEmbeddings(model=model, base_url=base_url, api_key=api_key)
 
 
@@ -103,14 +108,15 @@ def get_reranker() -> RerankerClient | None:
     """Build the reranker client from ``KB_RERANKER_*`` env vars.
 
     Optional. Returns None when unconfigured so the retrieval pipeline can
-    degrade gracefully (skip rerank).
+    degrade gracefully (skip rerank). ``api_key`` is optional (local
+    providers may not need one).
     """
     base_url = settings.KB_RERANKER_BASE_URL
     model = settings.KB_RERANKER_MODEL
-    api_key = settings.KB_RERANKER_API_KEY
-    if not (base_url and model and api_key):
+    if not (base_url and model):
         return None
-    logger.debug("reranker_client_built", model=model)
+    api_key = settings.KB_RERANKER_API_KEY or "not-required"
+    logger.debug("reranker_client_built", model=model, base_url=base_url)
     return RerankerClient(base_url=base_url, model=model, api_key=api_key)
 
 
@@ -123,14 +129,10 @@ def validate_vector_model_config() -> tuple[bool, str]:
     Called from lifespan startup — logs a warning instead of raising so the
     app still boots (lets admins configure the model after first deploy).
     """
-    if not (
-        settings.KB_EMBEDDING_BASE_URL
-        and settings.KB_EMBEDDING_MODEL
-        and settings.KB_EMBEDDING_API_KEY
-    ):
+    if not (settings.KB_EMBEDDING_BASE_URL and settings.KB_EMBEDDING_MODEL):
         return False, (
-            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL / KB_EMBEDDING_API_KEY "
-            "未完整配置 — vector 知识库不可用（请在 .env 中填入 embedding 模型信息）"
+            "KB_EMBEDDING_BASE_URL / KB_EMBEDDING_MODEL 未完整配置 — "
+            "vector 知识库不可用（api_key 对本地 Ollama 等可留空）"
         )
     return True, ""
 

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from agent_flow_harness.context_engineering.base import ContextStrategy
 from agent_flow_harness.context_engineering.pairing import ensure_tool_pairing
+from agent_flow_harness.context_engineering.split import split_system_history
 from agent_flow_harness.context_engineering.token_estimator import count_tokens
 
 if TYPE_CHECKING:
@@ -27,10 +28,7 @@ class SlidingWindowStrategy(ContextStrategy):
     async def select(
         self, messages: "list[BaseMessage]", *, max_tokens: int
     ) -> "list[BaseMessage]":
-        from langchain_core.messages import SystemMessage
-
-        system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
-        other = [m for m in messages if not isinstance(m, SystemMessage)]
+        system_msgs, other = split_system_history(messages)
 
         # 不超限且条数不多时直接返回（只做配对清理）
         if count_tokens(system_msgs + other) <= max_tokens and len(other) <= self._window:

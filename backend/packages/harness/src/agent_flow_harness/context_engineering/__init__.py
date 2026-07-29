@@ -10,6 +10,7 @@ react_node 在 LLM 调用前调 strategy.select()（config 注入，可选，向
 from agent_flow_harness.context_engineering.base import ContextStrategy
 from agent_flow_harness.context_engineering.hybrid import HybridStrategy
 from agent_flow_harness.context_engineering.sliding_window import SlidingWindowStrategy
+from agent_flow_harness.context_engineering.split import split_system_history
 from agent_flow_harness.context_engineering.summarization import SummarizationStrategy
 from agent_flow_harness.context_engineering.token_estimator import count_tokens
 
@@ -19,4 +20,5 @@ __all__ = [
     "SlidingWindowStrategy",
     "SummarizationStrategy",
     "count_tokens",
+    "split_system_history",
 ]

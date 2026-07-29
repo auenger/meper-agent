@@ -169,40 +169,81 @@ def compress_messages(
     """Compress conversation history when approaching context window limits.
 
     Strategy:
-    1. Keep the most recent ``keep_last`` messages verbatim.
-    2. Compress older messages into a single ``SystemMessage`` summary.
-    3. If the compressed result is still too large, recurse with a
+    1. **System prompt is never compressed** — it is the agent's fixed
+       contract. All SystemMessages are collected and kept verbatim,
+       continuous, at the very front of the result. Only the non-system
+       history is eligible for summarisation. (Without this separation the
+       summary SystemMessage gets appended by the ``add_messages`` reducer
+       after the leading system, producing non-consecutive system messages
+       that langchain-anthropic rejects.)
+    2. Keep the most recent ``keep_last`` history messages verbatim.
+    3. Summarise older history messages into a single ``SystemMessage``
+       (``id="summary"`` for idempotent reducer updates).
+    4. Result layout: ``[original systems..., summary, *recent]`` — all
+       systems stay contiguous at the front.
+    5. If the compressed result is still too large, recurse with a
        smaller ``keep_last``.
 
     Args:
         messages: Full message list to compress.
         model: Model name for context window lookup.
-        keep_last: Number of most recent messages to preserve verbatim.
+        keep_last: Number of most recent *history* messages to preserve verbatim.
         _depth: Internal recursion depth counter.
         context_window: Optional override for context window size.
 
     Returns:
-        Compressed (usually shorter) message list.
+        Compressed (usually shorter) message list with all SystemMessages
+        kept continuous at the front.
     """
     if not should_compress(messages, model, context_window=context_window):
         return list(messages)
 
-    if len(messages) <= keep_last:
+    # Separate the immutable system contract from the compressible history.
+    from agent_flow_harness.context_engineering.split import split_system_history
+
+    system_msgs, history = split_system_history(messages)
+
+    # ``split_system_history`` collects *every* SystemMessage, including any
+    # summary produced by a previous recursion pass (id="summary"). The
+    # summary is NOT part of the immutable contract — it must be folded back
+    # into the compressible history so the next pass re-summarises it into a
+    # single fresh summary instead of accumulating duplicates.
+    prior_summary = [m for m in system_msgs if getattr(m, "id", "") == "summary"]
+    system_msgs = [m for m in system_msgs if getattr(m, "id", "") != "summary"]
+    history = [*prior_summary, *history]
+
+    if len(history) <= keep_last:
+        # Not enough history to summarise — return messages unchanged.
         return list(messages)
 
     if _depth >= _MAX_COMPRESS_DEPTH:
         logger.warning("context_max_depth_reached", depth=_depth)
-        # Force-trim: keep only the most recent messages
-        return list(messages[-keep_last:])
+        # Force-trim: keep the immutable systems, a summary of everything
+        # we are about to drop, and only the most recent history messages.
+        # (Returning just systems + tail would discard all earlier context.)
+        dropped = history[:-keep_last] if len(history) > keep_last else []
+        final_summary = (
+            SystemMessage(
+                content=f"[对话历史摘要]\n{_build_summary(dropped)}", id="summary",
+            )
+            if dropped
+            else None
+        )
+        tail = [
+            *([final_summary] if final_summary is not None else []),
+            *history[-keep_last:],
+        ]
+        return [*system_msgs, *tail]
 
-    # Split: older messages to compress, recent messages to keep
-    to_compress = messages[:-keep_last]
-    recent = messages[-keep_last:]
+    # Split history: older messages to compress, recent messages to keep.
+    to_compress = history[:-keep_last]
+    recent = history[-keep_last:]
 
-    # Build a summary from the older messages
+    # Build a summary from the older history messages (systems excluded).
     summary = _build_summary(to_compress)
     compressed: list[BaseMessage] = [
-        SystemMessage(content=f"[对话历史摘要]\n{summary}"),
+        *system_msgs,
+        SystemMessage(content=f"[对话历史摘要]\n{summary}", id="summary"),
         *recent,
     ]
 

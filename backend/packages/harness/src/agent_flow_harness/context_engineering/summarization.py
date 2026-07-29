@@ -45,24 +45,35 @@ class SummarizationStrategy(ContextStrategy):
     ) -> "list[BaseMessage]":
         from langchain_core.messages import HumanMessage, SystemMessage
 
-        # 不超限或不值得总结时直接返回
-        if count_tokens(messages) <= max_tokens or len(messages) <= keep_recent:
-            return ensure_tool_pairing(messages)
+        from agent_flow_harness.context_engineering.split import split_system_history
 
-        # 分割：前面要总结的 + 最近保留的
-        to_summarize = messages[:-keep_recent] if keep_recent > 0 else messages
-        recent = messages[-keep_recent:] if keep_recent > 0 else []
+        # System prompt is the agent's fixed contract — never summarise it.
+        # Split it out so only the compressible history is eligible, and so
+        # the result keeps all SystemMessages contiguous at the front (else
+        # langchain-anthropic rejects the list with
+        # "Received multiple non-consecutive system messages.").
+        system_msgs, history = split_system_history(messages)
+
+        # 不超限或不值得总结时直接返回（只做配对清理）
+        if count_tokens(messages) <= max_tokens or len(history) <= keep_recent:
+            return ensure_tool_pairing(list(messages))
+
+        # 分割：前面要总结的 + 最近保留的（均不含 system）
+        to_summarize = history[:-keep_recent] if keep_recent > 0 else history
+        recent = history[-keep_recent:] if keep_recent > 0 else []
 
         # 构建摘要 prompt（固定 prompt，防注入）
-        history = "\n".join(
+        history_text = "\n".join(
             f"[{self._role_label(m)}] {str(m.content)[:200]}" for m in to_summarize
         )
-        prompt = HumanMessage(content=_SUMMARY_PROMPT.format(history=history))
+        prompt = HumanMessage(content=_SUMMARY_PROMPT.format(history=history_text))
         summary_resp = await self._llm.ainvoke([prompt])
         summary_text = str(summary_resp.content)[: self._summary_max * 4]
 
-        summary_msg = SystemMessage(content=f"[对话历史摘要]\n{summary_text}")
-        return ensure_tool_pairing([summary_msg] + recent)
+        # 固定 id 让 reducer 幂等更新（多轮压缩替换而非重复 append）。
+        summary_msg = SystemMessage(content=f"[对话历史摘要]\n{summary_text}", id="summary")
+        # 布局：原始 system 在最前，摘要 system 紧随（连续），再接 recent。
+        return ensure_tool_pairing([*system_msgs, summary_msg, *recent])
 
     @staticmethod
     def _role_label(m: "BaseMessage") -> str:
