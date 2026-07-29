@@ -127,6 +127,37 @@ class KnowledgeDocumentService:
         )
 
     @staticmethod
+    async def replace_file(
+        doc_id: str,
+        file_ref_id: str,
+        name: str,
+        file_type: str,
+        file_size: int,
+    ) -> None:
+        """Swap the underlying file of a document and reset its indexing state.
+
+        Used when a user replaces a document's source file: the old Qdrant
+        points are deleted by the caller, then this resets the record to
+        pending so the indexing task re-processes the new file.
+        """
+        await KnowledgeDocumentService._collection().update_one(
+            {"_id": doc_id},
+            {
+                "$set": {
+                    "file_ref_id": file_ref_id,
+                    "name": name,
+                    "file_type": file_type,
+                    "file_size": file_size,
+                    "parse_status": PENDING,
+                    "parse_progress": 0,
+                    "parse_error": "",
+                    "chunk_count": 0,
+                    "updated_at": utc_now().isoformat(),
+                }
+            },
+        )
+
+    @staticmethod
     async def delete(doc_id: str) -> bool:
         """Delete a document record (does NOT touch Qdrant — caller handles that)."""
         result = await KnowledgeDocumentService._collection().delete_one({"_id": doc_id})

@@ -432,6 +432,83 @@ async def reindex_document(
     return {"status": "dispatched", "doc_id": doc_id}
 
 
+@router.put(
+    "/{kb_id}/documents/{doc_id}",
+    summary="Replace a document's source file and re-index",
+    responses={
+        403: {"description": "Forbidden — knowledge:write required"},
+        404: {"description": "Knowledge base or document not found"},
+    },
+)
+async def replace_document(
+    kb_id: str,
+    doc_id: str,
+    file: UploadFile = File(..., description="替换的新文件（pdf/docx/md/txt）"),
+    user: UserResponse = Depends(require_permission("knowledge:write")),
+) -> dict:
+    """Replace a document's source file, then re-index from scratch.
+
+    The old Qdrant points are deleted and the new file is parsed → chunked →
+    embedded afresh. The doc_id is preserved so existing references stay valid.
+    """
+    from app.core.config import settings
+    from app.core.errors import NotFoundError, ValidationError
+    from app.engine.kb.vector import store as kb_vector_store
+    from app.models.file_library import FileConsumerKind
+    from app.services.file_service import FileService
+    from app.services.file_storage import LocalFileStorage
+    from app.services.kb_service import _dispatch_index_task, _guess_mime
+    from app.services.knowledge_document_service import KnowledgeDocumentService
+
+    kb_doc = await _require_vector_kb(kb_id)
+    doc = await KnowledgeDocumentService.get(doc_id)
+    if doc is None or doc.knowledge_base_id != kb_id:
+        raise NotFoundError(code="DOC_NOT_FOUND", message=f"文档 {doc_id} 不存在")
+
+    filename = (file.filename or "").replace("\\", "/").split("/")[-1] or file.filename or ""
+    if not filename:
+        raise ValidationError(code="KB_INVALID_FILE", message="文件名无效")
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    allowed = {t.strip().lstrip(".").lower() for t in settings.KB_VECTOR_ALLOWED_TYPES.split(",")}
+    if ext not in allowed:
+        raise ValidationError(
+            code="KB_INVALID_FILE",
+            message=f"不支持的文件类型 .{ext}（支持 pdf/docx/md/txt）",
+        )
+    raw = await file.read()
+    if len(raw) > settings.KB_VECTOR_MAX_FILE_SIZE:
+        raise ValidationError(
+            code="KB_INVALID_FILE",
+            message=f"文件过大（>{settings.KB_VECTOR_MAX_FILE_SIZE} bytes）",
+        )
+
+    owner = kb_doc.get("owner_user_id") or user.id
+    file_service = FileService(storage=LocalFileStorage())
+
+    # Store the new file (new FileRef; old one is orphaned but harmless).
+    fref = await file_service.create(
+        data=raw,
+        filename=filename,
+        mime_type=_guess_mime(ext),
+        owner_user_id=owner,
+        origin_kind=FileConsumerKind.KNOWLEDGE_BASE,
+        origin_id=kb_id,
+    )
+    await file_service.add_usage(fref.id, FileConsumerKind.KNOWLEDGE_BASE, kb_id)
+
+    # Point the document record at the new file + reset indexing state.
+    await KnowledgeDocumentService.replace_file(
+        doc_id, fref.id, filename, ext, len(raw)
+    )
+
+    # Purge the old chunks from Qdrant before re-indexing.
+    with contextlib.suppress(Exception):
+        await kb_vector_store.delete_by_doc(doc_id)
+
+    _dispatch_index_task(doc_id)
+    return {"status": "dispatched", "doc_id": doc_id, "name": filename}
+
+
 @router.post(
     "/{kb_id}/search",
     response_model=KbSearchResponse,
