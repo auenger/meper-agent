@@ -109,6 +109,13 @@ export interface KbDocumentListResponse {
   page_size: number
 }
 
+export interface KbChunkItem {
+  chunk_index: number
+  text: string
+  source_file: string
+  page: number | null
+}
+
 export interface KbSearchResultItem {
   text: string
   score: number
@@ -260,6 +267,14 @@ export const knowledgeApi = {
     const res = await apiClient.post<KbSearchResponse>(
       `${BASE}/${encodeURIComponent(kbId)}/search`,
       { query, top_k: topK },
+    )
+    return res.data
+  },
+
+  /** GET /knowledge-bases/{id}/documents/{docId}/chunks */
+  async getDocumentChunks(kbId: string, docId: string): Promise<KbChunkItem[]> {
+    const res = await apiClient.get<KbChunkItem[]>(
+      `${BASE}/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}/chunks`,
     )
     return res.data
   },

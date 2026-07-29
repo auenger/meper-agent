@@ -225,6 +225,48 @@ async def hybrid_search(
     return out
 
 
+# ── retrieval (by doc — view parsed chunks) ─────────────────────────────
+
+
+async def get_chunks_by_doc(doc_id: str, limit: int = 500) -> list[dict]:
+    """Fetch all parsed chunks of a document (for read-only viewing).
+
+    Scrolls the collection filtered by ``doc_id``, returning each chunk's
+    text + metadata sorted by chunk_index. Used by the document-content
+    viewer in the UI.
+    """
+    client = get_qdrant_client()
+    flt = qmodels.Filter(
+        must=[qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=doc_id))]
+    )
+    chunks: list[dict] = []
+    offset: int | None = None
+    # Qdrant scroll paginates via offset; loop until no more points.
+    while True:
+        batch, offset = await client.scroll(
+            collection_name=settings.KB_QDRANT_COLLECTION,
+            scroll_filter=flt,
+            limit=min(100, limit - len(chunks)) if limit else 100,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for p in batch:
+            pl = p.payload or {}
+            chunks.append(
+                {
+                    "chunk_index": pl.get("chunk_index", 0),
+                    "text": pl.get("text", ""),
+                    "source_file": pl.get("source_file", ""),
+                    "page": pl.get("page"),
+                }
+            )
+        if not offset or len(chunks) >= limit:
+            break
+    chunks.sort(key=lambda c: c["chunk_index"])
+    return chunks
+
+
 # ── deletion ────────────────────────────────────────────────────────────
 
 
@@ -284,6 +326,7 @@ __all__ = [
     "get_dense_dim",
     "add_chunks",
     "hybrid_search",
+    "get_chunks_by_doc",
     "delete_by_doc",
     "delete_by_kb",
     "count_by_kb",

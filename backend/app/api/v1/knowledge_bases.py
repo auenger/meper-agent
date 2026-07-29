@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from app.core.security import get_current_user, require_permission
 from app.schemas.knowledge_base import (
+    KbChunkItem,
     KbDocumentItem,
     KbDocumentListResponse,
     KbFileResponse,
@@ -507,6 +508,33 @@ async def replace_document(
 
     _dispatch_index_task(doc_id)
     return {"status": "dispatched", "doc_id": doc_id, "name": filename}
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/chunks",
+    response_model=list[KbChunkItem],
+    summary="View a document's parsed chunks (read-only)",
+    responses={
+        403: {"description": "Forbidden — knowledge:read required"},
+        404: {"description": "Knowledge base or document not found"},
+    },
+)
+async def get_document_chunks(
+    kb_id: str,
+    doc_id: str,
+    _: UserResponse = Depends(require_permission("knowledge:read")),
+) -> list[KbChunkItem]:
+    """Fetch the parsed chunk texts of a document (for read-only viewing)."""
+    from app.core.errors import NotFoundError
+    from app.engine.kb.vector import store as kb_vector_store
+    from app.services.knowledge_document_service import KnowledgeDocumentService
+
+    await _require_vector_kb(kb_id)
+    doc = await KnowledgeDocumentService.get(doc_id)
+    if doc is None or doc.knowledge_base_id != kb_id:
+        raise NotFoundError(code="DOC_NOT_FOUND", message=f"文档 {doc_id} 不存在")
+    chunks = await kb_vector_store.get_chunks_by_doc(doc_id)
+    return [KbChunkItem(**c) for c in chunks]
 
 
 @router.post(

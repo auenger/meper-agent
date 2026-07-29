@@ -149,3 +149,12 @@ class KbSearchResponse(BaseModel):
 
     query: str
     results: list[KbSearchResultItem]
+
+
+class KbChunkItem(BaseModel):
+    """One parsed chunk of a document (read-only viewer)."""
+
+    chunk_index: int
+    text: str
+    source_file: str = ""
+    page: int | None = None
