@@ -12,8 +12,10 @@ import {
   type CoarsePermKey,
 } from '../services/adapters';
 import { Select } from './ui';
+import { confirmDialog } from './ui/confirm';
 import type { NormalizedApiError } from '../lib/api-client';
 import type { User } from '../types';
+import type { Role } from '../services/types';
 
 const TOGGLE_PERMS: { key: CoarsePermKey; label: string; color: string }[] = [
   { key: 'agent:write', label: 'Agent管理', color: 'border-indigo-500/30 text-indigo-400' },
@@ -113,6 +115,27 @@ export function UserManagement() {
     },
     onError: (e: unknown) => setError(e instanceof Error ? e.message : '创建角色失败'),
   });
+
+  const deleteRoleM = useMutation({
+    mutationFn: (id: string) => roleApi.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['roles'] });
+      setNotice('角色已删除');
+      setError(null);
+    },
+    onError: (e: unknown) => setError(e instanceof Error ? e.message : '删除角色失败'),
+  });
+
+  const handleDeleteRole = async (role: Role) => {
+    const ok = await confirmDialog({
+      title: `删除角色「${role.display_name}」？`,
+      description: '删除后不可恢复。若该角色已分配给用户，需先将这些用户改到其他角色。',
+      okText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    deleteRoleM.mutate(role.id);
+  };
 
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
@@ -368,7 +391,17 @@ export function UserManagement() {
               <div key={r.id} className="p-3 bg-[#121214]/60 rounded-lg border border-[#27272a]">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#fafafa]">{r.display_name}</span>
-                  <span className="text-[9px] text-[#71717a] font-mono">{r.role_type}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[9px] text-[#71717a] font-mono">{r.role_type}</span>
+                    {r.role_type === 'custom' && (
+                      <button
+                        onClick={() => handleDeleteRole(r)}
+                        className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                      >
+                        删除
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <p className="text-[10px] text-[#a1a1aa] mt-1 leading-relaxed">
                   {r.description || '—'}

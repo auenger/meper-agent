@@ -193,15 +193,22 @@ export function Select({
       setOpen(false)
     }
     const close = () => setOpen(false)
-    document.addEventListener('mousedown', onMouseDown)
     // Close on scroll/resize: we position the panel once on open rather than
     // tracking the trigger, so any layout shift collapses it instead of
-    // leaving a detached panel.
-    window.addEventListener('scroll', close, true)
+    // leaving a detached panel. But ignore scrolls that originate *inside*
+    // the panel — that's the option list scrolling (user wheel, or
+    // scrollIntoView moving the highlighted option into view). Closing on
+    // those would make long option lists flicker and become unselectable.
+    const onScroll = (e: Event) => {
+      if (panelRef.current?.contains(e.target as Node)) return
+      setOpen(false)
+    }
+    document.addEventListener('mousedown', onMouseDown)
+    window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', close)
     return () => {
       document.removeEventListener('mousedown', onMouseDown)
-      window.removeEventListener('scroll', close, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', close)
     }
   }, [open])

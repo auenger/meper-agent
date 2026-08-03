@@ -601,7 +601,16 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         if (pending) pendingInterruptRef.current = { toolMsgId: pending.id };
       })
       .catch((e) => {
-        if (!cancelled) setStreamError(`加载会话失败：${(e as Error).message}`);
+        if (cancelled) return;
+        // 会话已被删除（404 / “不存在”）：静默回到空状态，不弹报错横幅。
+        const status = (e as { response?: { status?: number } })?.response?.status;
+        const msg = (e as Error).message ?? '';
+        if (status === 404 || /不存在|not found/i.test(msg)) {
+          setActiveSessionId(null);
+          setLiveMessages([]);
+          return;
+        }
+        setStreamError(`加载会话失败：${msg}`);
       });
     return () => {
       cancelled = true;
@@ -622,7 +631,15 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
     e.stopPropagation();
     try {
       await sessionApi.remove(id);
-      if (activeSessionId === id) setActiveSessionId(null);
+      // 删除当前会话时，主动选中相邻的下一个仍存在的会话；一个都不剩则
+      // 置空进入空状态引导。不依赖自动选中 effect——它可能从尚未刷新的
+      // 列表缓存里挑回刚删的那个会话，触发 getDetail 404 报错。
+      if (activeSessionId === id) {
+        const idx = sessions.findIndex((s) => s._id === id);
+        const remaining = sessions.filter((s) => s._id !== id);
+        const next = remaining[idx] ?? remaining[idx - 1] ?? null;
+        setActiveSessionId(next?._id ?? null);
+      }
       refreshSessions();
     } catch (err) {
       setStreamError(`删除会话失败：${(err as Error).message}`);
