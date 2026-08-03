@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # Each REACT iteration (LLM call + tool execution) consumes ~2 supersteps,
     # so 75 ≈ 37 tool-call rounds. Raise this for agents that legitimately
     # need many steps (multi-file exploration, deep research, etc.).
-    AGENT_RECURSION_LIMIT: int = 150
+    AGENT_RECURSION_LIMIT: int = 200
 
     # Context compression (compress_node).
     # Protected turns: the most recent N user-assistant rounds are never
