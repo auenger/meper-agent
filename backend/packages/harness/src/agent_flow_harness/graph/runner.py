@@ -71,6 +71,10 @@ def build_config(
     middlewares: Any | None = None,
     recursion_limit: int = 75,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+    tool_output_reference_formatter: Callable[[str], str] | None = None,
+    protected_turns: int | None = None,
+    compression_threshold: float | None = None,
+    hard_limit_ratio: float | None = None,
 ) -> dict[str, Any]:
     """Build a ``RunnableConfig`` for the agent graph.
 
@@ -101,6 +105,10 @@ def build_config(
             it at the top of every REACT iteration and calls ``interrupt()``
             to gracefully suspend. On resume (``Command(resume=...)``) the loop
             continues with full context continuity.
+        tool_output_reference_formatter: Optional callable that turns a
+            ``tool_call_id`` into a reference note appended to truncated tool
+            outputs (so the agent knows how to recall the full original).
+            Application-supplied — harness never hardcodes the recall mechanism.
 
     Returns:
         A ``RunnableConfig`` dict ready to pass to ``graph.ainvoke``.
@@ -125,5 +133,15 @@ def build_config(
         configurable["workspace"] = workspace
     if cancel_checker is not None:
         configurable["cancel_checker"] = cancel_checker
+    if tool_output_reference_formatter is not None:
+        configurable["tool_output_reference_formatter"] = (
+            tool_output_reference_formatter
+        )
+    if protected_turns is not None:
+        configurable["protected_turns"] = protected_turns
+    if compression_threshold is not None:
+        configurable["compression_threshold"] = compression_threshold
+    if hard_limit_ratio is not None:
+        configurable["hard_limit_ratio"] = hard_limit_ratio
 
     return {"configurable": configurable, "recursion_limit": recursion_limit}

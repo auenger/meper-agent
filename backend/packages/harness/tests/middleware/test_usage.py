@@ -112,6 +112,37 @@ async def test_writes_total_tokens_to_state():
 
 
 @pytest.mark.asyncio
+async def test_seeds_from_state_total_tokens():
+    """A pre-existing state["total_tokens"] (carried over from a prior
+    request in the same session) must be adopted as the baseline on the
+    first after_llm, so the middleware does not overwrite it with 0.
+    """
+    mw = UsageMiddleware()
+    state: dict = {"total_tokens": 5000}
+    await mw.before_llm(state)
+    await mw.after_llm(state, _ai_with_openai_usage(prompt=100, completion=20))
+    # 5000 baseline + 120 this step
+    assert state["total_tokens"] == 5120
+    assert mw.summary["total_tokens"] == 5120
+
+
+@pytest.mark.asyncio
+async def test_seeds_only_once_then_accumulates():
+    """The baseline is adopted once; subsequent calls keep accumulating on
+    top of it rather than re-seeding.
+    """
+    mw = UsageMiddleware()
+    state: dict = {"total_tokens": 5000}
+    await mw.before_llm(state)
+    await mw.after_llm(state, _ai_with_openai_usage(prompt=100, completion=20))  # +120
+    state["total_tokens"] = 5120  # as the runner would merge
+    await mw.before_llm(state)
+    await mw.after_llm(state, _ai_with_openai_usage(prompt=50, completion=10))  # +60
+    assert state["total_tokens"] == 5180  # 5000 + 120 + 60, not re-seeded
+    assert mw.summary["total_tokens"] == 5180
+
+
+@pytest.mark.asyncio
 async def test_tool_duration_tracked():
     mw = UsageMiddleware()
     await mw.before_tool({}, {"id": "tc1", "name": "bash"})

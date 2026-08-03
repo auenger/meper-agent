@@ -33,12 +33,18 @@ router = APIRouter(
 
 
 def _doc_to_response(doc: dict) -> AgentResponse:
-    """Convert a raw MongoDB document to AgentResponse."""
+    """Convert a raw MongoDB document to AgentResponse.
+
+    custom_tools 直接返回存储原文(敏感字段为 ``enc:xxx`` 加密形态)。
+    前端负责脱敏展示(``****``),并在用户未改动时原样回传 ``enc:xxx``,
+    后端据此识别"未更改"(enc: 前缀不重复加密) vs "新值"(加密)。
+    """
     llm_config = doc.get("llm_config") or {}
     default_model = doc.get("default_model") or llm_config.get("default_model", "")
     max_retry = doc.get("max_retry") if "max_retry" in doc else llm_config.get("max_retry", 3)
     max_tokens = doc.get("max_tokens", 0)
 
+    custom_tools_raw = doc.get("custom_tools") or []
     return AgentResponse(
         id=doc["_id"],
         name=doc["name"],
@@ -50,7 +56,11 @@ def _doc_to_response(doc: dict) -> AgentResponse:
         mcp_connection_ids=doc.get("mcp_connection_ids", []),
         builtin_config=doc.get("builtin_config", []),
         workflow_ids=doc.get("workflow_ids", []),
-        custom_tool_ids=[b.get("tool_id", "") for b in (doc.get("custom_tools") or []) if b.get("tool_id")],
+        custom_tool_ids=[b.get("tool_id", "") for b in custom_tools_raw if b.get("tool_id")],
+        custom_tools=[
+            {"tool_id": b.get("tool_id", ""), "user_args": b.get("user_args") or {}}
+            for b in custom_tools_raw
+        ],
         knowledge_base_ids=doc.get("knowledge_base_ids", []),
         default_model=default_model,
         max_retry=max_retry,
@@ -158,6 +168,7 @@ async def update_agent(
         builtin_config=body.builtin_config,
         workflow_ids=body.workflow_ids,
         custom_tool_ids=body.custom_tool_ids,
+        custom_tools=[b.model_dump() for b in body.custom_tools],
         knowledge_base_ids=body.knowledge_base_ids,
         default_model=body.default_model,
         max_retry=body.max_retry,

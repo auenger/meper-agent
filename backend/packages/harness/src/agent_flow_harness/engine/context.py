@@ -83,6 +83,41 @@ def estimate_messages_tokens(
     return sum(estimate_message_tokens(m) for m in messages)
 
 
+def estimate_context_tokens(messages: Sequence[Any]) -> int:
+    """Estimate the current context size using the model's real token count.
+
+    Prefers the ``input_tokens`` recorded on the **last** AIMessage's
+    ``usage_metadata`` — this is the exact token count the model provider
+    computed for its last invocation (far more accurate than ``len//4``,
+    especially for Chinese text). Messages appended *after* that AIMessage
+    (new tool results / user input) are estimated with ``len//4``.
+
+    Falls back to full ``estimate_messages_tokens`` when there is no AIMessage
+    yet (first turn) or when ``usage_metadata`` is missing.
+    """
+    from langchain_core.messages import AIMessage
+
+    # Find the last AIMessage with usage_metadata.
+    last_ai_idx = -1
+    base_input_tokens = 0
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        if isinstance(m, AIMessage):
+            um = getattr(m, "usage_metadata", None)
+            if isinstance(um, dict) and um.get("input_tokens"):
+                last_ai_idx = i
+                base_input_tokens = int(um["input_tokens"])
+            break
+
+    if last_ai_idx < 0:
+        # No AIMessage with usage → full estimate.
+        return estimate_messages_tokens(messages)
+
+    # Tokens for messages after the last AIMessage (new additions).
+    new_tokens = sum(estimate_message_tokens(m) for m in messages[last_ai_idx + 1:])
+    return base_input_tokens + new_tokens
+
+
 # ---------------------------------------------------------------------------
 # Context window helpers
 # ---------------------------------------------------------------------------
@@ -239,6 +274,18 @@ def compress_messages(
     to_compress = history[:-keep_last]
     recent = history[-keep_last:]
 
+    # Sanitise both segments for tool-call/result pairing. A naive slice can
+    # split a tool_call (in an AIMessage) from its tool_result (ToolMessage)
+    # across the boundary, leaving an orphan in either segment — which the
+    # model API rejects ("tool_use ids were provided that do not have a
+    # tool_use block"). ``ensure_tool_pairing`` drops such orphans so the
+    # retained window has only complete pairs. (See picoclaw bug #475: a
+    # post-slice sanitiser is more robust than trying to align the boundary.)
+    from agent_flow_harness.context_engineering.pairing import ensure_tool_pairing
+
+    to_compress = ensure_tool_pairing(to_compress)
+    recent = ensure_tool_pairing(recent)
+
     # Build a summary from the older history messages (systems excluded).
     summary = _build_summary(to_compress)
     compressed: list[BaseMessage] = [
@@ -249,7 +296,12 @@ def compress_messages(
 
     # Recurse if still over threshold
     if should_compress(compressed, model, context_window=context_window):
-        logger.info("context_recursive_compress", keep_last=keep_last)
+        logger.info(
+            "context_recursive_compress",
+            keep_last=keep_last,
+            depth=_depth,
+            still_over_tokens=estimate_messages_tokens(compressed),
+        )
         # Reduce keep_last by at least 1 each recursion to guarantee progress
         next_keep = max(keep_last - 1, 1)
         return compress_messages(
@@ -259,8 +311,12 @@ def compress_messages(
 
     logger.info(
         "context_compressed",
-        original=len(messages),
-        compressed=len(compressed),
+        original_messages=len(messages),
+        compressed_messages=len(compressed),
+        original_tokens=estimate_messages_tokens(messages),
+        compressed_tokens=estimate_messages_tokens(compressed),
+        keep_last=keep_last,
+        depth=_depth,
     )
     return compressed
 
@@ -310,7 +366,13 @@ def _get_role_label(message: BaseMessage | dict[str, Any]) -> str:
 
 
 def _get_content_preview(message: BaseMessage | dict[str, Any]) -> str:
-    """Extract content text, truncating long tool results."""
+    """Extract content text, applying structure-aware compression to tool results.
+
+    Tool results (especially JSON from tools like kb_search) are fed through
+    ``summarize_tool_content`` so the summary keeps readable structure
+    (hit count, sources, a short text excerpt) instead of a raw truncated
+    JSON fragment that the model cannot parse.
+    """
     if isinstance(message, dict):
         content = str(message.get("content", ""))
         role = message.get("role", "")
@@ -318,6 +380,12 @@ def _get_content_preview(message: BaseMessage | dict[str, Any]) -> str:
         content = str(message.content)
         role = "tool" if isinstance(message, ToolMessage) else ""
 
-    if role == "tool" and len(content) > 200:
-        return content[:200] + "..."
+    if role == "tool":
+        # 结构感知压缩:JSON 提取关键信息,非 JSON 行边界截断。
+        # 摘要场景用比保留段更紧的预算(400 字)。
+        from agent_flow_harness.context_engineering.tool_output import (
+            summarize_tool_content,
+        )
+
+        return summarize_tool_content(content, max_output=400)
     return content

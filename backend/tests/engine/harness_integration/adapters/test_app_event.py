@@ -55,12 +55,13 @@ def test_tool_call_dump() -> None:
 
 
 def test_tool_result_dump() -> None:
-    # status defaults to "success" (backward compatible)
+    # status defaults to "success"; tool_call_id defaults to "" (backward compat).
     assert ToolResultEvent(tool_name="bash", content="ok").model_dump() == {
         "type": "tool_result",
         "tool_name": "bash",
         "content": "ok",
         "status": "success",
+        "tool_call_id": "",
     }
     # error status is settable for failed tool invocations
     assert ToolResultEvent(
@@ -70,6 +71,7 @@ def test_tool_result_dump() -> None:
         "tool_name": "bash",
         "content": "boom",
         "status": "error",
+        "tool_call_id": "",
     }
 
 

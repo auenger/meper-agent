@@ -16,11 +16,8 @@ from langchain_core.messages import AIMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
-from agent_flow_harness.engine.context import (
-    compress_messages,
-    extract_model_name,
-    should_compress,
-)
+from agent_flow_harness.context_engineering.pairing import ensure_tool_pairing
+from agent_flow_harness.engine.context import extract_model_name
 from agent_flow_harness.engine.depth_guard import check_depth
 from agent_flow_harness.middleware.chain import MiddlewareChain
 
@@ -28,6 +25,9 @@ if TYPE_CHECKING:
     from agent_flow_harness.state import AgentState
 
 logger = structlog.get_logger(__name__)
+
+# 持有后台压缩任务的强引用(防 GC 回收未完成的 task)。
+_background_tasks: set[Any] = set()
 
 
 def _configurable(config: RunnableConfig | None) -> dict[str, Any]:
@@ -73,9 +73,29 @@ async def compress_node(
     context_window: int | None = configurable.get("context_window")
     context_strategy = configurable.get("context_strategy")
     llm = configurable.get("llm")
+    # 压缩配置(全局可配,有默认值)。
+    protected_turns: int = configurable.get("protected_turns", 5)
+    compression_threshold: float = configurable.get("compression_threshold", 0.7)
+    hard_limit_ratio: float = configurable.get("hard_limit_ratio", 0.9)
+    session_id: str = state.get("session_id", "")
 
     current_messages: list[Any] = list(state.get("messages", []))
 
+    # ── token 评估:优先用 input_tokens(模型真实值),fallback len//4 ──
+    from agent_flow_harness.engine.context import (
+        estimate_context_tokens,
+        get_context_window,
+    )
+
+    model_name = extract_model_name(llm) if llm is not None else ""
+    window = context_window or get_context_window(model_name)
+    threshold_tokens = int(window * compression_threshold)
+    before_tokens = estimate_context_tokens(current_messages)
+
+    # ── 单个工具结果超过 LLM 阈值 → 直接报错(无法压缩,继续只会超窗口失败)。
+    _check_oversized_tool_result(current_messages, window, state)
+
+    # ── 可插拔 ContextStrategy 路径(高级用法,生产默认不走) ──
     if context_strategy is not None:
         before = len(current_messages)
         current_messages = await context_strategy.select(
@@ -83,48 +103,47 @@ async def compress_node(
         )
         if len(current_messages) < before:
             logger.info(
-                "compress_node_strategy",
-                strategy=context_strategy.name,
+                "compress_summarised",
                 agent_id=state.get("agent_id"),
                 request_id=state.get("request_id"),
-                before=before,
-                after=len(current_messages),
+                strategy=context_strategy.name,
+                messages_before=before,
+                messages_after=len(current_messages),
+                tokens_before=before_tokens,
+                tokens_after=estimate_context_tokens(current_messages),
+                threshold_tokens=threshold_tokens,
             )
-            # Replace the whole message history rather than appending. The
-            # ``add_messages`` reducer is append-by-default; without
-            # ``RemoveMessage(REMOVE_ALL_MESSAGES)`` the trimmed history would
-            # pile up after the old one, and a summary SystemMessage produced
-            # by the strategy would land mid-list → non-consecutive system
-            # messages rejected by langchain-anthropic.
-            return {
-                "messages": [
-                    RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages,
-                ],
-            }
+            return _pack_replace(_trim_tool_outputs(current_messages, config))
         return {}
 
-    # Fallback: built-in compress_messages
-    model_name = extract_model_name(llm) if llm is not None else ""
-    if should_compress(current_messages, model_name, context_window=context_window):
-        before = len(current_messages)
-        current_messages = compress_messages(
-            current_messages, model_name, context_window=context_window,
-        )
+    # ── 内置路径:工具压缩 + 后台LLM压缩 + 丢弃兜底 ──
+    result, detail = _compress_by_turns(
+        current_messages, window, protected_turns, compression_threshold,
+        hard_limit_ratio, llm, session_id, config, state,
+    )
+
+    if detail["changed"]:
         logger.info(
-            "compress_node_builtin",
+            "compress_done",
             agent_id=state.get("agent_id"),
             request_id=state.get("request_id"),
-            before=before,
-            after=len(current_messages),
+            actions=detail.get("actions", ""),
+            tokens_before=before_tokens,
+            tokens_after=estimate_context_tokens(result),
+            threshold_tokens=threshold_tokens,
+            messages_before=len(current_messages),
+            messages_after=len(result),
         )
-        # Same replace-not-append rationale as the strategy branch above.
-        return {
-            "messages": [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES), *current_messages,
-            ],
-        }
+        return _pack_replace(result)
 
-    # No compression needed — return empty patch (state unchanged).
+    logger.info(
+        "compress_skipped",
+        agent_id=state.get("agent_id"),
+        request_id=state.get("request_id"),
+        tokens=before_tokens,
+        threshold_tokens=threshold_tokens,
+        messages=len(current_messages),
+    )
     return {}
 
 
@@ -216,6 +235,228 @@ def _system_messages_first(messages: list[Any]) -> list[Any]:
     if n <= len(messages) and all(isinstance(m, SystemMessage) for m in messages[:n]):
         return messages
     return [*system_msgs, *history]
+
+
+def _pack_replace(messages: list[Any]) -> dict[str, Any]:
+    """Build a state patch that *replaces* the whole message history.
+
+    Uses ``RemoveMessage(REMOVE_ALL_MESSAGES)`` so the ``add_messages`` reducer
+    discards the old history and installs ``messages`` verbatim. Returns ``{}``
+    (no-op) when there is nothing to change.
+    """
+    return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *messages]}
+
+
+def _trim_tool_outputs(
+    messages: list[Any], config: RunnableConfig,
+) -> list[Any]:
+    """Shrink oversized ToolMessage contents, applying the app-supplied
+    reference formatter (so truncated results hint how to recall the original).
+
+    Returns the original list when nothing was trimmed.
+    """
+    formatter = _configurable(config).get("tool_output_reference_formatter")
+    from agent_flow_harness.context_engineering.tool_output import compress_tool_outputs
+
+    result: list[Any] = compress_tool_outputs(messages, reference_formatter=formatter)
+    return result
+
+
+def _check_oversized_tool_result(
+    messages: list[Any], window: int, state: "AgentState",
+) -> None:
+    """「未消费的」单个工具结果放不下模型窗口时抛 ValueError(转 ErrorEvent 发前端)。
+
+    只检测**未消费**的工具结果。用实际剩余预算判断:
+      剩余 = window - 其它消息占用 - 预留回复(4000)
+    如果工具结果 > 剩余 → 即使不压缩也放不下 → 报错。
+
+    比之前用固定 70% 阈值更准确:一个占 75% 窗口的工具,如果其它消息很少,
+    可能完全放得下,不该报错。
+    """
+    from langchain_core.messages import ToolMessage
+
+    from agent_flow_harness.context_engineering.tool_output import (
+        find_unconsumed_tool_call_ids,
+    )
+    from agent_flow_harness.engine.context import (
+        estimate_context_tokens,
+        estimate_message_tokens,
+    )
+
+    RESERVED_RESPONSE = 4000
+    unconsumed = find_unconsumed_tool_call_ids(messages)
+    for m in messages:
+        if isinstance(m, ToolMessage) and (m.tool_call_id or "") in unconsumed:
+            tool_tokens = estimate_message_tokens(m)
+            # 其它消息的 token(排除这个工具结果本身)。
+            other_tokens = estimate_context_tokens(messages) - tool_tokens
+            budget = window - other_tokens - RESERVED_RESPONSE
+            if tool_tokens > budget:
+                tcid = m.tool_call_id or "?"
+                tool_name = getattr(m, "name", "") or "未知工具"
+                msg = (
+                    f"工具 {tool_name} 的返回结果过大(约 {tool_tokens} tokens),"
+                    f"剩余上下文空间不足以容纳(剩余约 {budget} tokens)。"
+                    f"该工具结果尚未被处理、无法压缩,请减少返回内容"
+                    f"(如调小 top_k、缩小查询范围),或使用上下文窗口更大的模型。"
+                    f"(tool_call_id={tcid})"
+                )
+                logger.error(
+                    "compress_tool_result_oversized",
+                    agent_id=state.get("agent_id"),
+                    request_id=state.get("request_id"),
+                    tool_name=tool_name,
+                    tool_call_id=tcid,
+                    tool_tokens=tool_tokens,
+                    budget=budget,
+                    window=window,
+                )
+                raise ValueError(msg)
+
+
+def _compress_by_turns(
+    messages: list[Any],
+    window: int,
+    protected_turns: int,
+    threshold_ratio: float,
+    hard_limit_ratio: float,
+    llm: Any,
+    session_id: str,
+    config: RunnableConfig,
+    state: "AgentState",
+) -> "tuple[list[Any], dict[str, Any]]":
+    """工具压缩 + 后台LLM压缩 + 丢弃兜底。
+
+    返回 (结果消息列表, 详情 dict)。详情字段: changed (bool) / actions (str)。
+
+    规则:
+      ① 检查缓存:有后台压缩好的LLM摘要?有则按ID精确回填。
+      ② 未达阈值 → 什么都不做(可能带了回填的摘要)。
+      ③ 达阈值 → 工具压缩(同步,快):
+         第1级: 5轮外已消费工具压;第2级: 5轮内已消费工具压。
+         压完够了就停。
+      ④ 工具压完仍超阈值 → 触发后台LLM压缩(异步,不阻塞当前轮)。
+      ⑤ 逼近硬上限(hard_limit_ratio)且后台没压完 → 丢弃最早原始消息防崩溃。
+         (临时有损,后台摘要回填后恢复。)
+
+    绝不生成机械摘要 → 无累积退化。
+    """
+    import asyncio
+
+    from agent_flow_harness.context_engineering.llm_summary import (
+        apply_cached_summary,
+        compress_history_with_llm,
+    )
+    from agent_flow_harness.context_engineering.split import split_system_history
+    from agent_flow_harness.context_engineering.summary_cache import summary_cache
+    from agent_flow_harness.context_engineering.tool_output import compress_tool_outputs
+    from agent_flow_harness.context_engineering.turns import split_by_turns
+    from agent_flow_harness.engine.context import estimate_context_tokens
+
+    formatter = _configurable(config).get("tool_output_reference_formatter")
+    threshold = int(window * threshold_ratio)
+    hard_limit = int(window * hard_limit_ratio)
+    changed = False
+    actions_parts: list[str] = []
+
+    # ① 检查缓存:有后台压缩好的摘要?
+    cached = summary_cache.get(session_id) if session_id else None
+    if cached:
+        messages, inserted = apply_cached_summary(messages, cached)
+        summary_cache.clear(session_id)
+        if inserted:
+            changed = True
+            actions_parts.append("缓存摘要回填")
+
+    current = estimate_context_tokens(messages)
+
+    # ② 未达阈值 → 什么都不做。
+    if current <= threshold:
+        return messages, {"changed": changed, "actions": "+".join(actions_parts)}
+
+    # ③ 达阈值 → 工具压缩(同步)。
+    system_msgs, history = split_system_history(messages)
+
+    # 回卷:把已有的LLM摘要(id="llm_summary")和旧机械摘要(id="summary")从
+    # system_msgs 摘出并入 outer(可压缩区)。否则 split_system_history 会把它们
+    # 当不可变 system 收集→摘要累积成多条→违背"无退化"原则。
+    for summary_id in ("llm_summary", "summary"):
+        prior = [m for m in system_msgs if getattr(m, "id", "") == summary_id]
+        if prior:
+            system_msgs = [m for m in system_msgs if getattr(m, "id", "") != summary_id]
+            history = [*prior, *history]
+
+    outer, recent = split_by_turns(history, protected_turns)
+
+    # 在完整 history 上算一次 unconsumed_ids,传给后续切片的 compress_tool_outputs
+    # (切片后 find_unconsumed_tool_call_ids 丢失全局上下文会误判,见 B2 修复)。
+    from agent_flow_harness.context_engineering.tool_output import (
+        find_unconsumed_tool_call_ids,
+    )
+
+    unconsumed_ids = find_unconsumed_tool_call_ids(history)
+
+    # 第1级:5轮外已消费工具压。
+    outer = compress_tool_outputs(outer, reference_formatter=formatter, unconsumed_ids=unconsumed_ids)
+    combined = [*system_msgs, *outer, *recent]
+    if estimate_context_tokens(combined) <= threshold:
+        return ensure_tool_pairing(combined), {"changed": True, "actions": "5轮外工具压缩"}
+
+    # 第2级:5轮内已消费工具压(未消费保护内置)。
+    recent = compress_tool_outputs(recent, reference_formatter=formatter, unconsumed_ids=unconsumed_ids)
+    combined = [*system_msgs, *outer, *recent]
+    after_tools = estimate_context_tokens(combined)
+    if after_tools <= threshold:
+        return ensure_tool_pairing(combined), {"changed": True, "actions": "5轮内工具压缩"}
+
+    # ④ 工具压完仍超阈值 → 触发后台LLM压缩(如果没在跑 + 有outer + 有LLM)。
+    if (
+        session_id
+        and llm is not None
+        and not summary_cache.is_running(session_id)
+        and outer
+    ):
+        summary_cache.mark_running(session_id)
+        task = asyncio.create_task(compress_history_with_llm(
+            llm, outer, session_id, summary_cache,
+            reference_formatter=formatter,
+        ))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+        logger.info(
+            "compress_background_triggered",
+            agent_id=state.get("agent_id"),
+            request_id=state.get("request_id"),
+            session_id=session_id,
+            outer_count=len(outer),
+        )
+        actions_parts.append("后台LLM压缩已触发")
+
+    # ⑤ 逼近硬上限 → 丢弃最早原始消息防崩溃(临时有损,等后台摘要回填)。
+    if after_tools > hard_limit:
+        safe_limit = int(window * 0.85)
+        # 差量计算:base = system + recent(不变),循环只减 outer 的 token。
+        from agent_flow_harness.engine.context import estimate_message_tokens
+
+        base_tokens = estimate_context_tokens([*system_msgs, *recent])
+        discard_outer = list(outer)
+        outer_tokens = sum(estimate_message_tokens(m) for m in discard_outer)
+        while base_tokens + outer_tokens > safe_limit and discard_outer:
+            outer_tokens -= estimate_message_tokens(discard_outer.pop(0))
+        combined = [*system_msgs, *discard_outer, *recent]
+        logger.warning(
+            "compress_discard_emergency",
+            agent_id=state.get("agent_id"),
+            request_id=state.get("request_id"),
+            discarded=len(outer) - len(discard_outer),
+            note="逼近硬上限,丢弃早期历史防崩溃(后台摘要回填后恢复)",
+        )
+        actions_parts.append("丢弃早期历史(防崩溃)")
+        return ensure_tool_pairing(combined), {"changed": True, "actions": "+".join(actions_parts)}
+
+    # 工具压完仍超阈值但没到硬上限:后台在压,本轮用当前消息正常答。
+    return ensure_tool_pairing(combined), {"changed": True, "actions": "+".join(actions_parts)}
 
 
 __all__ = ["compress_node", "llm_node"]

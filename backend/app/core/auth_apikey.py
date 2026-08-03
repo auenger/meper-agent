@@ -82,6 +82,23 @@ class ApiKeyPrincipal:
                 message="API Key 无权访问该 Workflow",
             )
 
+    def owns_resource(self, created_by: str | None) -> bool:
+        """Check if a resource (e.g. a Task) belongs to this Key's owner.
+
+        Resources created via the Workflow invoke path carry the bare
+        ``owner_user_id``. Resources created by an Agent on the user's
+        behalf carry the resolved user_id — ``f"{owner}:{sub}"`` (callback
+        mode) or ``f"{owner}:{visitor_id}"`` (legacy mode with visitor_id)
+        — because NotificationService reads ``task.created_by`` as the
+        end-user id. Both shapes belong to the same owner, so we accept an
+        exact match or an ``owner:`` prefix match.
+        """
+        if not created_by:
+            return False
+        if created_by == self.owner_user_id:
+            return True
+        return created_by.startswith(f"{self.owner_user_id}:")
+
 
 def _extract_bearer_token(header_value: str | None) -> str | None:
     """Extract a Bearer token from a header value, accepting both

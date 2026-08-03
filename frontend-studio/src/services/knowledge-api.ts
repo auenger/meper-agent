@@ -119,6 +119,13 @@ export interface KbSearchResponse {
   results: KbSearchResultItem[]
 }
 
+export interface KbChunkItem {
+  chunk_index: number
+  text: string
+  source_file: string
+  page: number | null
+}
+
 /* ─── API methods ─── */
 
 export const knowledgeApi = {
@@ -241,6 +248,14 @@ export const knowledgeApi = {
     return res.data
   },
 
+  /** GET /api/v1/knowledge-bases/{id}/documents/{docId}/chunks */
+  async getDocumentChunks(kbId: string, docId: string): Promise<KbChunkItem[]> {
+    const res = await apiClient.get<KbChunkItem[]>(
+      `/api/v1/knowledge-bases/${encodeURIComponent(kbId)}/documents/${encodeURIComponent(docId)}/chunks`,
+    )
+    return res.data
+  },
+
   /** POST /api/v1/knowledge-bases/{id}/search */
   async search(kbId: string, query: string, topK = 5): Promise<KbSearchResponse> {
     const res = await apiClient.post<KbSearchResponse>(
@@ -262,4 +277,5 @@ export const knowledgeKeys = {
   files: (id: string) => [...knowledgeKeys.detail(id), 'files'] as const,
   fileContent: (id: string, path: string) => [...knowledgeKeys.detail(id), 'file', path] as const,
   documents: (id: string) => [...knowledgeKeys.detail(id), 'documents'] as const,
+  chunks: (id: string, docId: string) => [...knowledgeKeys.detail(id), 'chunks', docId] as const,
 }

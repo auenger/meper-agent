@@ -402,6 +402,8 @@ async def delete_document(
         # Qdrant purge failure shouldn't block metadata deletion.
         await kb_vector_store.delete_by_doc(doc_id)
     await KnowledgeDocumentService.delete(doc_id)
+    # Refresh KB stats so the list view's file count/size stays accurate.
+    await KnowledgeBaseService.recompute_vector_stats(kb_id)
 
 
 @router.post(

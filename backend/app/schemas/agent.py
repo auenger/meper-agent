@@ -8,6 +8,21 @@ from pydantic import BaseModel, Field, field_validator
 from app.models.agent import AgentStatus, RecommendedItem
 from app.utils.sanitize import sanitize_dict, sanitize_text
 
+
+class CustomToolBinding(BaseModel):
+    """绑定到 Agent 的自定义工具(openapi/code/prebuilt),携带 user_args。
+
+    与单纯的 ``custom_tool_ids`` 不同,这里携带 ``user_args`` —— 即
+    Agent 绑定时填入的参数(含敏感凭证如 token)。敏感字段在后端加密
+    存储(前缀 ``enc:``),运行时由 ``_decrypt_user_args`` 解密。
+    """
+
+    tool_id: str = Field(..., description="自定义工具 ID")
+    user_args: dict = Field(
+        default_factory=dict,
+        description="绑定时填入的参数(sensitive 字段加密存储)",
+    )
+
 # 单个 prompt_slot value 的最大字符数（兼顾详细提示词与防滥用，
 # 约 2.5K–5K tokens，足够绝大多数场景）。
 PROMPT_SLOT_MAX_LENGTH = 10_000
@@ -127,7 +142,12 @@ class AgentUpdate(BaseModel):
     )
     custom_tool_ids: list[str] = Field(
         default_factory=list,
-        description="绑定的自定义工具 ID（openapi/code/prebuilt）",
+        description="绑定的自定义工具 ID（openapi/code/prebuilt）。向后兼容字段,"
+        "优先使用 custom_tools(可携带 user_args)。",
+    )
+    custom_tools: list[CustomToolBinding] = Field(
+        default_factory=list,
+        description="绑定的自定义工具(含 user_args/凭证)。优先于 custom_tool_ids。",
     )
     knowledge_base_ids: list[str] = Field(
         default_factory=list,
@@ -185,6 +205,10 @@ class AgentResponse(BaseModel):
     builtin_config: list[str]
     workflow_ids: list[str]
     custom_tool_ids: list[str] = Field(default_factory=list)
+    custom_tools: list[CustomToolBinding] = Field(
+        default_factory=list,
+        description="绑定的自定义工具(含 user_args,敏感字段为 enc: 加密形态)",
+    )
     knowledge_base_ids: list[str]
     default_model: str = Field(default="", description="Model reference ID")
     max_retry: int = Field(default=3, description="Max LLM call retries")

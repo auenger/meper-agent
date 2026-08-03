@@ -20,6 +20,7 @@ vector config on first use.
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from loguru import logger
 from qdrant_client import AsyncQdrantClient
@@ -240,7 +241,9 @@ async def get_chunks_by_doc(doc_id: str, limit: int = 500) -> list[dict]:
         must=[qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=doc_id))]
     )
     chunks: list[dict] = []
-    offset: int | None = None
+    # qdrant scroll offset is an opaque PointId (int|str|UUID); we just
+    # pass it back to the next scroll call, so type it loosely.
+    offset: Any = None
     # Qdrant scroll paginates via offset; loop until no more points.
     while True:
         batch, offset = await client.scroll(

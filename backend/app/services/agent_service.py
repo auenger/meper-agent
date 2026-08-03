@@ -1,13 +1,65 @@
 """Agent business logic — CRUD operations and lifecycle management."""
 from __future__ import annotations
 
+import contextlib
 import re
 
 from loguru import logger
 
+from app.core.crypto import encrypt_secret
 from app.core.errors import ConflictError, ValidationError
 from app.db.mongodb import get_database
 from app.models.agent import Agent, AgentStatus
+
+
+async def _resolve_custom_tools(
+    custom_tools: list[dict] | None,
+    custom_tool_ids: list[str] | None,
+    *,
+    encrypt: bool,
+) -> list[dict]:
+    """归一化 custom_tools 绑定,可选加密敏感 user_args 字段。
+
+    优先用 custom_tools(携带 user_args);为空时从 custom_tool_ids 派生
+    (user_args={})以保持向后兼容。``encrypt=True`` 时对 user_args 中标记
+    sensitive 且尚未加密(无 ``enc:`` 前缀)的字段做 AES 加密 —— 已加密的
+    原样保留(前端回显脱敏值时提交回来仍是 ``enc:xxx``,不重复加密)。
+    """
+    if custom_tools:
+        bindings = [
+            {"tool_id": b.get("tool_id", ""), "user_args": b.get("user_args") or {}}
+            for b in custom_tools
+            if b.get("tool_id")
+        ]
+    else:
+        bindings = [{"tool_id": tid, "user_args": {}} for tid in (custom_tool_ids or [])]
+
+    if not encrypt or not bindings:
+        return bindings
+
+    # 加密:按 tool_id 批量查 schema,对 sensitive 字段加密。
+    try:
+        from app.services.tool_service import ToolService
+
+        ids = [b["tool_id"] for b in bindings]
+        docs = await ToolService.get_tools_by_ids(ids) if ids else []
+    except Exception:
+        docs = []
+    schema_by_id = {d.get("_id"): d for d in docs if d.get("_id")}
+
+    for b in bindings:
+        doc = schema_by_id.get(b["tool_id"])
+        if not doc:
+            continue
+        props = (doc.get("user_args_schema") or {}).get("properties") or {}
+        user_args = b["user_args"]
+        for key, val in list(user_args.items()):
+            if props.get(key, {}).get("sensitive") and isinstance(val, str) and val and not val.startswith("enc:"):
+                with contextlib.suppress(Exception):
+                    user_args[key] = f"enc:{encrypt_secret(val)}"
+        b["user_args"] = user_args
+    return bindings
+
 
 
 class AgentService:
@@ -33,6 +85,7 @@ class AgentService:
         builtin_config: list[str] | None = None,
         workflow_ids: list[str] | None = None,
         custom_tool_ids: list[str] | None = None,
+        custom_tools: list[dict] | None = None,
         knowledge_base_ids: list[str] | None = None,
         default_model: str = "",
         max_retry: int = 3,
@@ -78,7 +131,7 @@ class AgentService:
             mcp_connection_ids=mcp_connection_ids or [],
             builtin_config=builtin_config or [],
             workflow_ids=workflow_ids or [],
-            custom_tools=[{"tool_id": tid, "user_args": {}} for tid in (custom_tool_ids or [])],
+            custom_tools=await _resolve_custom_tools(custom_tools, custom_tool_ids, encrypt=True),
             knowledge_base_ids=knowledge_base_ids or [],
             default_model=default_model,
             max_retry=max_retry,
@@ -187,6 +240,7 @@ class AgentService:
         builtin_config: list[str] | None = None,
         workflow_ids: list[str] | None = None,
         custom_tool_ids: list[str] | None = None,
+        custom_tools: list[dict] | None = None,
         knowledge_base_ids: list[str] | None = None,
         default_model: str = "",
         max_retry: int = 3,
@@ -244,6 +298,8 @@ class AgentService:
 
         now_iso = utc_now().isoformat()
 
+        resolved_custom_tools = await _resolve_custom_tools(custom_tools, custom_tool_ids, encrypt=True)
+
         set_fields: dict = {
             "name": name,
             "description": description,
@@ -252,7 +308,7 @@ class AgentService:
             "mcp_connection_ids": mcp_connection_ids or [],
             "builtin_config": builtin_config or [],
             "workflow_ids": workflow_ids or [],
-            "custom_tools": [{"tool_id": tid, "user_args": {}} for tid in (custom_tool_ids or [])],
+            "custom_tools": resolved_custom_tools,
             "knowledge_base_ids": knowledge_base_ids or [],
             "default_model": default_model,
             "max_retry": max_retry,
@@ -478,6 +534,7 @@ class AgentService:
             mcp_connection_ids=source.get("mcp_connection_ids", []),
             builtin_config=source.get("builtin_config", []),
             workflow_ids=source.get("workflow_ids", []),
+            custom_tools=source.get("custom_tools") or [],
             custom_tool_ids=[b.get("tool_id", "") for b in (source.get("custom_tools") or []) if b.get("tool_id")],
             knowledge_base_ids=source.get("knowledge_base_ids", []),
             default_model=_resolve_default_model(source),

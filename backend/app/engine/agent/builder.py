@@ -15,15 +15,11 @@ this module.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
-
-from langchain_core.tools import tool as lc_tool
 from loguru import logger
 
-from app.models.compat import resolve_skill_ids
-
-_MAX_SKILL_CONTENT = 50_000
-
+from app.models.compat import (
+    resolve_skill_ids,  # noqa: F401 (used by build_tool_declaration)
+)
 
 # ---------------------------------------------------------------------------
 # System prompt + tool declaration (used by stream / invoke / preview)
@@ -67,6 +63,7 @@ async def build_tool_declaration(agent: dict) -> str:
 
     Generates declaration sections for all tool categories:
     - Skills (on-demand via load_skill)
+    - Knowledge Bases (kb_search / kb_glob / kb_grep / kb_read)
     - MCP tools (directly callable)
     - Workflow list (listed for reference, triggered via propose/dispatch)
     - Built-in tools (directly callable)
@@ -79,6 +76,12 @@ async def build_tool_declaration(agent: dict) -> str:
         skill_decl = await build_skill_declaration(skill_ids)
         if skill_decl:
             sections.append(skill_decl)
+
+    kb_ids = agent.get("knowledge_base_ids") or []
+    if kb_ids:
+        kb_decl = await _build_kb_declaration(kb_ids)
+        if kb_decl:
+            sections.append(kb_decl)
 
     mcp_connection_ids = agent.get("mcp_connection_ids") or []
     if mcp_connection_ids:
@@ -102,6 +105,63 @@ async def build_tool_declaration(agent: dict) -> str:
     sections.append(task_decl)
 
     return "\n".join(sections) if sections else ""
+
+
+async def _build_kb_declaration(kb_ids: list[str]) -> str:
+    """Build knowledge base declaration section for the system prompt.
+
+    Lists the bound KBs (name + type + description) and explains the
+    available KB tools so the LLM knows what it can search and how.
+    """
+    from app.db.mongodb import get_database
+
+    kb_docs = await get_database()["knowledge_bases"].find(
+        {"_id": {"$in": kb_ids}}
+    ).to_list(len(kb_ids))
+    if not kb_docs:
+        return ""
+
+    has_tree = any(d.get("type", "tree") == "tree" for d in kb_docs)
+    has_vector = any(d.get("type") == "vector" for d in kb_docs)
+
+    lines = [
+        "",
+        "## Knowledge Bases",
+        "",
+        "You have access to the following knowledge bases. Use the KB tools to search them.",
+        "",
+    ]
+
+    for doc in kb_docs:
+        name = doc.get("name", "unknown")
+        desc = doc.get("description", "")
+        kb_type = doc.get("type", "tree")
+        kb_id = doc.get("_id", "")
+        type_label = "向量" if kb_type == "vector" else "树形"
+        lines.append(f"- **{name}** ({type_label}, id: `{kb_id}`): {desc}")
+    lines.append("")
+
+    if has_vector:
+        lines.extend([
+            "### 向量知识库 (kb_search)",
+            "",
+            "Use `kb_search(query, kb_ids?, top_k?)` for **semantic search** across vector KBs.",
+            "Pass `kb_ids` to search specific KBs, or omit to search all bound vector KBs.",
+            "Best for: large documents, FAQs, product manuals, semantic Q&A.",
+            "",
+        ])
+
+    if has_tree:
+        lines.extend([
+            "### 树形知识库 (kb_glob / kb_grep / kb_read)",
+            "",
+            "- `kb_glob(pattern, kb_ids?)` — list .md files matching a glob pattern.",
+            "- `kb_grep(pattern, kb_ids?)` — search file contents by regex.",
+            "- `kb_read(path, kb_id?)` — read a single .md file's content.",
+            "",
+        ])
+
+    return "\n".join(lines)
 
 
 async def build_system_prompt(agent_doc: dict) -> str:
@@ -264,7 +324,19 @@ async def _build_workflow_tool_declaration(workflow_ids: list[str]) -> str:
 
 
 def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
-    """Build built-in tool declaration section for the system prompt."""
+    """Build built-in tool declaration section for the system prompt.
+
+    Dynamically reads tool name + description from harness BUILTIN_TOOLS
+    instances, so glob/grep (and any future configurable tools) are
+    automatically included without hardcoding.
+    """
+    from agent_flow_harness import BUILTIN_TOOLS
+
+    from app.engine.harness_integration.context import (
+        _CONFIGURABLE_BUILTIN_TOOL_NAMES,
+        _INJECTED_BUILTIN_TOOL_NAMES,
+    )
+
     lines = [
         "",
         "## Built-in Tools",
@@ -273,20 +345,21 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
         "",
     ]
 
-    tool_desc_map = {
-        "bash": "Execute shell commands (command: str)",
-        "read": "Read file contents (path: str)",
-        "write": "Write content to output/ — these files ARE visible and downloadable by the user. ALWAYS use this tool when the user asks you to generate, create, save, or export any file (code, document, image list, report, etc.).",
-    }
-
     enabled = set(builtin_config)
     if "bash" in enabled:
         enabled |= {"read", "write"}
 
-    for name in ["bash", "read", "write"]:
-        if name in enabled:
-            desc = tool_desc_map.get(name, name)
-            lines.append(f"- **{name}**: {desc}")
+    for name in _INJECTED_BUILTIN_TOOL_NAMES:
+        # 只声明可配工具(ask_clarification 单独在下方声明)
+        if name not in _CONFIGURABLE_BUILTIN_TOOL_NAMES:
+            continue
+        if name not in enabled:
+            continue
+        tool = BUILTIN_TOOLS.get(name)
+        desc = (tool.description if tool and tool.description else name)
+        # 取描述第一行(有些描述很长,system prompt 里只需摘要)
+        desc_first_line = desc.split("\n")[0].strip()
+        lines.append(f"- **{name}**: {desc_first_line}")
 
     # ask_clarification is always available (not gated by builtin_config)
     lines.extend([
@@ -373,120 +446,29 @@ def _build_task_tool_declaration() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Tool resolution (used by preview only; harness path resolves its own tools)
+# Tool resolution — delegates to the unified resolver in context.py
+# (same logic as runtime resolve_harness_context, no dual-path divergence).
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_tools(agent: dict) -> list:
-    """Resolve the Agent's tool configuration into callables.
+async def _resolve_tools_for_preview(agent: dict) -> list:
+    """Resolve ALL tools for preview (mirrors runtime exactly).
 
-    Used by ``preview_agent`` for dry-run inspection.
+    Delegates to ``context.resolve_all_tools`` so preview and runtime
+    always show the same tool set. Load errors are logged but not
+    surfaced (preview is best-effort; runtime surfaces them to frontend).
     """
-    tools: list = []
+    from app.engine.harness_integration.context import resolve_all_tools
 
-    skill_tool_ids = resolve_skill_ids(agent)
-    if skill_tool_ids:
-        from app.services.tool_service import ToolService
-
-        skill_docs = await ToolService.get_tools_by_ids(skill_tool_ids)
-        if skill_docs:
-            allowed_names = {doc.get("name") for doc in skill_docs if doc.get("name")}
-            tools.append(_make_skill_loader(allowed_names))
-
-    mcp_tools = await _resolve_mcp_tools(agent)
-    tools.extend(mcp_tools)
-
+    tools, errors = await resolve_all_tools(agent)
+    if errors:
+        for e in errors:
+            logger.warning("preview_tool_load_error", **e)
     return tools
 
 
-async def _resolve_mcp_tools(agent: dict) -> list:
-    """Resolve MCP tools for Agent-bound MCP connections.
-
-    Preview 是展示工具列表的辅助功能，单个 MCP 连接失败不应让整个 preview 崩溃，
-    这里降级为返回空列表（实际执行路径在 context.py 会收集 load_errors 暴露给前端）。
-    """
-    from app.engine.tool.mcp_tool_cache import get_mcp_tools_cached
-
-    mcp_connection_ids = agent.get("mcp_connection_ids") or []
-    if not mcp_connection_ids:
-        return []
-
-    try:
-        return await get_mcp_tools_cached(mcp_connection_ids)
-    except Exception as exc:
-        logger.warning("preview_mcp_tools_resolve_failed", error=str(exc))
-        return []
-
-
-def _resolve_builtin_tools(agent: dict) -> list:
-    """Resolve built-in + app tools for preview (mirrors resolve_harness_context).
-
-    Uses harness's BUILTIN_TOOLS (the same instances injected at runtime),
-    filtered by the agent's ``builtin_config`` whitelist. Capability tools
-    (configurable=false, e.g. ask_clarification) are always included.
-    Task/workflow tools (_TASK_TOOLS) are always-on app-level tools.
-    """
-    from agent_flow_harness import BUILTIN_TOOLS
-
-    from app.engine.agent.workflow_executor import _TASK_TOOLS
-    from app.engine.harness_integration.context import (
-        _CONFIGURABLE_BUILTIN_TOOL_NAMES,
-        _INJECTED_BUILTIN_TOOL_NAMES,
-    )
-
-    builtin_config = set(agent.get("builtin_config") or [])
-    if "bash" in builtin_config:
-        builtin_config |= {"read", "write"}
-
-    tools: list = list(_TASK_TOOLS)  # app-level tools always on
-    for name in _INJECTED_BUILTIN_TOOL_NAMES:
-        tool = BUILTIN_TOOLS.get(name)
-        if tool is None:
-            continue
-        if name not in _CONFIGURABLE_BUILTIN_TOOL_NAMES:
-            tools.append(tool)  # always-on capability tool
-        elif name in builtin_config:
-            tools.append(tool)
-    return tools
-
-
-def _make_skill_loader(allowed_names: set[str] | None = None) -> Callable:
-    """Create ``load_skill`` — loads SKILL.md instructions by name."""
-
-    async def load_skill(skill_name: str) -> str:
-        """Load the SKILL.md content of a named skill."""
-        if allowed_names is not None and skill_name not in allowed_names:
-            avail = ", ".join(sorted(allowed_names))
-            logger.warning("load_skill_not_allowed", skill_name=skill_name, available=avail)
-            return f"Skill '{skill_name}' is not available. Available: {avail}."
-
-        from app.engine.tool.skill_fs import get_skill_base_path, read_skill_file
-
-        instructions = read_skill_file(skill_name, "SKILL.md")
-        if instructions is None:
-            return f"Skill '{skill_name}' not found."
-        if not instructions:
-            return f"Skill '{skill_name}' has no content."
-
-        from app.core.config import settings
-
-        if settings.SANDBOX_ENABLED:
-            base_path = f"{settings.SANDBOX_CONTAINER_SKILLS_DIR}/{skill_name}"
-        else:
-            base_path = str(get_skill_base_path(skill_name))
-
-        path_hint = (
-            f"\n\n[Skill base path: {base_path}/ "
-            f"— use this absolute path for all file references in this skill]"
-        )
-        content = instructions + path_hint
-        if len(content) > _MAX_SKILL_CONTENT:
-            content = content[:_MAX_SKILL_CONTENT] + (
-                f"\n\n... [truncated: exceeds {_MAX_SKILL_CONTENT:,} chars]"
-            )
-        return content
-
-    return lc_tool(load_skill)
+# (removed _make_skill_loader — preview now uses the unified resolver
+#  which delegates to harness SkillManager, same as runtime)
 
 
 # ---------------------------------------------------------------------------
@@ -532,9 +514,7 @@ async def preview_agent(
         messages.append({"role": "system", "content": system_text})
     messages.append({"role": "user", "content": user_input})
 
-    agent_tools = await _resolve_tools(agent)
-    builtin_tools = _resolve_builtin_tools(agent)
-    all_tools = [*agent_tools, *builtin_tools]
+    all_tools = await _resolve_tools_for_preview(agent)
 
     tool_previews: list[dict] = []
     summary: dict[str, int] = {"total": len(all_tools), "skill": 0, "mcp": 0, "builtin": 0, "workflow": 0}

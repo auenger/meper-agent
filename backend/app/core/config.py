@@ -67,7 +67,21 @@ class Settings(BaseSettings):
 
     # Session token budget (cumulative tokens per session before the agent is blocked).
     # Agents can override via their own max_tokens field (0 = use this default).
-    DEFAULT_SESSION_MAX_TOKENS: int = 200_000
+    DEFAULT_SESSION_MAX_TOKENS: int = 200_00000
+
+    # Context compression (compress_node).
+    # Protected turns: the most recent N user-assistant rounds are never
+    # summarised — only older history is eligible. Tool results inside this
+    # window are also protected (unless they exceed the threshold and have
+    # been consumed by the AI).
+    COMPRESSION_PROTECTED_TURNS: int = 5
+    # Threshold: compression triggers when estimated context tokens exceed
+    # context_window × this ratio.
+    COMPRESSION_THRESHOLD: float = 0.7
+    # Hard limit: when context tokens exceed context_window × this ratio,
+    # early history is discarded to prevent exceeding the model's window
+    # (the background LLM summary will backfill once ready).
+    COMPRESSION_HARD_LIMIT_RATIO: float = 0.9
 
     # Task scheduler (poll interval in seconds; set to 0 to disable)
     TASK_SCHEDULER_POLL_INTERVAL: int = 10
@@ -145,7 +159,7 @@ class Settings(BaseSettings):
 
     # Vector KB upload limits.
     KB_VECTOR_MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB per uploaded doc
-    KB_VECTOR_ALLOWED_TYPES: str = "pdf,docx,md,markdown,txt"
+    KB_VECTOR_ALLOWED_TYPES: str = "pdf,docx,pptx,xlsx,csv,md,markdown,txt,html,htm"
 
     @model_validator(mode="after")
     def _default_internal_dirs_from_host(self) -> "Settings":

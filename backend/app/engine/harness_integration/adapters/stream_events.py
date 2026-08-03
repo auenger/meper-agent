@@ -207,6 +207,7 @@ async def stream_events_to_app_events(
                     tool_name=tool_name,
                     content=content,
                     status=status,
+                    tool_call_id=getattr(output, "tool_call_id", ""),
                 )
             )
 

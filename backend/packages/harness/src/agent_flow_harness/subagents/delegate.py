@@ -88,7 +88,7 @@ async def _delegate_to_subagent(subagent_name: str, task: str) -> str:
         # 延迟构建子 agent graph（AC5）。
         graph = build_agent_graph(_DELEGATE_AGENT_DOC)
         config = build_config(
-            _DELEGATE_AGENT_DOC, llm, tools=tools, recursion_limit=spec.max_turns
+            _DELEGATE_AGENT_DOC, llm, tools=tools, recursion_limit=spec.max_turns,
         )
         result_state = await graph.ainvoke(state, config=config)  # type: ignore[call-overload]
         final_messages = result_state.get("messages", [])

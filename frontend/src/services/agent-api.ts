@@ -13,6 +13,13 @@ import { authApi } from './auth-api'
 
 export type AgentStatus = 'draft' | 'published' | 'archived'
 
+/** 绑定到 Agent 的自定义工具(openapi/code/prebuilt),携带 user_args(含凭证)。 */
+export interface CustomToolBinding {
+  tool_id: string
+  /** 绑定时填入的参数;敏感字段为 enc: 加密形态(后端返回原文,前端脱敏展示)。 */
+  user_args: Record<string, unknown>
+}
+
 export interface Agent {
   id: string
   name: string
@@ -25,7 +32,10 @@ export interface Agent {
   /** Configurable built-in tools subset (e.g. bash/read/write/glob/grep). Capability tools like ask_clarification are always-on and excluded. */
   builtin_config: string[]
   workflow_ids: string[]
+  /** 向后兼容:绑定的自定义工具 ID(从 custom_tools 派生)。 */
   custom_tool_ids: string[]
+  /** 绑定的自定义工具(含 user_args/凭证)。优先使用。 */
+  custom_tools?: CustomToolBinding[]
   knowledge_base_ids: string[]
   default_model: string
   max_retry: number
@@ -56,6 +66,8 @@ export interface AgentUpdateInput {
   workflow_ids?: string[]
   knowledge_base_ids?: string[]
   custom_tool_ids?: string[]
+  /** 绑定的自定义工具(含 user_args/凭证)。优先于 custom_tool_ids。 */
+  custom_tools?: CustomToolBinding[]
   default_model?: string
   max_retry?: number
   max_tokens?: number
@@ -151,6 +163,9 @@ export interface ToolCallEvent {
   type: 'tool_call'
   tool_name: string
   args: Record<string, unknown>
+  /** LLM-assigned call id — links this tool_call to its later tool_result.
+   *  Required for pairing parallel same-name calls (e.g. two kb_search). */
+  id: string
 }
 
 /** AI started generating a tool call (streaming placeholder) */
@@ -165,6 +180,9 @@ export interface ToolResultEvent {
   tool_name: string
   content: string
   status?: 'success' | 'error'
+  /** The LLM-assigned id linking this result to its tool_call. Empty for
+   *  results produced before this field existed (fall back to tool_name). */
+  tool_call_id: string
 }
 
 /** Incremental text delta streamed from the LLM */
@@ -192,6 +210,9 @@ export interface InterruptEvent {
   clarification_type: string
   context?: string | null
   options?: string[] | null
+  /** Structured form fields — when non-empty, host renders a multi-field form
+   *  instead of a single question card (each dict mirrors ClarificationField). */
+  fields?: Array<Record<string, unknown>> | null
   interrupt_id: string
 }
 

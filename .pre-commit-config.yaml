@@ -1,0 +1,70 @@
+# Local pre-commit hooks — runs the same checks as CI before each commit.
+#
+# Install (once per clone):
+#   pip install pre-commit && pre-commit install
+#
+# After install, every `git commit` auto-runs ruff + mypy on changed files.
+# Skip temporarily with:  git commit --no-verify
+#
+# Config mirrors .github/workflows/ci.yml so local == CI.
+
+repos:
+  # ── Python lint (ruff) ──────────────────────────────────────────────
+  # Runs on backend/ and harness/ separately (each has its own ruff config).
+  - repo: local
+    hooks:
+      - id: ruff-backend
+        name: ruff (backend)
+        entry: bash -c 'cd backend && uv run ruff check app tests'
+        language: system
+        files: ^backend/(app|tests)/.*\.py$
+        pass_filenames: false
+
+      - id: ruff-harness
+        name: ruff (harness)
+        entry: bash -c 'cd backend/packages/harness && uv run ruff check src tests'
+        language: system
+        files: ^backend/packages/harness/(src|tests)/.*\.py$
+        pass_filenames: false
+
+  # ── Python type check (mypy) ────────────────────────────────────────
+  # Only on changed files' modules; full mypy is slow, so we scope it.
+  - repo: local
+    hooks:
+      - id: mypy-backend
+        name: mypy (backend)
+        entry: bash -c 'cd backend && uv run mypy app'
+        language: system
+        files: ^backend/app/.*\.py$
+        pass_filenames: false
+
+      - id: mypy-harness
+        name: mypy (harness)
+        entry: bash -c 'cd backend/packages/harness && uv run mypy src'
+        language: system
+        files: ^backend/packages/harness/src/.*\.py$
+        pass_filenames: false
+
+  # ── Frontend lint + type check ──────────────────────────────────────
+  - repo: local
+    hooks:
+      - id: eslint-frontend
+        name: eslint (frontend)
+        entry: bash -c 'cd frontend && npm run lint'
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: tsc-frontend
+        name: tsc (frontend)
+        entry: bash -c 'cd frontend && npm run type-check'
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: tsc-frontend-studio
+        name: tsc (frontend-studio)
+        entry: bash -c 'cd frontend-studio && npm run lint'
+        language: system
+        files: ^frontend-studio/src/.*\.(ts|tsx)$
+        pass_filenames: false

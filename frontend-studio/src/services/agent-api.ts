@@ -158,6 +158,9 @@ export interface ToolCallEvent {
   type: 'tool_call'
   tool_name: string
   args: Record<string, unknown>
+  /** LLM-assigned call id — links this tool_call to its later tool_result.
+   *  Required for pairing parallel same-name calls (e.g. two kb_search). */
+  id: string
 }
 
 /** AI started generating a tool call (args not yet complete) */
@@ -171,6 +174,9 @@ export interface ToolResultEvent {
   tool_name: string
   content: string
   status?: 'success' | 'error'
+  /** The LLM-assigned id linking this result to its tool_call. Empty for
+   *  results produced before this field existed (fall back to tool_name). */
+  tool_call_id: string
 }
 
 /** Incremental text delta streamed from the LLM */
@@ -205,6 +211,9 @@ export interface InterruptEvent {
   clarification_type: string
   context?: string | null
   options?: string[] | null
+  /** Structured form fields — when non-empty, host renders a multi-field form
+   *  instead of a single question card (each dict mirrors ClarificationField). */
+  fields?: Array<Record<string, unknown>> | null
   // workflow_confirmation fields (confirm_workflow)
   workflow_name?: string
   workflow_description?: string

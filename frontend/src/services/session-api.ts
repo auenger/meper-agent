@@ -64,10 +64,15 @@ export interface ChatFileUploadResponse {
 }
 
 export interface TimelineEntryData {
-  type: 'thinking' | 'tool_call' | 'tool_result' | 'tool' | 'text' | 'interrupt' | 'tool_call_start' | 'final_answer'
+  type: 'thinking' | 'tool_call' | 'tool_result' | 'tool' | 'text' | 'interrupt' | 'tool_call_start' | 'final_answer' | 'error'
   content?: string
   tool_name?: string
   args?: Record<string, unknown>
+  /** For tool_call: the LLM-assigned call id (links to tool_result.tool_call_id). */
+  id?: string
+  /** For tool_result: the LLM-assigned id linking back to its tool_call.
+   *  Used to pair parallel same-name calls instead of matching by tool_name. */
+  tool_call_id?: string
   /** For tool_result: structured success/error status from backend.
    *  Frontend uses this instead of sniffing "Error" prefix in content. */
   status?: 'success' | 'error'

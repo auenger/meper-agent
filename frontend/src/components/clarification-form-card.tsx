@@ -15,7 +15,7 @@
  */
 import { useMemo, useState } from 'react'
 import { Input, InputNumber, Button } from 'antd'
-import { LeftOutlined, RightOutlined, SendOutlined } from '@ant-design/icons'
+import { LeftOutlined, RightOutlined, SendOutlined, CheckCircleOutlined, LoadingOutlined } from '@ant-design/icons'
 
 /** 后端 ClarificationField 的前端镜像。 */
 export interface ClarificationField {
@@ -154,24 +154,31 @@ export function ClarificationFormCard({
 
   if (answered) {
     return (
-      <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-        <div className="flex items-start gap-2.5">
-          <span className="text-blue-500 text-sm mt-0.5">📋</span>
-          <div className="flex-1 min-w-0">
-            {question && (
-              <div className="text-sm text-[#1E40AF] whitespace-pre-wrap leading-relaxed mb-2">
-                {question}
-              </div>
-            )}
-            <div className="space-y-1">
-              {fields.map((f) => (
-                <div key={f.name} className="flex items-baseline gap-2 text-xs">
-                  <span className="text-[#3B82F6] shrink-0">{f.label}:</span>
-                  <span className="text-[#1E40AF] font-medium break-all">
-                    {renderValue(f, answeredValues[f.name])}
-                  </span>
+      <div className="rounded-xl rounded-tl-sm border border-blue-300 bg-blue-50 overflow-hidden">
+        <div className="flex items-center gap-2 px-4 py-2 border-b border-black/5">
+          <CheckCircleOutlined className="text-green-500 text-xs" />
+          <span className="text-xs font-semibold text-[#1E40AF]">澄清提问</span>
+          <span className="text-[10px] text-green-600">已回答</span>
+        </div>
+        <div className="px-4 py-3 bg-white/70">
+          <div className="flex items-start gap-2.5">
+            <span className="text-blue-500 text-sm mt-0.5">📋</span>
+            <div className="flex-1 min-w-0">
+              {question && (
+                <div className="text-sm font-medium text-[#1E40AF] whitespace-pre-wrap leading-relaxed mb-2">
+                  {question}
                 </div>
-              ))}
+              )}
+              <div className="space-y-1">
+                {fields.map((f) => (
+                  <div key={f.name} className="flex items-baseline gap-2 text-xs">
+                    <span className="text-[#3B82F6] shrink-0">{f.label}:</span>
+                    <span className="text-gray-800 font-medium break-all">
+                      {renderValue(f, answeredValues[f.name])}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -181,34 +188,40 @@ export function ClarificationFormCard({
 
   // ── 当前问题作答态 ──
   return (
-    <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-      <div className="flex items-start gap-2.5">
-        <span className="text-blue-500 text-sm mt-0.5">📋</span>
-        <div className="flex-1 min-w-0">
-          {question && (
-            <div className="text-xs text-[#6366F1] mb-1.5">{question}</div>
-          )}
-          {context && (
-            <div className="text-[11px] text-[#94A3B8] mb-2 whitespace-pre-wrap">
-              {context}
-            </div>
-          )}
-
-          {/* 进度 */}
-          <div className="text-[11px] text-[#94A3B8] mb-2">
-            第 {step + 1} / {total} 题
-          </div>
-
-          {/* 当前问题标题 */}
-          <div className="text-sm text-[#1E40AF] font-medium mb-2">
-            {current.label}
-            {current.required && current.field_type !== 'boolean' && (
-              <span className="text-red-400 ml-0.5">*</span>
+    <div className="rounded-xl rounded-tl-sm border border-blue-300 bg-blue-50 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2 border-b border-black/5">
+        <LoadingOutlined className="text-amber-500 text-xs" />
+        <span className="text-xs font-semibold text-[#1E40AF]">澄清提问</span>
+        <span className="text-[10px] text-amber-600">等待回答</span>
+      </div>
+      <div className="px-4 py-3 bg-white/70">
+        <div className="flex items-start gap-2.5">
+          <span className="text-blue-500 text-sm mt-0.5">📋</span>
+          <div className="flex-1 min-w-0">
+            {question && (
+              <div className="text-xs text-[#6366F1] mb-1.5">{question}</div>
             )}
-          </div>
-          {current.description && (
-            <p className="text-[11px] text-[#64748B] mb-2">{current.description}</p>
-          )}
+            {context && (
+              <div className="text-[11px] text-[#94A3B8] mb-2 whitespace-pre-wrap">
+                {context}
+              </div>
+            )}
+
+            {/* 进度 */}
+            <div className="text-[11px] text-[#94A3B8] mb-2">
+              第 {step + 1} / {total} 题
+            </div>
+
+            {/* 当前问题标题 */}
+            <div className="text-sm font-medium text-gray-900 mb-2">
+              {current.label}
+              {current.required && current.field_type !== 'boolean' && (
+                <span className="text-red-400 ml-0.5">*</span>
+              )}
+            </div>
+            {current.description && (
+              <p className="text-[11px] text-[#64748B] mb-2">{current.description}</p>
+            )}
 
           {/* boolean → 开关 */}
           {current.field_type === 'boolean' && (
@@ -307,6 +320,7 @@ export function ClarificationFormCard({
               )}
             </Button>
           </div>
+        </div>
         </div>
       </div>
     </div>

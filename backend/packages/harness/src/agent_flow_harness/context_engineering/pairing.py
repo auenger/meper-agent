@@ -46,8 +46,16 @@ def ensure_tool_pairing(messages: "list[BaseMessage]") -> "list[BaseMessage]":
                     tc for tc in tool_calls
                     if isinstance(tc, dict) and tc.get("id") in valid_pairs
                 ]
-                if valid_tcs or m.content:
+                if valid_tcs and len(valid_tcs) == len(tool_calls):
+                    # 全部 tool_call 都有配对 → 原样保留。
                     result.append(m)
+                elif valid_tcs:
+                    # 部分配对 → 重建 AIMessage,只保留有效 tool_call(剥离孤儿)。
+                    result.append(AIMessage(content=m.content, tool_calls=valid_tcs))
+                elif m.content:
+                    # 无有效 tool_call 但有文本 → 保留文本,丢弃所有 tool_call。
+                    result.append(AIMessage(content=m.content))
+                # 无 valid_tcs 且无 content → 丢弃整条
             else:
                 result.append(m)
         else:

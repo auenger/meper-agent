@@ -127,6 +127,92 @@ class TestUpdateAgentNameConflict:
             )
         assert exc_info.value.code == "AGENT_NAME_CONFLICT"
 
+    @pytest.mark.asyncio
+    async def test_update_custom_tools_encrypts_sensitive(self, mock_database):
+        """custom_tools 的敏感 user_args 字段在保存时被加密。"""
+        mock_col = MagicMock()
+        mock_col.find_one = AsyncMock(side_effect=[_fake_doc(), None, _fake_doc()])
+        mock_col.update_one = AsyncMock()
+        mock_database.__getitem__.return_value = mock_col
+
+        fake_tool_doc = {
+            "_id": "tool_001",
+            "name": "my-api",
+            "user_args_schema": {
+                "properties": {
+                    "token": {"type": "string", "sensitive": True},
+                    "base_url": {"type": "string"},
+                }
+            },
+        }
+        with patch(
+            "app.services.tool_service.ToolService.get_tools_by_ids",
+            new_callable=AsyncMock,
+            return_value=[fake_tool_doc],
+        ):
+            await AgentService.update_agent(
+                agent_id="agent_01HTEST",
+                name="Test Agent",
+                custom_tools=[{"tool_id": "tool_001", "user_args": {"token": "sk-secret", "base_url": "https://x"}}],
+            )
+
+        args, _kwargs = mock_col.update_one.call_args
+        saved = args[1]["$set"]["custom_tools"]
+        assert len(saved) == 1
+        assert saved[0]["user_args"]["token"].startswith("enc:")
+        assert saved[0]["user_args"]["base_url"] == "https://x"
+
+    @pytest.mark.asyncio
+    async def test_update_custom_tools_preserves_encrypted(self, mock_database):
+        """已加密(enc: 前缀)的值不重复加密。"""
+        mock_col = MagicMock()
+        mock_col.find_one = AsyncMock(side_effect=[_fake_doc(), None, _fake_doc()])
+        mock_col.update_one = AsyncMock()
+        mock_database.__getitem__.return_value = mock_col
+
+        fake_tool_doc = {
+            "_id": "tool_001",
+            "user_args_schema": {"properties": {"token": {"type": "string", "sensitive": True}}},
+        }
+        with patch(
+            "app.services.tool_service.ToolService.get_tools_by_ids",
+            new_callable=AsyncMock,
+            return_value=[fake_tool_doc],
+        ):
+            await AgentService.update_agent(
+                agent_id="agent_01HTEST",
+                name="Test Agent",
+                custom_tools=[{"tool_id": "tool_001", "user_args": {"token": "enc:already-encrypted"}}],
+            )
+
+        args, _kwargs = mock_col.update_one.call_args
+        saved = args[1]["$set"]["custom_tools"]
+        assert saved[0]["user_args"]["token"] == "enc:already-encrypted"
+
+    @pytest.mark.asyncio
+    async def test_update_custom_tool_ids_legacy_fallback(self, mock_database):
+        """旧客户端只传 custom_tool_ids 时,转为 user_args={} 的绑定。"""
+        mock_col = MagicMock()
+        mock_col.find_one = AsyncMock(side_effect=[_fake_doc(), None, _fake_doc()])
+        mock_col.update_one = AsyncMock()
+        mock_database.__getitem__.return_value = mock_col
+
+        with patch(
+            "app.services.tool_service.ToolService.get_tools_by_ids",
+            new_callable=AsyncMock,
+            return_value=[],
+        ):
+            await AgentService.update_agent(
+                agent_id="agent_01HTEST",
+                name="Test Agent",
+                custom_tool_ids=["tool_legacy_1", "tool_legacy_2"],
+            )
+
+        args, _kwargs = mock_col.update_one.call_args
+        saved = args[1]["$set"]["custom_tools"]
+        assert [b["tool_id"] for b in saved] == ["tool_legacy_1", "tool_legacy_2"]
+        assert all(b["user_args"] == {} for b in saved)
+
 
 # ── publish_agent ─────────────────────────────────────────────────────────────
 

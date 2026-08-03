@@ -5,7 +5,7 @@
  * 字段 snake_case，与后端 schema 对齐；类型精简自 frontend-studio 的 tasks-api.ts，
  * 只取 dispatch_workflow 卡片需要的部分。
  */
-import { apiRequest } from './client'
+import { apiRequest, AUTH_MODE } from './client'
 
 export type TaskStatusValue =
   | 'pending'
@@ -123,10 +123,40 @@ export interface NodeTimelineResponse {
 
 const PATH = (id: string) => `/v1/tasks/${encodeURIComponent(id)}`
 
+/**
+ * apikey 模式下任务详情走外部接口 /v1/ext/tasks/{id}（返回 ExtTaskResponse，
+ * 字段是 TaskDetail 的子集：缺 timeline/version/checkpoint/created_by 等）。
+ * 这里补上缺省值，让调用方拿到的对象形状与 TaskDetail 一致，避免 undefined 崩溃。
+ * （intervene/outputs/node-timeline 在 apikey 模式下外部接口未提供，不在本分支处理。）
+ */
+async function getTaskDetail(taskId: string): Promise<TaskDetail> {
+  if (AUTH_MODE === 'apikey') {
+    const ext = await apiRequest<Partial<TaskDetail>>(
+      `/v1/ext/tasks/${encodeURIComponent(taskId)}`,
+    )
+    return {
+      id: ext.id ?? taskId,
+      workflow_id: ext.workflow_id ?? '',
+      status: ext.status ?? 'pending',
+      input: ext.input ?? {},
+      output: ext.output ?? null,
+      created_by: ext.created_by ?? '',
+      created_by_type: ext.created_by_type ?? '',
+      version: ext.version ?? 0,
+      error: ext.error ?? null,
+      checkpoint: ext.checkpoint ?? null,
+      timeline: ext.timeline ?? [],
+      created_at: ext.created_at ?? '',
+      updated_at: ext.updated_at ?? '',
+    }
+  }
+  return apiRequest<TaskDetail>(PATH(taskId))
+}
+
 export const tasksApi = {
-  /** GET /v1/tasks/{id} — 任务详情（status/input/output/error/timeline/checkpoint/version）。 */
+  /** GET 任务详情 — jwt 模式走 /v1/tasks/{id}（完整），apikey 模式走 /v1/ext/tasks/{id}（精简）。 */
   get(taskId: string): Promise<TaskDetail> {
-    return apiRequest<TaskDetail>(PATH(taskId))
+    return getTaskDetail(taskId)
   },
 
   /** POST /v1/tasks/{id}/intervene — approve/reject/skip/retry/resume/cancel，带 version 乐观锁。 */

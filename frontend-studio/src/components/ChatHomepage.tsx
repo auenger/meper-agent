@@ -63,8 +63,9 @@ export function parseOutputAttachments(text: string): ChatAttachment[] {
  *  attached to the message. */
 function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: string): Message {
   const timeline: TimelineEntry[] = [];
-  // Map tool_name → index of the last pending tool_call entry (for merging
-  // the matching tool_result).
+  // Map tool_call_id → index of the last pending tool_call entry (for merging
+  // the matching tool_result). Prefer id over tool_name so parallel same-name
+  // calls (e.g. two kb_search) pair correctly instead of overwriting each other.
   const pendingToolCalls = new Map<string, number>();
   const outputAtts: ChatAttachment[] = [];
   let isInterrupted = false;
@@ -91,6 +92,7 @@ function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: st
         type: 'tool',
         content: '',
         toolName: name,
+        toolCallId: entry.id,
         args: entry.args,
         toolStatus: isInterruptTool
           ? 'success'
@@ -99,7 +101,11 @@ function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: st
             : 'running',
         result: entry.type === 'tool' ? entry.content : undefined,
       }) - 1;
-      if (entry.type === 'tool_call' && name) pendingToolCalls.set(name, idx);
+      if (entry.type === 'tool_call') {
+        // Prefer tool_call_id; fall back to tool_name for older records.
+        const mapKey = entry.id || name;
+        if (mapKey) pendingToolCalls.set(mapKey, idx);
+      }
       // 收集 output 产物。
       if (entry.type === 'tool' && typeof entry.content === 'string') {
         outputAtts.push(...parseOutputAttachments(entry.content));
@@ -110,20 +116,23 @@ function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: st
       const isError =
         entry.status === 'error' ||
         (typeof entry.content === 'string' && /\b(error|fail)/i.test(entry.content));
-      const pendingIdx = name ? pendingToolCalls.get(name) : undefined;
+      // Prefer tool_call_id; fall back to tool_name for older records.
+      const mapKey = entry.tool_call_id || name;
+      const pendingIdx = mapKey ? pendingToolCalls.get(mapKey) : undefined;
       if (pendingIdx !== undefined && timeline[pendingIdx]) {
         timeline[pendingIdx] = {
           ...timeline[pendingIdx],
           result: entry.content ?? '',
           toolStatus: isError ? 'error' : 'success',
         };
-        pendingToolCalls.delete(name);
+        pendingToolCalls.delete(mapKey);
       } else {
         timeline.push({
           id: `${rec._id}-tool-${name}-${i}`,
           type: 'tool',
           content: '',
           toolName: name,
+          toolCallId: entry.tool_call_id,
           result: entry.content ?? '',
           toolStatus: isError ? 'error' : 'success',
         });
@@ -884,7 +893,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             break;
           }
           case 'tool_call': {
-            // 升级 pending tool entry 为 running（填入完整 args），没有就新建。
+            // 升级 pending tool entry 为 running（填入完整 args + toolCallId），
+            // 没有就新建。toolCallId 用于把后续 tool_result 精确配对到本调用
+            //（处理并行同名调用，如两次 kb_search）。
             if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
             deltaBufferRef.current = null;
             rafIdRef.current = null;
@@ -901,6 +912,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                   tl[targetIdx] = {
                     ...tl[targetIdx],
                     toolName: evt.tool_name,
+                    toolCallId: evt.id,
                     args: evt.args,
                     toolStatus: 'running',
                   };
@@ -910,6 +922,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                     type: 'tool',
                     content: '',
                     toolName: evt.tool_name,
+                    toolCallId: evt.id,
                     args: evt.args,
                     toolStatus: 'running',
                   });
@@ -922,6 +935,13 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
           case 'tool_result': {
             const resultContent = evt.content;
             const isError = evt.status === 'error';
+            const tcid = evt.tool_call_id;
+            // 优先按 tool_call_id 精确匹配（处理并行同名调用）；无 id 的旧数据
+            // 回退到 toolName + running 匹配。
+            const matchesEntry = (e: TimelineEntry): boolean =>
+              e.type === 'tool' &&
+              e.toolStatus === 'running' &&
+              (tcid ? e.toolCallId === tcid : e.toolName === evt.tool_name);
             // 解析工具结果里产出的 output 文件，累积到 agent 消息（去重）。
             const newAtts = parseOutputAttachments(resultContent);
             if (newAtts.length > 0) {
@@ -937,11 +957,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                 const tl = [...(m.timeline ?? [])];
                 // 从后往前找匹配的 running tool entry，填入 result + 状态。
                 for (let i = tl.length - 1; i >= 0; i--) {
-                  if (
-                    tl[i].type === 'tool' &&
-                    tl[i].toolName === evt.tool_name &&
-                    tl[i].toolStatus === 'running'
-                  ) {
+                  if (matchesEntry(tl[i])) {
                     tl[i] = {
                       ...tl[i],
                       result: resultContent,
@@ -1010,19 +1026,32 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
           case 'interrupt': {
             // Agent 经 ask_clarification/confirm_workflow 暂停等待用户回答：
             // 标记该消息为中断态（卡片可交互），记录消息 id 使下次发送走 /resume。
+            // 后端在 interrupt 事件里把 question/options/fields/context 作为顶级
+            // 字段下发（权威来源），这里回填到对应 ask_clarification tool entry 的
+            // args——即使 tool_call 的 args 缺失/延迟，卡片也能正常渲染。
             setLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
-                // 把最后一个未答的 ask_clarification/confirm_workflow tool entry
-                // 标为 success（卡片就绪可交互）。
                 const tl = [...(m.timeline ?? [])];
                 for (let i = tl.length - 1; i >= 0; i--) {
                   if (
                     tl[i].type === 'tool' &&
-                    (tl[i].toolName === 'ask_clarification' || tl[i].toolName === 'confirm_workflow') &&
-                    !tl[i].result
+                    !tl[i].result &&
+                    (tl[i].toolName === 'ask_clarification' || tl[i].toolName === 'confirm_workflow')
                   ) {
-                    tl[i] = { ...tl[i], toolStatus: 'success' };
+                    if (tl[i].toolName === 'ask_clarification') {
+                      // 把后端权威字段合并进 args（不覆盖已有值）。
+                      const args = { ...tl[i].args };
+                      if (!args.question && evt.question) args.question = evt.question;
+                      if (!args.clarification_type && evt.clarification_type)
+                        args.clarification_type = evt.clarification_type;
+                      if (args.context == null && evt.context != null) args.context = evt.context;
+                      if (args.options == null && evt.options != null) args.options = evt.options;
+                      if (args.fields == null && evt.fields != null) args.fields = evt.fields;
+                      tl[i] = { ...tl[i], args, toolStatus: 'success' };
+                    } else {
+                      tl[i] = { ...tl[i], toolStatus: 'success' };
+                    }
                     break;
                   }
                 }
@@ -1838,8 +1867,11 @@ function ClarificationCard({
     ? String(args.clarification_type)
     : 'missing_info';
   const answered = !!entry.result;
-  // 交互态：未回答 + 消息处于中断态（interrupt 挂起中，或历史回填恢复的中断）。
-  const interactive = !answered && interrupted;
+  // 交互态：只要未回答就可交互。不再门控 interrupted 标志——该标志用于 /resume
+  // 路由判断，不应影响卡片交互元素的可见性（否则 interrupt 状态没及时传递时
+  // 选项/输入框会被隐藏，导致卡片「看不清楚」）。
+  void interrupted; // 保留 prop 以兼容调用方，但不再用作交互门控
+  const interactive = !answered;
 
   // fields 向导模式：ask_clarification 带 fields 时渲染多步结构化表单，
   // 单次收集多个字段。fields 可能是数组或 JSON 字符串（LLM 容错）。
@@ -1880,19 +1912,37 @@ function ClarificationCard({
   const verticalOptions =
     clarificationType === 'approach_choice' || clarificationType === 'ambiguous_requirement';
 
-  const palette = isRisk
-    ? { wrap: 'bg-amber-500/10 border-amber-500/30', q: 'text-amber-200', icon: '⚠️' }
+  // 配色完全复用 TOOL_STATUS_CFG 的视觉语言（已验证好看 + 协调）：
+  // 外层用淡彩透明底（/10）+ 彩色边框（/30），标题文字用彩色（-400）。
+  // 问题正文放在实底深色内嵌区块（bg-[#121214]，和通用工具卡 detail pane 的
+  // <pre> 一致）里，用白字——这样背景好看、文字清晰，两全其美。
+  const accent = isRisk
+    ? { icon: 'text-amber-400', wrap: 'bg-amber-500/10 border-amber-500/30', sym: '⚠️' }
     : isSuggestion
-      ? { wrap: 'bg-emerald-500/10 border-emerald-500/30', q: 'text-emerald-200', icon: '💡' }
-      : { wrap: 'bg-indigo-500/10 border-indigo-500/30', q: 'text-indigo-200', icon: '❓' };
+      ? { icon: 'text-emerald-400', wrap: 'bg-emerald-500/10 border-emerald-500/30', sym: '💡' }
+      : { icon: 'text-indigo-400', wrap: 'bg-indigo-500/10 border-indigo-500/30', sym: '❓' };
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className={`rounded-xl rounded-tl-none border px-4 py-3 font-sans ${palette.wrap}`}>
+    <div className={`rounded-xl rounded-tl-none border overflow-hidden font-sans shadow-sm ${accent.wrap}`}>
+      {/* 标题行：与通用工具卡 header 一致（透明底 + 彩色字） */}
+      <div className="flex items-center gap-2 px-3.5 py-2.5">
+        {answered ? (
+          <CheckCircle className={`w-3.5 h-3.5 shrink-0 ${accent.icon}`} />
+        ) : (
+          <Loader2 className={`w-3.5 h-3.5 shrink-0 ${accent.icon} animate-spin`} />
+        )}
+        <span className={`text-xs font-semibold truncate ${accent.icon}`}>澄清提问</span>
+        <span className={`text-[10px] ${accent.icon} opacity-70`}>
+          {answered ? '已回答' : '等待回答'}
+        </span>
+      </div>
+
+      {/* 问题正文 + 交互区：实底深色内嵌区块（bg-[#121214]）+ 白字，可读性优先 */}
+      <div className="mx-2.5 mb-2.5 rounded-lg bg-[#121214] border border-[#27272a] px-3.5 py-3">
         <div className="flex items-start gap-2.5">
-          <span className="text-sm mt-0.5 select-none">{palette.icon}</span>
+          <span className={`text-sm mt-0.5 select-none ${accent.icon}`}>{accent.sym}</span>
           <div className="flex-1 min-w-0">
-            <div className={`text-[13px] whitespace-pre-wrap leading-relaxed ${palette.q}`}>
+            <div className="text-[13px] font-medium whitespace-pre-wrap leading-relaxed text-[#fafafa]">
               {question}
             </div>
 
@@ -1904,7 +1954,7 @@ function ClarificationCard({
                       key={i}
                       type="button"
                       onClick={() => onAnswer?.(opt)}
-                      className="text-left px-3 py-1.5 rounded-lg text-xs border bg-[#121214] border-[#27272a] text-slate-200 hover:border-indigo-500/50 hover:bg-indigo-500/10 transition cursor-pointer"
+                      className="text-left px-3 py-1.5 rounded-lg text-xs border bg-[#09090b] border-[#3f3f46] text-[#fafafa] hover:border-indigo-500/60 hover:bg-indigo-500/10 transition cursor-pointer"
                     >
                       {opt}
                     </button>
@@ -1913,8 +1963,8 @@ function ClarificationCard({
                       key={i}
                       className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
                         entry.result === opt
-                          ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200 font-medium'
-                          : 'bg-[#121214]/60 border-[#27272a] text-[#71717a]'
+                          ? 'bg-indigo-500/20 border-indigo-500/60 text-[#fafafa] font-medium'
+                          : 'bg-[#09090b] border-[#27272a] text-[#a1a1aa]'
                       }`}
                     >
                       {opt}
@@ -1938,7 +1988,7 @@ function ClarificationCard({
                 <button
                   type="button"
                   onClick={() => onAnswer?.('取消')}
-                  className="px-3.5 py-1.5 rounded-lg text-xs bg-[#121214] border border-[#27272a] text-slate-300 hover:bg-[#27272a] transition cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-lg text-xs bg-[#09090b] border border-[#3f3f46] text-[#fafafa] hover:bg-[#27272a] transition cursor-pointer"
                 >
                   取消
                 </button>
@@ -1955,7 +2005,7 @@ function ClarificationCard({
                 >
                   接受
                 </button>
-                <span className="text-[11px] text-[#71717a]">或输入其他回答</span>
+                <span className="text-[11px] text-[#a1a1aa]">或输入其他回答</span>
               </div>
             )}
 
@@ -1973,7 +2023,7 @@ function ClarificationCard({
                     }
                   }}
                   placeholder="输入你的回答…"
-                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs border border-[#27272a] bg-[#121214] text-slate-200 placeholder:text-[#52525b] focus:outline-none focus:border-indigo-500/50"
+                  className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg text-xs border border-[#3f3f46] bg-[#09090b] text-[#fafafa] placeholder:text-[#52525b] focus:outline-none focus:border-indigo-500/60"
                 />
                 <button
                   type="button"
@@ -1985,18 +2035,20 @@ function ClarificationCard({
                 </button>
               </div>
             )}
+
+            {/* 已答：答案在卡片内部展示（紧贴问题下方，与 ClarificationFormCard 一致），
+                不再渲染独立的右对齐气泡。 */}
+            {answered && entry.result && !options.includes(entry.result) && (
+              <div className="mt-3 pt-3 border-t border-[#27272a] flex items-baseline gap-2 text-xs">
+                <span className={`shrink-0 ${accent.icon}`}>你的回答:</span>
+                <span className="text-[#fafafa] font-medium break-all whitespace-pre-wrap">
+                  {entry.result}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       </div>
-
-      {/* 用户答案：indigo 右对齐气泡 */}
-      {answered && (
-        <div className="flex flex-row-reverse">
-          <div className="max-w-[75%] rounded-xl rounded-tr-sm px-3 py-2 text-[13px] leading-relaxed bg-indigo-500/15 border border-indigo-500/30 text-indigo-200 whitespace-pre-wrap">
-            {entry.result}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

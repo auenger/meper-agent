@@ -11,10 +11,10 @@
  */
 import { useState, type ChangeEvent } from 'react';
 import {
-  ArrowLeft, Loader2, Search, Trash2, Upload, RefreshCw, FileText, AlertCircle, CheckCircle2,
+  ArrowLeft, Loader2, Search, Trash2, Upload, RefreshCw, FileText, AlertCircle, CheckCircle2, Eye, X,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { knowledgeApi, knowledgeKeys, type KbDocument, type KbSearchResultItem } from '../services/knowledge-api';
+import { knowledgeApi, knowledgeKeys, type KbChunkItem, type KbDocument, type KbSearchResultItem } from '../services/knowledge-api';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
 
@@ -96,6 +96,14 @@ export function KbVectorDetailPage({
     mutationFn: () => knowledgeApi.search(kbId, query, 5),
     onSuccess: (res) => setSearchResults(res.results),
     onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '检索失败'),
+  });
+
+  // ── View chunks modal ──
+  const [chunksDoc, setChunksDoc] = useState<KbDocument | null>(null);
+  const chunksQ = useQuery({
+    queryKey: knowledgeKeys.chunks(kbId, chunksDoc?.id ?? ''),
+    queryFn: () => knowledgeApi.getDocumentChunks(kbId, chunksDoc!.id),
+    enabled: !!chunksDoc,
   });
 
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -194,6 +202,15 @@ export function KbVectorDetailPage({
                         </div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
+                        {doc.chunk_count > 0 && (
+                          <button
+                            onClick={() => setChunksDoc(doc)}
+                            className="p-1 rounded text-zinc-400 hover:text-white hover:bg-[#27272a] transition cursor-pointer"
+                            title="查看切片"
+                          >
+                            <Eye className="w-3 h-3" />
+                          </button>
+                        )}
                         {doc.parse_status === 'failed' && (
                           <button
                             onClick={() => reindexM.mutate(doc.id)}
@@ -275,6 +292,66 @@ export function KbVectorDetailPage({
           )}
         </div>
       </div>
+
+      {/* ── Chunks modal ── */}
+      {chunksDoc && (
+        <div
+          className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50"
+          onClick={() => setChunksDoc(null)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[80vh] flex flex-col bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="p-4 border-b border-[#27272a] flex items-center justify-between bg-[#121214]/60">
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white truncate">切片内容 — {chunksDoc.name}</h3>
+                <p className="text-[10px] text-[#71717a] font-mono mt-0.5">
+                  共 {chunksQ.data?.length ?? chunksDoc.chunk_count} 个切片 · 只读
+                </p>
+              </div>
+              <button
+                onClick={() => setChunksDoc(null)}
+                className="p-1 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition cursor-pointer"
+                title="关闭"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-2">
+              {chunksQ.isLoading && (
+                <div className="flex items-center justify-center py-10 text-xs text-[#71717a]">
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" /> 加载中…
+                </div>
+              )}
+              {chunksQ.isError && (
+                <p className="text-xs text-rose-400 text-center py-10">
+                  {chunksQ.error instanceof Error ? chunksQ.error.message : '加载切片失败'}
+                </p>
+              )}
+              {chunksQ.data?.length === 0 && (
+                <p className="text-xs text-[#71717a] text-center py-10">暂无切片数据。</p>
+              )}
+              {chunksQ.data?.map((chunk) => (
+                <ChunkBlock key={chunk.chunk_index} chunk={chunk} />
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChunkBlock({ chunk }: { chunk: KbChunkItem }) {
+  return (
+    <div className="bg-[#121214] border border-[#27272a] rounded-lg p-3 space-y-1.5">
+      <div className="flex items-center gap-2 text-[10px] font-mono text-[#71717a]">
+        <span className="text-zinc-400">#{chunk.chunk_index + 1}</span>
+        {chunk.source_file && <span className="truncate">{chunk.source_file}</span>}
+        {chunk.page != null && <span>· P{chunk.page}</span>}
+      </div>
+      <p className="text-xs text-[#d4d4d8] leading-relaxed whitespace-pre-wrap break-words">{chunk.text}</p>
     </div>
   );
 }

@@ -72,6 +72,15 @@ class ToolPreview(BaseModel):
     input_schema: dict = Field(default_factory=dict, description="输入参数 JSON Schema")
 
 
+class KnowledgeBasePreview(BaseModel):
+    """预览中展示的已绑定知识库摘要。"""
+
+    id: str = Field(..., description="知识库 ID")
+    name: str = Field(default="", description="知识库名称")
+    type: str = Field(default="tree", description="知识库类型: tree / vector")
+    description: str = Field(default="", description="知识库描述")
+
+
 class PreviewResponse(BaseModel):
     """Agent 执行预览 — 组装完成的 prompt 和 tools 快照。
 
@@ -94,4 +103,8 @@ class PreviewResponse(BaseModel):
     tool_summary: dict = Field(
         default_factory=dict,
         description="工具统计摘要，如 {total: 3, skill: 1, mcp: 1, builtin: 1}",
+    )
+    knowledge_bases: list[KnowledgeBasePreview] = Field(
+        default_factory=list,
+        description="已绑定的知识库列表（运行时据此注入 kb_search / kb_glob 等检索工具）",
     )

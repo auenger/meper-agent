@@ -104,7 +104,11 @@ async def rebuild_messages_from_records(
                 elif etype == "tool_result":
                     result.append(ToolMessage(
                         content=entry.get("content", ""),
-                        tool_call_id=entry.get("id", "") or f"call_{i}",
+                        # 优先用持久化的 tool_call_id(新版);回退到旧版的 id 字段;
+                        # 都没有时合成一个(与上方 tool_call 重建的 fallback 对齐)。
+                        tool_call_id=entry.get("tool_call_id")
+                        or entry.get("id", "")
+                        or f"call_{i}",
                     ))
                     i += 1
                 else:

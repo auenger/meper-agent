@@ -10,7 +10,7 @@ from app.engine.kb.vector.parser.base import ParseResult, TextBlock
 
 
 def parse_pdf(file_bytes: bytes) -> ParseResult:
-    import fitz  # PyMuPDF
+    import fitz  # type: ignore[import-untyped]  # PyMuPDF
 
     blocks: list[TextBlock] = []
     # ``stream`` opens from bytes without touching the filesystem.

@@ -6,6 +6,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_flow_harness.engine.context import (
     compress_messages,
+    estimate_context_tokens,
     estimate_message_tokens,
     estimate_tokens,
     extract_model_name,
@@ -134,3 +135,93 @@ def test_compress_messages_does_not_swallow_system_into_summary() -> None:
         if isinstance(m, SystemMessage) and "对话历史摘要" in str(m.content)
     )
     assert "NEVER_SUMMARISE_ME" not in summary_text
+
+
+def test_compress_messages_no_orphan_tool_pairs() -> None:
+    """压缩后保留段(recent)无孤儿 tool_call / tool_result。
+
+    回归：旧实现按 history[:-keep_last] 切片，切点可能落在配对中间，导致
+    recent 段出现孤儿 → API 400 "tool_use ids ... no tool_use block"。
+    """
+    from langchain_core.messages import ToolMessage
+
+    # 构造含工具调用回合的长历史，让切片点可能落在配对中间。
+    messages = [SystemMessage(content="sys", id="sys"), HumanMessage(content="start")]
+    for i in range(12):
+        messages.extend([
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "kb_search", "args": {"q": f"t{i}"}, "id": f"c{i}"}],
+                id=f"a{i}",
+            ),
+            ToolMessage(content=f"结果{i}", tool_call_id=f"c{i}"),
+            HumanMessage(content=f"追问{i}", id=f"h{i}"),
+        ])
+
+    compressed = compress_messages(messages, "gpt-4o-mini", keep_last=5, context_window=200)
+
+    # 收集 recent 段（摘要之后的非 system 消息）里的 call/result 配对。
+    non_system = [m for m in compressed if not isinstance(m, SystemMessage)]
+    call_ids = set()
+    for m in non_system:
+        if isinstance(m, AIMessage):
+            for tc in (getattr(m, "tool_calls", None) or []):
+                if isinstance(tc, dict):
+                    call_ids.add(tc.get("id", ""))
+    result_ids = {
+        m.tool_call_id for m in non_system if isinstance(m, ToolMessage)
+    }
+    # 每个 tool_result 必须有对应的 tool_call（无孤儿 result）。
+    orphans = result_ids - call_ids
+    assert not orphans, f"孤儿 tool_result: {orphans}"
+    # 每个 tool_call 若 content 为空则必须有 result（无孤儿 call）。
+    for m in non_system:
+        if isinstance(m, AIMessage) and not m.content:
+            for tc in (m.tool_calls or []):
+                tcid = tc.get("id", "") if isinstance(tc, dict) else ""
+                assert tcid in result_ids, f"孤儿 tool_call: {tcid}"
+
+
+# ---------------------------------------------------------------------------
+# estimate_context_tokens — 用 input_tokens 优先,fallback len//4
+# ---------------------------------------------------------------------------
+
+
+def test_estimate_context_tokens_uses_input_tokens() -> None:
+    """有 AIMessage(带 usage_metadata)时,用 input_tokens + 新增消息估算。"""
+    ai = AIMessage(
+        content="回答",
+        usage_metadata={"input_tokens": 1000, "output_tokens": 50, "total_tokens": 1050},
+    )
+    # AIMessage 之后新增了一条 HumanMessage("新问题"*2 = 6字符)
+    new_content = "新问题" * 2
+    msgs = [SystemMessage(content="sys"), HumanMessage(content="hi"), ai,
+            HumanMessage(content=new_content)]
+    result = estimate_context_tokens(msgs)
+    # 1000(input_tokens) + 新增消息估算(6字符//4 + 4元数据 = 5)
+    assert result == 1000 + estimate_message_tokens(HumanMessage(content=new_content))
+
+
+def test_estimate_context_tokens_no_ai_fallback() -> None:
+    """无 AIMessage(首轮) → fallback 全量 len//4。"""
+    msgs = [SystemMessage(content="sys"), HumanMessage(content="hello world")]
+    result = estimate_context_tokens(msgs)
+    assert result == estimate_message_tokens(msgs[0]) + estimate_message_tokens(msgs[1])
+
+
+def test_estimate_context_tokens_ai_no_usage_fallback() -> None:
+    """AIMessage 无 usage_metadata → fallback 全量估算。"""
+    ai = AIMessage(content="回答")  # 无 usage_metadata
+    msgs = [SystemMessage(content="sys"), ai]
+    result = estimate_context_tokens(msgs)
+    assert result == estimate_message_tokens(msgs[0]) + estimate_message_tokens(ai)
+
+
+def test_estimate_context_tokens_uses_last_ai() -> None:
+    """多条 AIMessage 时,用最后一条的 input_tokens。"""
+    ai1 = AIMessage(content="r1", usage_metadata={"input_tokens": 500, "output_tokens": 10, "total_tokens": 510})
+    ai2 = AIMessage(content="r2", usage_metadata={"input_tokens": 2000, "output_tokens": 20, "total_tokens": 2020})
+    msgs = [SystemMessage(content="sys"), ai1, HumanMessage(content="q"), ai2]
+    result = estimate_context_tokens(msgs)
+    # 用 ai2 的 2000,ai2 之后无新增消息
+    assert result == 2000

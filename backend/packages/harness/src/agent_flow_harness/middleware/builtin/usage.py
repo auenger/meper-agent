@@ -43,6 +43,11 @@ class UsageMiddleware:
         }
         self._llm_start: float | None = None
         self._tool_starts: dict[str, float] = {}
+        # Whether self.metrics has been seeded from state["total_tokens"] yet.
+        # On the first after_llm we adopt any pre-existing cumulative total
+        # (e.g. carried over from a prior request in the same session) so the
+        # middleware's running totals stay consistent with the guard's view.
+        self._seeded = False
 
     async def before_llm(self, state: "AgentState") -> "AgentState":
         self._llm_start = time.monotonic()
@@ -61,6 +66,16 @@ class UsageMiddleware:
                 "usage_no_token_data",
                 response_metadata_keys=list((getattr(response, "response_metadata", None) or {}).keys()),
             )
+
+        # On first invocation, adopt the cumulative total already in state
+        # (e.g. carried over from prior requests in the same session). Without
+        # this, self.metrics["total_tokens"] restarts at 0 each request and
+        # overwrites state["total_tokens"] below, defeating TokenBudgetGuard.
+        if not self._seeded:
+            carried = int(state.get("total_tokens", 0) or 0)
+            if carried:
+                self.metrics["total_tokens"] = carried
+            self._seeded = True
 
         self.metrics["input_tokens"] += usage.get("input", 0)
         self.metrics["output_tokens"] += usage.get("output", 0)
@@ -157,6 +172,7 @@ class UsageMiddleware:
         }
         self._llm_start = None
         self._tool_starts = {}
+        self._seeded = False
 
 
 __all__ = ["UsageMiddleware"]

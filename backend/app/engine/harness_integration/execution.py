@@ -85,6 +85,10 @@ async def stream(
             context_window=hctx["context_window"],
             middlewares=hctx["middlewares"],
             thread_id=session_id,
+            tool_output_reference_formatter=hctx["tool_output_reference_formatter"],
+            protected_turns=hctx["protected_turns"],
+            compression_threshold=hctx["compression_threshold"],
+            hard_limit_ratio=hctx["hard_limit_ratio"],
         )
         await _maybe_migrate_legacy(graph, config, legacy_records)
 
@@ -141,6 +145,10 @@ async def invoke(
             middlewares=hctx["middlewares"],
             thread_id=session_id,
             cancel_checker=cancel_checker,
+            tool_output_reference_formatter=hctx["tool_output_reference_formatter"],
+            protected_turns=hctx["protected_turns"],
+            compression_threshold=hctx["compression_threshold"],
+            hard_limit_ratio=hctx["hard_limit_ratio"],
         )
         await _maybe_migrate_legacy(graph, config, legacy_records)
         result = await graph.ainvoke(state, config=config)
@@ -188,6 +196,10 @@ async def resume_agent(
             middlewares=hctx["middlewares"],
             thread_id=thread_id,
             cancel_checker=cancel_checker,
+            tool_output_reference_formatter=hctx["tool_output_reference_formatter"],
+            protected_turns=hctx["protected_turns"],
+            compression_threshold=hctx["compression_threshold"],
+            hard_limit_ratio=hctx["hard_limit_ratio"],
         )
         return await graph.ainvoke(Command(resume=resume_value), config=config)
     finally:
@@ -229,6 +241,10 @@ async def resume(
             context_window=hctx["context_window"],
             middlewares=hctx["middlewares"],
             thread_id=session_id,
+            tool_output_reference_formatter=hctx["tool_output_reference_formatter"],
+            protected_turns=hctx["protected_turns"],
+            compression_threshold=hctx["compression_threshold"],
+            hard_limit_ratio=hctx["hard_limit_ratio"],
         )
 
         event_stream = graph.astream_events(

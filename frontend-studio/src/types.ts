@@ -136,6 +136,9 @@ export interface TimelineEntry {
   /** tool 类型专用 */
   toolName?: string;
   args?: Record<string, unknown>;
+  /** LLM-assigned call id linking tool_call ↔ tool_result. Used to pair
+   *  parallel same-name calls precisely (instead of by tool_name). */
+  toolCallId?: string;
   result?: string;
   toolStatus?: ToolStatus;
   /** 折叠态（thinking / tool 详情） */

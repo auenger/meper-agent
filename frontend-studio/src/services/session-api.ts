@@ -71,6 +71,11 @@ export interface TimelineEntryData {
   content?: string
   tool_name?: string
   args?: Record<string, unknown>
+  /** For tool_call: the LLM-assigned call id (links to tool_result.tool_call_id). */
+  id?: string
+  /** For tool_result: the LLM-assigned id linking back to its tool_call.
+   *  Used to pair parallel same-name calls instead of matching by tool_name. */
+  tool_call_id?: string
   /** For tool_result: structured success/error status from backend. */
   status?: 'success' | 'error'
   /** For interrupt entries: discriminates clarification vs workflow_confirmation. */

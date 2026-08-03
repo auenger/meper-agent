@@ -63,6 +63,8 @@ def test_tool_call_then_tool_result():
     assert events[0].id == "c1"
     assert events[1].tool_name == "read"
     assert events[1].content == "file"
+    # tool_result 持久化了 tool_call_id(recall_tool_result 回溯的前提)。
+    assert events[1].tool_call_id == "c1"
 
 
 def test_multiple_tool_calls_in_one_message():

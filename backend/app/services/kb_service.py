@@ -327,7 +327,7 @@ class KnowledgeBaseService:
             ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
             if ext not in allowed:
                 errors.append(
-                    {"filename": filename, "error": f"不支持的文件类型 .{ext}（支持 pdf/docx/md/txt）"}
+                    {"filename": filename, "error": f"不支持的文件类型 .{ext}（支持 pdf/docx/pptx/xlsx/csv/md/txt/html）"}
                 )
                 continue
             if len(raw) > max_file:
@@ -366,9 +366,7 @@ class KnowledgeBaseService:
                 logger.exception("kb_vector_upload_failed", filename=filename)
                 errors.append({"filename": filename, "error": f"上传失败: {exc}"})
 
-        await KnowledgeBaseService._collection().update_one(
-            {"_id": kb_id}, {"$set": {"updated_at": utc_now().isoformat()}}
-        )
+        await KnowledgeBaseService.recompute_vector_stats(kb_id)
         logger.info(
             "kb_vector_uploaded",
             kb_id=kb_id,
@@ -386,15 +384,43 @@ class KnowledgeBaseService:
         )
         return {"file_count": file_count, "total_size": total_size}
 
+    @staticmethod
+    async def recompute_vector_stats(kb_id: str) -> None:
+        """Refresh file_count/total_size for a vector KB from the
+        ``knowledge_documents`` collection (vector docs live there, not on
+        disk like tree KBs). Called after upload/delete to keep the list
+        view's "X 文件 / Y MB" badge accurate.
+        """
+        from app.services.knowledge_document_service import (
+            KnowledgeDocumentService,
+        )
+
+        count, size = await KnowledgeDocumentService.compute_kb_stats(kb_id)
+        await KnowledgeBaseService._collection().update_one(
+            {"_id": kb_id},
+            {
+                "$set": {
+                    "file_count": count,
+                    "total_size": size,
+                    "updated_at": utc_now().isoformat(),
+                }
+            },
+        )
+
 
 # ── module-level helpers ────────────────────────────────────────────────
 
 _MIME_MAP = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "csv": "text/csv",
     "md": "text/markdown",
     "markdown": "text/markdown",
     "txt": "text/plain",
+    "html": "text/html",
+    "htm": "text/html",
 }
 
 

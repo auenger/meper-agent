@@ -92,6 +92,12 @@ const AgentConfigForm = forwardRef<AgentConfigFormHandle, AgentConfigFormProps>(
           mcp_connection_ids: agent.mcp_connection_ids ?? [],
           workflow_ids: agent.workflow_ids ?? [],
           custom_tool_ids: agent.custom_tool_ids ?? [],
+          // 旧 Agent 可能只有 custom_tool_ids 没有 custom_tools(字段后加)。
+          // 反向派生绑定,避免编辑时已绑定的自定义工具显示为空、保存后被清空。
+          custom_tools: agent.custom_tools?.length
+            ? agent.custom_tools
+            : (agent.custom_tool_ids ?? []).map((id) => ({ tool_id: id, user_args: {} })),
+          knowledge_base_ids: agent.knowledge_base_ids ?? [],
         })
       } else {
         setFormName('')
@@ -124,7 +130,8 @@ const AgentConfigForm = forwardRef<AgentConfigFormHandle, AgentConfigFormProps>(
             builtin_config: toolConfig.builtin_config,
             workflow_ids: toolConfig.workflow_ids,
             custom_tool_ids: toolConfig.custom_tool_ids,
-            knowledge_base_ids: agent.knowledge_base_ids,
+            custom_tools: toolConfig.custom_tools,
+            knowledge_base_ids: toolConfig.knowledge_base_ids,
             default_model: formModelId,
             max_retry: formMaxRetry,
             max_tokens: formMaxTokens,

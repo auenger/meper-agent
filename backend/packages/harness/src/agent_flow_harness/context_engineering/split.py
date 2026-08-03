@@ -34,8 +34,8 @@ def split_system_history(
     """
     from langchain_core.messages import SystemMessage
 
-    system_msgs = [m for m in messages if isinstance(m, SystemMessage)]
-    history = [m for m in messages if not isinstance(m, SystemMessage)]
+    system_msgs: list[BaseMessage] = [m for m in messages if isinstance(m, SystemMessage)]
+    history: list[BaseMessage] = [m for m in messages if not isinstance(m, SystemMessage)]
     return system_msgs, history
 
 

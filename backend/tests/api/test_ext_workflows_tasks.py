@@ -395,6 +395,61 @@ class TestGetTask:
         finally:
             cleanup()
 
+    def test_get_task_created_by_agent_callback_mode(self, client, full_principal) -> None:
+        """Tasks created by an Agent in callback mode carry ``owner:sub``.
+
+        These must still be accessible to the owner's API Key — the agent
+        writes the resolved user_id as created_by so NotificationService
+        can address the real end-user.
+        """
+        cleanup = _override_auth(full_principal)
+        try:
+            task_doc = _make_task_doc(status="running")
+            task_doc["created_by"] = "user_owner:partner_user_42"
+            task_doc["created_by_type"] = "agent"
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["id"] == "task_01"
+            assert data["status"] == "running"
+        finally:
+            cleanup()
+
+    def test_get_task_created_by_agent_legacy_visitor(self, client, full_principal) -> None:
+        """Tasks created by an Agent in legacy mode carry ``owner:visitor_id``."""
+        cleanup = _override_auth(full_principal)
+        try:
+            task_doc = _make_task_doc()
+            task_doc["created_by"] = "user_owner:visitor_abc"
+            task_doc["created_by_type"] = "agent"
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 200
+        finally:
+            cleanup()
+
+    def test_get_task_owner_prefix_mismatch_denied(self, client, full_principal) -> None:
+        """A different owner's prefixed id must still be rejected."""
+        cleanup = _override_auth(full_principal)
+        try:
+            task_doc = _make_task_doc()
+            task_doc["created_by"] = "other_owner:some_sub"
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 404
+        finally:
+            cleanup()
+
     def test_get_task_scope_denied(self, client) -> None:
         principal = ApiKeyPrincipal(
             key_id="k", owner_user_id="u",

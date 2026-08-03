@@ -7,6 +7,7 @@ The API layer (agents.py) delegates here for all execution-related flows.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from typing import Any
@@ -76,9 +77,15 @@ class AgentExecutionService:
         # Legacy migration records
         legacy_records = await _load_legacy_records(session_id, body.input)
 
+        # Carry over the session's cumulative token spend so TokenBudgetGuard
+        # enforces the per-session budget across requests, not per-request.
+        session_doc = await SessionService.get_session(session_id)
+        session_total_tokens = int((session_doc or {}).get("total_tokens", 0) or 0)
+
         initial_state = _build_initial_state(
             agent_id, session_id, user_id, request_id, call_chain,
             external_call_chain, initial_messages,
+            total_tokens=session_total_tokens,
         )
 
         run_error: BaseException | None = None
@@ -163,9 +170,15 @@ class AgentExecutionService:
             initial_messages = _assemble_messages(system_text, user_content)
             legacy_records = await _load_legacy_records(session_id, body.input)
 
+            # Carry over the session's cumulative token spend so the budget
+            # guard enforces the per-session ceiling across requests.
+            session_doc = await SessionService.get_session(session_id)
+            session_total_tokens = int((session_doc or {}).get("total_tokens", 0) or 0)
+
             initial_state = _build_initial_state(
                 agent_id, session_id, user_id, request_id, call_chain,
                 external_call_chain, initial_messages, execution_path="react",
+                total_tokens=session_total_tokens,
             )
             run_error: BaseException | None = None
             try:
@@ -183,36 +196,28 @@ class AgentExecutionService:
                 )
             except Exception as exc:
                 run_error = exc
-                logger.error("agent_stream_error", agent_id=agent_id, request_id=request_id, error=str(exc))
-                logger.exception("agent_stream_error_traceback")
-                # 走 ErrorEvent schema 保留 source 字段，前端可据此区分
-                # 错误来源（llm/tool/graph），不再丢字段。
-                from app.engine.harness_integration.adapters.app_event import ErrorEvent
-
-                err_evt = ErrorEvent(
-                    message=str(exc),
-                    source=_classify_error_source(exc),
-                ).model_dump()
-                # 前端契约用 content，ErrorEvent 用 message，做字段重映射
-                err_evt["content"] = err_evt.pop("message", "")
-                collected_timeline.append(err_evt)   # 持久化到 agent 消息，供历史回填
-                await event_queue.put(f"data: {safe_json(err_evt)}\n\n")
+                await _emit_stream_error(
+                    exc, event_queue, collected_timeline,
+                    agent_id=agent_id, request_id=request_id, log_tag="agent_stream_error",
+                )
                 result = {}
             finally:
-                await _persist_agent_message(
-                    session_id, collected_timeline,
-                    token_usage=result.get("usage"),
-                )
+                with contextlib.suppress(Exception):
+                    await _persist_agent_message(
+                        session_id, collected_timeline,
+                        token_usage=result.get("usage"),
+                    )
                 # Unified execution log (all channels) + ext audit log (ext only).
-                await _record_execution_log(
-                    user_id=user_id, agent_id=agent_id, session_id=session_id,
-                    request_id=request_id, start_time_ms=start_time_ms,
-                    token_usage=result.get("usage"), error=run_error,
+                with contextlib.suppress(Exception):
+                    await _record_execution_log(
+                        user_id=user_id, agent_id=agent_id, session_id=session_id,
+                        request_id=request_id, start_time_ms=start_time_ms,
+                        token_usage=result.get("usage"), error=run_error,
+                    )
+                await _emit_stream_done(
+                    event_queue, request_id=request_id, session_id=session_id,
+                    usage=result.get("usage"),
                 )
-                await event_queue.put(
-                    f"data: {safe_json({'done': True, 'request_id': request_id, 'session_id': session_id, 'usage': result.get('usage', {})})}\n\n"
-                )
-                await event_queue.put(None)
 
         asyncio.create_task(_run())
         return event_queue, request_id, session_id
@@ -254,9 +259,14 @@ class AgentExecutionService:
 
         async def _run():
             start_time_ms = _now_ms()
+            # Carry over the session's cumulative token spend so the budget
+            # guard enforces the per-session ceiling, consistent with invoke/stream.
+            session_doc = await SessionService.get_session(session_id)
+            session_total_tokens = int((session_doc or {}).get("total_tokens", 0) or 0)
             state = {
                 "messages": [], "agent_id": agent_id,
                 "session_id": session_id, "user_id": user_id,
+                "total_tokens": session_total_tokens,
             }
             run_error: BaseException | None = None
             try:
@@ -267,35 +277,33 @@ class AgentExecutionService:
                 )
             except Exception as exc:
                 run_error = exc
-                logger.error("agent_resume_error", agent_id=agent_id, error=str(exc))
-                logger.exception("agent_resume_error_traceback")
-                from app.engine.harness_integration.adapters.app_event import ErrorEvent
-
-                err_evt = ErrorEvent(
-                    message=str(exc),
-                    source=_classify_error_source(exc),
-                ).model_dump()
-                err_evt["content"] = err_evt.pop("message", "")
-                collected_timeline.append(err_evt)   # 持久化到 agent 消息，供历史回填
-                await event_queue.put(f"data: {safe_json(err_evt)}\n\n")
+                await _emit_stream_error(
+                    exc, event_queue, collected_timeline,
+                    agent_id=agent_id, request_id=request_id, log_tag="agent_resume_error",
+                )
                 result = {}
             finally:
-                await _persist_agent_message(
-                    session_id, collected_timeline,
-                    extra_filter_types=("interrupt",),
-                    token_usage=result.get("usage"),
-                    append_to_last_agent=True,
-                )
+                with contextlib.suppress(Exception):
+                    await _persist_agent_message(
+                        session_id, collected_timeline,
+                        extra_filter_types=("interrupt",),
+                        token_usage=result.get("usage"),
+                        append_to_last_agent=True,
+                    )
                 # Unified execution log (all channels) + ext audit log (ext only).
-                await _record_execution_log(
-                    user_id=user_id, agent_id=agent_id, session_id=session_id,
-                    request_id=request_id, start_time_ms=start_time_ms,
-                    token_usage=result.get("usage"), error=run_error,
+                # Failure is non-fatal — must not block the terminal done event.
+                try:
+                    await _record_execution_log(
+                        user_id=user_id, agent_id=agent_id, session_id=session_id,
+                        request_id=request_id, start_time_ms=start_time_ms,
+                        token_usage=result.get("usage"), error=run_error,
+                    )
+                except Exception:
+                    logger.exception("agent_resume_log_error", agent_id=agent_id)
+                await _emit_stream_done(
+                    event_queue, request_id=request_id, session_id=session_id,
+                    usage=result.get("usage"),
                 )
-                await event_queue.put(
-                    f"data: {safe_json({'done': True, 'request_id': request_id, 'session_id': session_id, 'usage': result.get('usage', {})})}\n\n"
-                )
-                await event_queue.put(None)
 
         asyncio.create_task(_run())
         return event_queue, request_id, session_id
@@ -382,6 +390,7 @@ def _build_initial_state(
     external_chain: list[str] | None,
     messages: list,
     execution_path: str = "",
+    total_tokens: int = 0,
 ) -> dict[str, Any]:
     return {
         "messages": messages,
@@ -395,6 +404,10 @@ def _build_initial_state(
         "current_depth": len(external_chain or []),
         "session_id": session_id,
         "user_id": user_id,
+        # Seed cumulative tokens from the session so TokenBudgetGuard judges
+        # against the *session* budget, not just this single request. Persisted
+        # after each request via SessionService.add_tokens.
+        "total_tokens": total_tokens,
     }
 
 
@@ -432,6 +445,53 @@ def _classify_error_source(exc: BaseException) -> str:
         return "llm"
 
     return "graph"
+
+
+async def _emit_stream_error(
+    exc: BaseException,
+    event_queue: asyncio.Queue,
+    collected_timeline: list[dict],
+    *,
+    agent_id: str,
+    request_id: str,
+    log_tag: str,
+) -> None:
+    """Push an ErrorEvent to the SSE stream + timeline, then log it.
+
+    Shared by stream/resume so the error-handling block stays in sync.
+    Best-effort: shielded put is swallow-and-continue so cancel/errors
+    can't block the caller's finally cleanup.
+    """
+    from app.engine.harness_integration.adapters.app_event import ErrorEvent
+
+    try:
+        err_evt = ErrorEvent(
+            message=str(exc),
+            source=_classify_error_source(exc),
+        ).model_dump()
+        err_evt["content"] = err_evt.pop("message", "")
+        collected_timeline.append(err_evt)
+        await asyncio.shield(
+            event_queue.put(f"data: {safe_json(err_evt)}\n\n")
+        )
+    except Exception:
+        pass  # shield 也可能被取消;尽力而为
+    logger.error(log_tag, agent_id=agent_id, request_id=request_id, error=str(exc))
+    logger.exception(f"{log_tag}_traceback")
+
+
+async def _emit_stream_done(
+    event_queue: asyncio.Queue,
+    *,
+    request_id: str,
+    session_id: str,
+    usage: dict | None,
+) -> None:
+    """Push the terminal done event + close sentinel. Shared by stream/resume."""
+    await event_queue.put(
+        f"data: {safe_json({'done': True, 'request_id': request_id, 'session_id': session_id, 'usage': usage or {}})}\n\n"
+    )
+    await event_queue.put(None)
 
 
 async def _persist_agent_message(

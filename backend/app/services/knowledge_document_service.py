@@ -144,5 +144,30 @@ class KnowledgeDocumentService:
         col = KnowledgeDocumentService._collection()
         return await col.count_documents({"knowledge_base_id": knowledge_base_id})
 
+    @staticmethod
+    async def compute_kb_stats(knowledge_base_id: str) -> tuple[int, int]:
+        """Aggregate (document_count, total_file_size_bytes) for a KB.
+
+        Used to refresh the KB's ``file_count`` / ``total_size`` for vector
+        KBs (whose documents live in this collection rather than on disk).
+        """
+        col = KnowledgeDocumentService._collection()
+        cursor = col.aggregate(
+            [
+                {"$match": {"knowledge_base_id": knowledge_base_id}},
+                {
+                    "$group": {
+                        "_id": None,
+                        "count": {"$sum": 1},
+                        "size": {"$sum": "$file_size"},
+                    }
+                },
+            ]
+        )
+        docs = await cursor.to_list(length=1)
+        if not docs:
+            return (0, 0)
+        return (docs[0]["count"], docs[0]["size"])
+
 
 __all__ = ["KnowledgeDocumentService"]

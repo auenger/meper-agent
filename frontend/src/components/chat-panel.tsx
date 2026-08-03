@@ -32,6 +32,7 @@ import {
   LoadingOutlined,
   PaperClipOutlined,
   CloseOutlined,
+  DatabaseOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
 import { parseBackendDate } from '../lib/format'
@@ -66,6 +67,8 @@ export interface TimelineEntry {
   content: string
   /** For tool: the tool name */
   toolName?: string
+  /** For tool: LLM-assigned call id (links tool_call ↔ tool_result). */
+  toolCallId?: string
   /** For tool: the args */
   args?: Record<string, unknown>
   /** For tool: the result text */
@@ -157,16 +160,20 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
         type: 'tool',
         content: '',
         toolName: e.tool_name,
+        toolCallId: e.id,
         args: e.args,
         toolStatus: 'running',
       }
       const idx = result.length
       result.push(entry)
-      // Track by tool_name to match with later tool_result
-      pendingToolCalls.set(e.tool_name ?? '', { idx, entry })
+      // Track by tool_call_id (preferred) so parallel same-name calls pair
+      // correctly; fall back to tool_name for older records without ids.
+      const key = e.id || (e.tool_name ?? '')
+      if (key) pendingToolCalls.set(key, { idx, entry })
     } else if (e.type === 'tool_result') {
-      // Find the last pending tool_call with matching name
-      const pending = pendingToolCalls.get(e.tool_name ?? '')
+      // Find the last pending tool_call with matching id (or name for old data)
+      const key = e.tool_call_id || (e.tool_name ?? '')
+      const pending = key ? pendingToolCalls.get(key) : undefined
       if (pending) {
         const isError = e.status === 'error'
         result[pending.idx] = {
@@ -174,7 +181,7 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
           result: e.content,
           toolStatus: isError ? 'error' : 'success',
         }
-        pendingToolCalls.delete(e.tool_name ?? '')
+        pendingToolCalls.delete(key)
       } else {
         // Standalone tool_result (shouldn't happen normally, but handle gracefully)
         result.push({
@@ -182,6 +189,7 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
           type: 'tool',
           content: '',
           toolName: e.tool_name,
+          toolCallId: e.tool_call_id,
           result: e.content,
           toolStatus: 'success',
         })
@@ -199,6 +207,10 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
       })
     } else if (e.type === 'thinking') {
       result.push({ id: `h-think-${i}`, type: 'thinking', content: e.content ?? '' })
+    } else if (e.type === 'error') {
+      // 历史中的 error entry(如工具结果过大、模型欠费等运行时错误)。
+      // 落库时 role 已是 agent,这里恢复成 error entry 让 TimelineEntryCard 渲染。
+      result.push({ id: `h-err-${i}`, type: 'error', content: e.content ?? '' })
     } else if (e.type === 'text' || e.type === 'final_answer') {
       // 'final_answer' is legacy v1 format — treat as text
       result.push({ id: `h-fa-${i}`, type: 'text', content: e.content ?? '' })
@@ -747,17 +759,25 @@ export default function ChatPanel({
               } else if (eventType === 'error') {
                 const errorContent = (event as { content: string }).content
                 setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === agentMsgId
-                      ? {
-                          ...m,
-                          role: 'error' as const,
-                          content: errorContent,
-                          isError: true,
-                          timeline: [{ id: generateId(), type: 'error', content: errorContent }],
-                        }
-                      : m,
-                  ),
+                  prev.map((m) => {
+                    if (m.id !== agentMsgId) return m
+                    // 追加 error entry,不覆盖已有 tool/text timeline(保留上下文)。
+                    // 多个 error 事件不重复追加(用内容去重)。
+                    const tl = [...(m.timeline ?? [])]
+                    const hasSameError = tl.some(
+                      (e) => e.type === 'error' && e.content === errorContent,
+                    )
+                    if (!hasSameError) {
+                      tl.push({ id: generateId(), type: 'error', content: errorContent })
+                    }
+                    return {
+                      ...m,
+                      role: 'error' as const,
+                      content: errorContent,
+                      isError: true,
+                      timeline: tl,
+                    }
+                  }),
                 )
               } else if (eventType === 'interrupt') {
                 // Agent paused via interrupt() (ask_clarification or
@@ -768,6 +788,7 @@ export default function ChatPanel({
                   clarification_type?: string
                   context?: string | null
                   options?: string[] | null
+                  fields?: Array<Record<string, unknown>> | null
                   workflow_name?: string
                   workflow_description?: string
                   input_preview?: Record<string, unknown>
@@ -783,18 +804,44 @@ export default function ChatPanel({
                     ),
                   )
                 } else {
+                  // ask_clarification — backfill the interrupt's authoritative
+                  // fields (question/options/fields/context) into the matching
+                  // tool entry's args so the card renders even if the tool_call
+                  // args were dropped/delayed. Merge without overwriting values
+                  // already present from the tool_call itself.
                   setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === agentMsgId
-                        ? {
-                            ...m,
-                            isInterrupted: true,
-                            interruptQuestion: evt.question ?? '',
-                            interruptOptions: evt.options ?? undefined,
-                            interruptContext: evt.context ?? undefined,
+                    prev.map((m) => {
+                      if (m.id !== agentMsgId) return m
+                      const tl = m.timeline ? [...m.timeline] : undefined
+                      if (tl) {
+                        for (let i = tl.length - 1; i >= 0; i--) {
+                          const e = tl[i]
+                          if (
+                            e.type === 'tool' &&
+                            e.toolName === 'ask_clarification' &&
+                            !e.result
+                          ) {
+                            const args = { ...e.args }
+                            if (!args.question && evt.question) args.question = evt.question
+                            if (!args.clarification_type && evt.clarification_type)
+                              args.clarification_type = evt.clarification_type
+                            if (args.context == null && evt.context != null) args.context = evt.context
+                            if (args.options == null && evt.options != null) args.options = evt.options
+                            if (args.fields == null && evt.fields != null) args.fields = evt.fields
+                            tl[i] = { ...e, args, toolStatus: 'success' }
+                            break
                           }
-                        : m,
-                    ),
+                        }
+                      }
+                      return {
+                        ...m,
+                        isInterrupted: true,
+                        timeline: tl,
+                        interruptQuestion: evt.question ?? '',
+                        interruptOptions: evt.options ?? undefined,
+                        interruptContext: evt.context ?? undefined,
+                      }
+                    }),
                   )
                 }
                 pendingInterruptRef.current = { agentMsgId }
@@ -854,6 +901,7 @@ export default function ChatPanel({
                       tl[targetIdx] = {
                         ...tl[targetIdx],
                         toolName: e.tool_name,
+                        toolCallId: e.id,
                         args: e.args,
                         toolStatus: 'running',
                       }
@@ -864,6 +912,7 @@ export default function ChatPanel({
                         type: 'tool',
                         content: '',
                         toolName: e.tool_name,
+                        toolCallId: e.id,
                         args: e.args,
                         toolStatus: 'running',
                       })
@@ -873,8 +922,17 @@ export default function ChatPanel({
                 )
                 scrollToBottom()
               } else if (eventType === 'tool_result') {
-                // Find the last matching tool entry and update it with the result
+                // Match tool_result to its tool_call entry.
+                // Prefer exact match by tool_call_id (handles parallel same-name
+                // calls); fall back to toolName+running for older data without ids.
                 const e = event as ToolResultEvent
+                const tcid = e.tool_call_id
+                const matchesEntry = (entry: TimelineEntry): boolean =>
+                  entry.type === 'tool' &&
+                  entry.toolStatus === 'running' &&
+                  (tcid
+                    ? entry.toolCallId === tcid
+                    : entry.toolName === e.tool_name)
                 setMessages((prev) => {
                   // First try current agent message
                   let updated = false
@@ -882,28 +940,24 @@ export default function ChatPanel({
                     if (m.id !== agentMsgId || !m.timeline) return m
                     const tl = [...m.timeline]
                     for (let i = tl.length - 1; i >= 0; i--) {
-                      const entry = tl[i]
-                      if (entry.type === 'tool' && entry.toolName === e.tool_name && entry.toolStatus === 'running') {
+                      if (matchesEntry(tl[i])) {
                         const isError = e.status === 'error'
-                        tl[i] = { ...entry, result: e.content, toolStatus: isError ? 'error' : 'success' }
+                        tl[i] = { ...tl[i], result: e.content, toolStatus: isError ? 'error' : 'success' }
                         updated = true
                         break
                       }
                     }
                     return updated ? { ...m, timeline: tl } : m
                   })
-                  // If not found in current message (e.g. ask_clarification tool_call
-                  // was in a previous agent message before interrupt), search all
-                  // previous agent messages for a running entry with matching name.
+                  // If not found in current message, search previous agent messages.
                   if (!updated) {
                     next = next.map((m) => {
                       if (updated || m.role !== 'agent' || !m.timeline) return m
                       const tl = [...m.timeline]
                       for (let i = tl.length - 1; i >= 0; i--) {
-                        const entry = tl[i]
-                        if (entry.type === 'tool' && entry.toolName === e.tool_name && entry.toolStatus === 'running') {
+                        if (matchesEntry(tl[i])) {
                           const isError = e.status === 'error'
-                          tl[i] = { ...entry, result: e.content, toolStatus: isError ? 'error' : 'success' }
+                          tl[i] = { ...tl[i], result: e.content, toolStatus: isError ? 'error' : 'success' }
                           updated = true
                           break
                         }
@@ -1156,13 +1210,15 @@ export default function ChatPanel({
                   </div>
                 )}
 
-                {/* Agent message — show when there is a timeline to render */}
-                {msg.role === 'agent' && msg.timeline && msg.timeline.length > 0 && (
+                {/* Agent / error message — show when there is a timeline to render.
+                    role==='error' 也走这里:error 事件把错误内容放进 timeline,
+                    由 TimelineEntryCard 的 error case 渲染红色提示。 */}
+                {(msg.role === 'agent' || msg.role === 'error') && msg.timeline && msg.timeline.length > 0 && (
                   <div className="flex items-start gap-3">
                     <Avatar
                       size={32}
-                      icon={<RobotOutlined />}
-                      style={{ background: t.primary, flexShrink: 0 }}
+                      icon={msg.role === 'error' ? <ExclamationCircleOutlined /> : <RobotOutlined />}
+                      style={{ background: msg.role === 'error' ? '#EF4444' : t.primary, flexShrink: 0 }}
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-col gap-2">
@@ -1688,169 +1744,112 @@ function TimelineEntryCard({
           </div>
         ) : null
 
+        // 统一结构：标题栏（彩色，工具名+状态）+ 内嵌白色内容区（问题正文+交互）+ 答案内置。
+        // 各 clarification_type 的差异收敛到 theme：边框/底色/图标/问题字色/选中态。
+        const verticalOptions =
+          clarificationType === 'approach_choice' || clarificationType === 'ambiguous_requirement'
+        const theme =
+          clarificationType === 'risk_confirmation'
+            ? { border: 'border-amber-300', bg: 'bg-amber-50', icon: <ExclamationCircleOutlined className="text-amber-500 text-sm mt-0.5" />, q: 'text-[#92400E]', sel: 'bg-amber-100 border-amber-400 text-amber-800', unsel: 'bg-white/60 border-amber-200 text-amber-700', accent: 'text-amber-500' }
+            : clarificationType === 'suggestion'
+              ? { border: 'border-green-300', bg: 'bg-green-50', icon: <span className="text-green-500 text-sm mt-0.5">💡</span>, q: 'text-[#166534]', sel: 'bg-green-100 border-green-400 text-green-800', unsel: 'bg-white/60 border-green-200 text-green-700', accent: 'text-green-500' }
+              : { border: 'border-blue-300', bg: 'bg-blue-50', icon: <span className="text-blue-500 text-sm mt-0.5">❓</span>, q: 'text-[#1E40AF]', sel: 'bg-blue-100 border-blue-400 text-blue-800', unsel: 'bg-white/60 border-blue-200 text-blue-700', accent: 'text-blue-500' }
+
         return (
-          <div className="flex flex-col gap-2">
-            {/* --- Question card — style varies by type --- */}
-            {clarificationType === 'risk_confirmation' ? (
-              <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-                <div className="flex items-start gap-2.5">
-                  <ExclamationCircleOutlined className="text-amber-500 text-sm mt-0.5" />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-[#92400E] whitespace-pre-wrap leading-relaxed">{question}</div>
-                    {interactive ? (
-                      <>
-                        <div className="flex gap-2 mt-3">
+          <div className={`rounded-xl rounded-tl-sm border overflow-hidden ${theme.border} ${theme.bg}`}>
+            {/* 标题栏：工具名 + 状态 */}
+            <div className="flex items-center gap-2 px-4 py-2 border-b border-black/5">
+              {answered ? (
+                <CheckCircleOutlined className="text-green-500 text-xs" />
+              ) : (
+                <LoadingOutlined className="text-amber-500 text-xs" />
+              )}
+              <span className={`text-xs font-semibold ${theme.q}`}>澄清提问</span>
+              <span className={`text-[10px] ${answered ? 'text-green-600' : 'text-amber-600'}`}>
+                {answered ? '已回答' : '等待回答'}
+              </span>
+            </div>
+
+            {/* 内容区：白色实底，深色文字（清晰可读） */}
+            <div className="px-4 py-3 bg-white/70">
+              <div className="flex items-start gap-2.5">
+                {theme.icon}
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm font-medium whitespace-pre-wrap leading-relaxed ${theme.q}`}>
+                    {question}
+                  </div>
+
+                  {options.length > 0 && (
+                    <div className={`flex gap-2 mt-3 ${verticalOptions ? 'flex-col' : 'flex-wrap'}`}>
+                      {options.map((opt, i) =>
+                        interactive ? (
                           <button
-                            onClick={() => onSendMessage?.('确认')}
-                            className="px-3.5 py-1.5 rounded-lg text-xs bg-red-500 text-white hover:bg-red-600 transition-colors"
+                            key={i}
+                            onClick={() => onSendMessage?.(opt)}
+                            className={`text-left px-3 py-1.5 rounded-lg text-xs border transition-colors bg-white ${theme.border} ${theme.q} hover:bg-gray-50 cursor-pointer`}
                           >
-                            确认执行
+                            {opt}
                           </button>
-                          <button
-                            onClick={() => onSendMessage?.('取消')}
-                            className="px-3.5 py-1.5 rounded-lg text-xs bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+                        ) : (
+                          <div
+                            key={i}
+                            className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                              entry.result === opt ? `${theme.sel} font-medium` : theme.unsel
+                            }`}
                           >
-                            取消
-                          </button>
-                        </div>
-                        {inlineInput}
-                      </>
-                    ) : null}
-                  </div>
+                            {opt}
+                            {entry.result === opt && <span className={`ml-1.5 ${theme.accent}`}>✓</span>}
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
+
+                  {/* risk_confirmation：确认执行 / 取消 */}
+                  {interactive && clarificationType === 'risk_confirmation' && (
+                    <div className="flex gap-2 mt-3">
+                      <button
+                        onClick={() => onSendMessage?.('确认')}
+                        className="px-3.5 py-1.5 rounded-lg text-xs bg-red-500 text-white hover:bg-red-600 transition-colors"
+                      >
+                        确认执行
+                      </button>
+                      <button
+                        onClick={() => onSendMessage?.('取消')}
+                        className="px-3.5 py-1.5 rounded-lg text-xs bg-white border border-gray-300 text-gray-600 hover:bg-gray-50 transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  )}
+
+                  {/* suggestion：接受按钮 */}
+                  {interactive && clarificationType === 'suggestion' && (
+                    <div className="flex gap-2 mt-3 items-center">
+                      <button
+                        onClick={() => onSendMessage?.('接受建议')}
+                        className="px-3.5 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700 transition-colors"
+                      >
+                        接受
+                      </button>
+                      <span className={`text-[11px] ${theme.accent}`}>或输入其他回答</span>
+                    </div>
+                  )}
+
+                  {inlineInput}
+
+                  {/* 已答：答案并入卡片内部展示（不再独立的右对齐气泡） */}
+                  {answered && entry.result && !options.includes(entry.result) && (
+                    <div className="mt-3 pt-3 border-t border-gray-200 flex items-baseline gap-2 text-xs">
+                      <span className={`shrink-0 ${theme.accent}`}>你的回答:</span>
+                      <span className="text-gray-800 font-medium break-all whitespace-pre-wrap">
+                        {entry.result}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
-            ) : clarificationType === 'approach_choice' || clarificationType === 'ambiguous_requirement' ? (
-              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-blue-500 text-sm mt-0.5">❓</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-[#1E40AF] whitespace-pre-wrap leading-relaxed">{question}</div>
-                    {options.length > 0 && (
-                      <div className="flex flex-col gap-2 mt-3">
-                        {options.map((opt, i) =>
-                          interactive ? (
-                            <button
-                              key={i}
-                              onClick={() => onSendMessage?.(opt)}
-                              className="text-left px-3 py-2 rounded-lg text-xs border transition-colors bg-white border-blue-300 text-blue-700 hover:bg-blue-100 hover:border-blue-400 cursor-pointer"
-                            >
-                              {opt}
-                            </button>
-                          ) : (
-                            <div
-                              key={i}
-                              className={`text-left px-3 py-2 rounded-lg text-xs border transition-colors ${
-                                entry.result === opt
-                                  ? 'bg-blue-100 border-blue-400 text-blue-800 font-medium'
-                                  : 'bg-white/60 border-blue-200 text-blue-400'
-                              }`}
-                            >
-                              {opt}
-                              {entry.result === opt && <span className="ml-1.5 text-blue-500">✓</span>}
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    )}
-                    {inlineInput}
-                  </div>
-                </div>
-              </div>
-            ) : clarificationType === 'suggestion' ? (
-              <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-green-500 text-sm mt-0.5">💡</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-[#166534] whitespace-pre-wrap leading-relaxed">{question}</div>
-                    {options.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mt-3">
-                        {options.map((opt, i) =>
-                          interactive ? (
-                            <button
-                              key={i}
-                              onClick={() => onSendMessage?.(opt)}
-                              className="px-3 py-1.5 rounded-lg text-xs border transition-colors bg-white border-green-300 text-green-700 hover:bg-green-100 cursor-pointer"
-                            >
-                              {opt}
-                            </button>
-                          ) : (
-                            <div
-                              key={i}
-                              className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                                entry.result === opt
-                                  ? 'bg-green-100 border-green-400 text-green-800 font-medium'
-                                  : 'bg-white/60 border-green-200 text-green-400'
-                              }`}
-                            >
-                              {opt}
-                              {entry.result === opt && <span className="ml-1.5 text-green-500">✓</span>}
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    )}
-                    {interactive && (
-                      <div className="flex gap-2 mt-3 items-center">
-                        <button
-                          onClick={() => onSendMessage?.('接受建议')}
-                          className="px-3.5 py-1.5 rounded-lg text-xs bg-green-600 text-white hover:bg-green-700 transition-colors"
-                        >
-                          接受
-                        </button>
-                        <span className="text-[11px] text-green-400">或输入其他回答</span>
-                      </div>
-                    )}
-                    {inlineInput}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              /* missing_info (default) */
-              <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-                <div className="flex items-start gap-2.5">
-                  <span className="text-blue-500 text-sm mt-0.5">❓</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-[#1E40AF] whitespace-pre-wrap leading-relaxed">{question}</div>
-                    {options.length > 0 && (
-                      <div className="flex flex-wrap gap-2 mt-3">
-                        {options.map((opt, i) =>
-                          interactive ? (
-                            <button
-                              key={i}
-                              onClick={() => onSendMessage?.(opt)}
-                              className="px-3 py-1.5 rounded-lg text-xs border transition-colors bg-white border-blue-300 text-blue-700 hover:bg-blue-100 cursor-pointer"
-                            >
-                              {opt}
-                            </button>
-                          ) : (
-                            <div
-                              key={i}
-                              className={`px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                                entry.result === opt
-                                  ? 'bg-blue-100 border-blue-400 text-blue-800 font-medium'
-                                  : 'bg-white/60 border-blue-200 text-blue-400'
-                              }`}
-                            >
-                              {opt}
-                              {entry.result === opt && <span className="ml-1.5 text-blue-500">✓</span>}
-                            </div>
-                          ),
-                        )}
-                      </div>
-                    )}
-                    {inlineInput}
-                  </div>
-                </div>
-              </div>
-            )}
-            {/* User's answer — shown as a label below the card */}
-            {entry.result && (
-              <div className="flex flex-row-reverse">
-                <div className="max-w-[75%] rounded-xl rounded-tr-sm px-3 py-2 text-sm leading-relaxed" style={{ background: '#EFF6FF', color: '#1E40AF' }}>
-                  <div className="whitespace-pre-wrap">{entry.result}</div>
-                </div>
-              </div>
-            )}
+            </div>
           </div>
         )
       }
@@ -1969,6 +1968,78 @@ function TimelineEntryCard({
 
 /* ─── Tool result card renderer ─── */
 
+/** A single KB search hit (chunk). Loose-typed: kb_search returns mixed
+ *  success items ({text,score,source_file,page,kb_id}) and error items
+ *  ({kb_id,error}). */
+interface KbSearchHit {
+  text?: string
+  score?: number
+  source_file?: string
+  page?: number | null
+  kb_id?: string
+  error?: string
+}
+
+/** Is this JSON value a kb_search result array? kb_search returns a list
+ *  (no top-level `type`), so we detect by shape: array of objects each
+ *  carrying the chunk fields or an error marker. */
+function isKbSearchResult(value: unknown): value is KbSearchHit[] {
+  if (!Array.isArray(value) || value.length === 0) return false
+  // Every element must look like a chunk (has text) or an error item (has error).
+  return value.every(
+    (it) =>
+      it != null && typeof it === 'object' &&
+      ('text' in it || 'error' in it),
+  )
+}
+
+/** Structured card for kb_search results — shows each retrieved chunk with
+ *  source / page / score / snippet, instead of a raw JSON blob. */
+function KbSearchResultCard({ hits }: { hits: KbSearchHit[] }) {
+  const okHits = hits.filter((h) => h.text)
+  const errHits = hits.filter((h) => h.error)
+  return (
+    <div className="px-3 pb-3 pt-1">
+      <div className="flex items-center gap-1.5 mb-2 text-[#0EA5E9]">
+        <DatabaseOutlined style={{ fontSize: 13 }} />
+        <span className="text-xs font-medium">
+          知识库检索{okHits.length > 0 ? ` · 命中 ${okHits.length} 条` : ''}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5 max-h-72 overflow-y-auto">
+        {okHits.map((hit, i) => (
+          <div key={i} className="rounded-md bg-white/70 border border-sky-100 p-2">
+            <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+              {hit.source_file && (
+                <span className="inline-flex items-center gap-0.5 text-[10px] text-[#475569] bg-sky-50 rounded px-1 py-0.5">
+                  <FileTextOutlined style={{ fontSize: 10 }} />
+                  {hit.source_file}
+                  {hit.page != null ? ` · P${hit.page}` : ''}
+                </span>
+              )}
+              {typeof hit.score === 'number' && (
+                <span className="text-[10px] text-[#94A3B8]">
+                  相关度 {(hit.score * 100).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-[#334155] leading-relaxed whitespace-pre-wrap break-all line-clamp-4">
+              {hit.text}
+            </p>
+          </div>
+        ))}
+        {errHits.map((hit, i) => (
+          <div key={`err-${i}`} className="rounded-md bg-red-50 border border-red-100 p-2">
+            <span className="text-[11px] text-[#DC2626]">
+              知识库 {hit.kb_id ?? ''} 检索失败：{hit.error}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function ToolResultCardRenderer({
   result,
   onSendMessage,
@@ -1976,16 +2047,24 @@ function ToolResultCardRenderer({
   result: string
   onSendMessage?: (text: string) => Promise<boolean> | void
 }) {
-  let parsed: Record<string, unknown> | null = null
+  let parsed: unknown = null
   try {
     parsed = JSON.parse(result)
   } catch {
     return null
   }
 
+  // kb_search returns an array (no `type` field) — detect by shape first,
+  // before the object+type branches below.
+  if (isKbSearchResult(parsed)) {
+    return <KbSearchResultCard hits={parsed} />
+  }
+
   if (!parsed || typeof parsed !== 'object') return null
 
-  const type = parsed.type as string | undefined
+  if (!parsed || typeof parsed !== 'object') return null
+
+  const type = (parsed as Record<string, unknown>).type as string | undefined
 
   // propose_workflow → WorkflowProposalCard
   if (type === 'workflow_proposal' || type === 'propose_workflow') {

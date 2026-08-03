@@ -130,6 +130,7 @@ def messages_to_sse_events(
                 "type": "tool_result",
                 "tool_name": msg.name or "",
                 "content": safe_str(msg.content),
+                "tool_call_id": msg.tool_call_id or "",
             })
 
     return events

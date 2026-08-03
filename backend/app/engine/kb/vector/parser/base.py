@@ -48,11 +48,29 @@ def parse(file_bytes: bytes, file_type: str) -> ParseResult:
         from app.engine.kb.vector.parser.pdf_parser import parse_pdf
 
         return parse_pdf(file_bytes)
-    if ft in ("docx", "doc"):
+    if ft == "docx":
         from app.engine.kb.vector.parser.word_parser import parse_word
 
         return parse_word(file_bytes)
-    raise ValueError(f"不支持的文件类型: {file_type}（支持 pdf/docx/md/txt）")
+    if ft == "pptx":
+        from app.engine.kb.vector.parser.pptx_parser import parse_pptx
+
+        return parse_pptx(file_bytes)
+    if ft == "xlsx":
+        from app.engine.kb.vector.parser.xlsx_parser import parse_xlsx
+
+        return parse_xlsx(file_bytes)
+    if ft == "csv":
+        from app.engine.kb.vector.parser.csv_parser import parse_csv
+
+        return parse_csv(file_bytes)
+    if ft in ("html", "htm"):
+        from app.engine.kb.vector.parser.html_parser import parse_html
+
+        return parse_html(file_bytes)
+    raise ValueError(
+        f"不支持的文件类型: {file_type}（支持 pdf/docx/pptx/xlsx/csv/md/txt/html）"
+    )
 
 
 __all__ = ["TextBlock", "ParseResult", "parse"]

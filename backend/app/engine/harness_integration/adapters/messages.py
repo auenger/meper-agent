@@ -127,11 +127,18 @@ def _emit_tool_message(msg: BaseMessage, events: list[AppEvent]) -> None:
 
     ``tool_name`` falls back to an empty string when the ToolMessage carries
     no ``name`` (older LangChain versions); the result content is always
-    stringified.
+    stringified. ``tool_call_id`` is carried over so recall_tool_result can
+    retrieve the original content after compression.
     """
     tool_name = getattr(msg, "name", "") or ""
     content = _extract_text_content(msg) or str(getattr(msg, "content", "") or "")
-    events.append(ToolResultEvent(tool_name=tool_name, content=content))
+    events.append(
+        ToolResultEvent(
+            tool_name=tool_name,
+            content=content,
+            tool_call_id=getattr(msg, "tool_call_id", "") or "",
+        )
+    )
 
 
 __all__ = ["messages_to_app_events"]

@@ -1,7 +1,7 @@
 /**
  * AppLayout — Dify-inspired two-tier navigation layout.
  *
- * Top bar: group-level tabs (仪表盘 / Agent / 工作流 / 工具 / 用户管理 / 系统信息).
+ * Top bar: group-level tabs (仪表盘 / Agent / 工作流 / 知识库 / 工具 / 用户管理 / 系统信息).
  * Secondary bar: sub-page tabs (left-aligned, small font), only visible for
  * groups with multiple children. Single-page groups navigate directly.
  */
@@ -15,6 +15,7 @@ import {
   ToolOutlined,
   TeamOutlined,
   SettingOutlined,
+  BookOutlined,
   SearchOutlined,
   QuestionCircleOutlined,
   UserOutlined,
@@ -71,6 +72,10 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
+    key: 'knowledge', label: '知识库', icon: <BookOutlined />, single: true, path: '/knowledge',
+    permission: 'knowledge:read',
+  },
+  {
     key: 'tools', label: '工具', icon: <ToolOutlined />,
     children: [
       { label: '工具', path: '/tools', key: 'tools', permission: 'tool:read' },
@@ -78,7 +83,6 @@ const GROUPS: NavGroup[] = [
       { label: 'Skill', path: '/skills', key: 'skills', permission: 'skill:read' },
       { label: '凭据', path: '/credentials', key: 'credentials', permission: 'tool:read' },
       { label: '渠道', path: '/channels', key: 'channels', permission: 'tool:read' },
-      { label: '知识库', path: '/knowledge', key: 'knowledge', permission: 'knowledge:read' },
     ],
   },
   {
@@ -111,7 +115,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   '/mcp': 'tools',
   '/skills': 'tools',
   '/channels': 'tools',
-  '/knowledge': 'tools',
+  '/knowledge': 'knowledge',
   '/users': 'users',
   '/roles': 'users',
   '/api-keys': 'system',
@@ -154,7 +158,7 @@ export default function AppLayout() {
 
   /* ─── Resolve active group & child ─── */
   // Support dynamic routes like /agents/:id → group "agent", /workflows/:id → group "workflow",
-  // /knowledge/:id → group "tools"
+  // /knowledge/:id → group "knowledge"
   const basePath = currentPath.startsWith('/agents/')
     ? '/agents'
     : currentPath.startsWith('/workflows/')

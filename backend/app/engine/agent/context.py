@@ -13,8 +13,6 @@ harness — which has no DB access — cannot do.
 """
 from __future__ import annotations
 
-from typing import Any
-
 from agent_flow_harness.engine.context import (
     _build_summary,
     compress_messages,

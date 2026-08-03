@@ -85,6 +85,13 @@ class ToolResultEvent(_Base):
     tool_name: str
     content: str
     status: Literal["success", "error"] = "success"
+    tool_call_id: str = ""
+    """The LLM-assigned id linking this result to its tool_call.
+
+    Persisted so ``recall_tool_result`` can retrieve the full original
+    content by id after context compression has truncated the in-context
+    copy. Empty for results produced before this field was added.
+    """
 
 
 class InterruptEvent(_Base):

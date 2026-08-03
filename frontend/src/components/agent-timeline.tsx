@@ -29,6 +29,9 @@ export interface TimelineEntry {
   content: string
   toolName?: string
   args?: Record<string, unknown>
+  /** LLM-assigned call id linking tool_call ↔ tool_result. Used to pair
+   *  parallel same-name calls precisely (instead of by tool_name). */
+  toolCallId?: string
   result?: string
   toolStatus?: ToolStatus
   expanded?: boolean
@@ -40,6 +43,11 @@ export interface TimelineEntryData {
   content?: string
   tool_name?: string
   args?: Record<string, unknown>
+  /** For tool_call: the LLM-assigned call id (links to tool_result.tool_call_id). */
+  id?: string
+  /** For tool_result: the LLM-assigned id linking back to its tool_call.
+   *  Used to pair parallel same-name calls instead of matching by tool_name. */
+  tool_call_id?: string
   /** For tool_result: structured success/error status from backend.
    *  Frontend uses this instead of sniffing "Error" prefix in content. */
   status?: 'success' | 'error'
@@ -62,14 +70,18 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
         type: 'tool',
         content: '',
         toolName: e.tool_name,
+        toolCallId: e.id,
         args: e.args,
         toolStatus: 'running',
       }
       const idx = result.length
       result.push(entry)
-      pendingToolCalls.set(e.tool_name ?? '', { idx, entry })
+      // Prefer tool_call_id; fall back to tool_name for older records.
+      const key = e.id || (e.tool_name ?? '')
+      if (key) pendingToolCalls.set(key, { idx, entry })
     } else if (e.type === 'tool_result') {
-      const pending = pendingToolCalls.get(e.tool_name ?? '')
+      const key = e.tool_call_id || (e.tool_name ?? '')
+      const pending = key ? pendingToolCalls.get(key) : undefined
       if (pending) {
         const isError = e.status === 'error'
         result[pending.idx] = {
@@ -77,13 +89,14 @@ function historyEntryToTimeline(entries: TimelineEntryData[]): TimelineEntry[] {
           result: e.content,
           toolStatus: isError ? 'error' : 'success',
         }
-        pendingToolCalls.delete(e.tool_name ?? '')
+        pendingToolCalls.delete(key)
       } else {
         result.push({
           id: `h-tr-${i}`,
           type: 'tool',
           content: '',
           toolName: e.tool_name,
+          toolCallId: e.tool_call_id,
           result: e.content,
           toolStatus: 'success',
         })

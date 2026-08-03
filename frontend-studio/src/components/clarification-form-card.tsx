@@ -12,7 +12,7 @@
  * 已答态：把 result（JSON 串）解析后渲染为键值对摘要。
  */
 import { useMemo, useState } from 'react';
-import { ChevronLeft, ChevronRight, Send } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Send, CheckCircle, Loader2 } from 'lucide-react';
 
 /** 后端 ClarificationField 的前端镜像。 */
 export interface ClarificationField {
@@ -120,24 +120,31 @@ export function ClarificationFormCard({
 
   if (answered) {
     return (
-      <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 font-sans">
-        <div className="flex items-start gap-2.5">
-          <span className="text-sm mt-0.5 select-none">📋</span>
-          <div className="flex-1 min-w-0">
-            {question && (
-              <div className="text-[13px] text-indigo-200 whitespace-pre-wrap leading-relaxed mb-2">
-                {question}
-              </div>
-            )}
-            <div className="space-y-1">
-              {fields.map((f) => (
-                <div key={f.name} className="flex items-baseline gap-2 text-xs">
-                  <span className="text-indigo-300 shrink-0">{f.label}:</span>
-                  <span className="text-zinc-200 font-medium break-all">
-                    {renderValue(f, answeredValues[f.name])}
-                  </span>
+      <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans shadow-sm">
+        <div className="flex items-center gap-2 px-3.5 py-2.5">
+          <CheckCircle className="w-3.5 h-3.5 shrink-0 text-emerald-400" />
+          <span className="text-xs font-semibold text-indigo-400 truncate">澄清提问</span>
+          <span className="text-[10px] text-emerald-400 opacity-70">已回答</span>
+        </div>
+        <div className="mx-2.5 mb-2.5 rounded-lg bg-[#121214] border border-[#27272a] px-3.5 py-3">
+          <div className="flex items-start gap-2.5">
+            <span className="text-sm mt-0.5 select-none text-indigo-400">📋</span>
+            <div className="flex-1 min-w-0">
+              {question && (
+                <div className="text-[13px] font-medium text-[#fafafa] whitespace-pre-wrap leading-relaxed mb-2">
+                  {question}
                 </div>
-              ))}
+              )}
+              <div className="space-y-1">
+                {fields.map((f) => (
+                  <div key={f.name} className="flex items-baseline gap-2 text-xs">
+                    <span className="text-indigo-400 shrink-0">{f.label}:</span>
+                    <span className="text-[#fafafa] font-medium break-all">
+                      {renderValue(f, answeredValues[f.name])}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -146,124 +153,131 @@ export function ClarificationFormCard({
   }
 
   return (
-    <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 px-4 py-3 font-sans">
-      <div className="flex items-start gap-2.5">
-        <span className="text-sm mt-0.5 select-none">📋</span>
-        <div className="flex-1 min-w-0">
-          {question && <div className="text-xs text-indigo-300 mb-1.5">{question}</div>}
-          {context && (
-            <div className="text-[11px] text-zinc-500 mb-2 whitespace-pre-wrap">{context}</div>
-          )}
-
-          <div className="text-[11px] text-zinc-500 mb-2">
-            第 {step + 1} / {total} 题
-          </div>
-
-          <div className="text-[13px] text-indigo-100 font-medium mb-2">
-            {current.label}
-            {current.required && current.field_type !== 'boolean' && (
-              <span className="text-rose-400 ml-0.5">*</span>
+    <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans shadow-sm">
+      <div className="flex items-center gap-2 px-3.5 py-2.5">
+        <Loader2 className="w-3.5 h-3.5 shrink-0 text-amber-400 animate-spin" />
+        <span className="text-xs font-semibold text-indigo-400 truncate">澄清提问</span>
+        <span className="text-[10px] text-amber-400 opacity-70">等待回答</span>
+      </div>
+      <div className="mx-2.5 mb-2.5 rounded-lg bg-[#121214] border border-[#27272a] px-3.5 py-3">
+        <div className="flex items-start gap-2.5">
+          <span className="text-sm mt-0.5 select-none text-indigo-400">📋</span>
+          <div className="flex-1 min-w-0">
+            {question && <div className="text-xs text-[#a1a1aa] mb-1.5">{question}</div>}
+            {context && (
+              <div className="text-[11px] text-[#a1a1aa] mb-2 whitespace-pre-wrap">{context}</div>
             )}
-          </div>
-          {current.description && (
-            <p className="text-[11px] text-zinc-500 mb-2">{current.description}</p>
-          )}
 
-          {current.field_type === 'boolean' && (
-            <div className="flex gap-2 mb-3">
-              <button
-                type="button"
-                onClick={() => commitAnswer(true)}
-                className={`px-3 py-1.5 rounded-lg text-xs border transition ${
-                  currentVal === true
-                    ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200 font-medium'
-                    : 'bg-[#121214] border-[#27272a] text-slate-300 hover:bg-[#27272a]'
-                }`}
-              >
-                是
-              </button>
-              <button
-                type="button"
-                onClick={() => commitAnswer(false)}
-                className={`px-3 py-1.5 rounded-lg text-xs border transition ${
-                  currentVal === false
-                    ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-200 font-medium'
-                    : 'bg-[#121214] border-[#27272a] text-slate-300 hover:bg-[#27272a]'
-                }`}
-              >
-                否
-              </button>
+            <div className="text-[11px] text-[#a1a1aa] mb-2">
+              第 {step + 1} / {total} 题
             </div>
-          )}
 
-          {current.field_type !== 'boolean' && options.length > 0 && (
-            <div className="flex flex-col gap-1.5 mb-2">
-              {options.map((opt) => {
-                const selected = currentVal === opt;
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => commitAnswer(opt)}
-                    className={`text-left px-3 py-1.5 rounded-lg text-xs border transition-colors ${
-                      selected
-                        ? 'bg-indigo-500/15 border-indigo-500/50 text-indigo-200 font-medium'
-                        : 'bg-[#121214] border-[#27272a] text-slate-300 hover:border-indigo-500/40 hover:bg-indigo-500/10 cursor-pointer'
-                    }`}
-                  >
-                    {opt}
-                    {selected && <span className="ml-1.5 text-indigo-400">✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          )}
-
-          {current.field_type !== 'boolean' && (
-            <input
-              type={current.field_type === 'number' ? 'number' : 'text'}
-              value={freeInputValue}
-              placeholder="或在此输入自定义内容…"
-              onChange={(e) => handleInputChange(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  if (current.required && !isAnswered) return;
-                  handleNext();
-                }
-              }}
-              className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-[#121214] border border-[#27272a] text-slate-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
-            />
-          )}
-
-          <div className="flex justify-between items-center mt-3">
-            <button
-              type="button"
-              onClick={handlePrev}
-              disabled={step === 0}
-              className="inline-flex items-center gap-1 text-xs text-zinc-400 hover:text-zinc-200 disabled:opacity-30 disabled:cursor-not-allowed transition"
-            >
-              <ChevronLeft size={13} />
-              上一题
-            </button>
-            <button
-              type="button"
-              onClick={handleNext}
-              disabled={current.required && current.field_type !== 'boolean' && !isAnswered}
-              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
-            >
-              {isLast ? (
-                <>
-                  <Send size={13} />
-                  提交
-                </>
-              ) : (
-                <>
-                  下一题
-                  <ChevronRight size={13} />
-                </>
+            <div className="text-[13px] text-[#fafafa] font-medium mb-2">
+              {current.label}
+              {current.required && current.field_type !== 'boolean' && (
+                <span className="text-rose-400 ml-0.5">*</span>
               )}
-            </button>
+            </div>
+            {current.description && (
+              <p className="text-[11px] text-[#a1a1aa] mb-2">{current.description}</p>
+            )}
+
+            {current.field_type === 'boolean' && (
+              <div className="flex gap-2 mb-3">
+                <button
+                  type="button"
+                  onClick={() => commitAnswer(true)}
+                  className={`px-3 py-1.5 rounded-lg text-xs border transition ${
+                    currentVal === true
+                      ? 'bg-indigo-500/20 border-indigo-500/60 text-[#fafafa] font-medium'
+                      : 'bg-[#09090b] border-[#3f3f46] text-[#fafafa] hover:bg-[#27272a]'
+                  }`}
+                >
+                  是
+                </button>
+                <button
+                  type="button"
+                  onClick={() => commitAnswer(false)}
+                  className={`px-3 py-1.5 rounded-lg text-xs border transition ${
+                    currentVal === false
+                      ? 'bg-indigo-500/20 border-indigo-500/60 text-[#fafafa] font-medium'
+                      : 'bg-[#09090b] border-[#3f3f46] text-[#fafafa] hover:bg-[#27272a]'
+                  }`}
+                >
+                  否
+                </button>
+              </div>
+            )}
+
+            {current.field_type !== 'boolean' && options.length > 0 && (
+              <div className="flex flex-col gap-1.5 mb-2">
+                {options.map((opt) => {
+                  const selected = currentVal === opt;
+                  return (
+                    <button
+                      key={opt}
+                      type="button"
+                      onClick={() => commitAnswer(opt)}
+                      className={`text-left px-3 py-1.5 rounded-lg text-xs border transition-colors ${
+                        selected
+                          ? 'bg-indigo-500/20 border-indigo-500/60 text-indigo-200 font-medium'
+                          : 'bg-[#09090b] border-[#3f3f46] text-[#d4d4d8] hover:border-indigo-500/50 hover:bg-indigo-500/10 cursor-pointer'
+                      }`}
+                    >
+                      {opt}
+                      {selected && <span className="ml-1.5 text-indigo-400">✓</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {current.field_type !== 'boolean' && (
+              <input
+                type={current.field_type === 'number' ? 'number' : 'text'}
+                value={freeInputValue}
+                placeholder="或在此输入自定义内容…"
+                onChange={(e) => handleInputChange(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    if (current.required && !isAnswered) return;
+                    handleNext();
+                  }
+                }}
+                className="w-full px-2.5 py-1.5 rounded-lg text-xs bg-[#09090b] border border-[#3f3f46] text-[#e4e4e7] placeholder:text-[#52525b] focus:outline-none focus:border-indigo-500/60 focus:ring-1 focus:ring-indigo-500/30 transition-colors"
+              />
+            )}
+
+            <div className="flex justify-between items-center mt-3">
+              <button
+                type="button"
+                onClick={handlePrev}
+                disabled={step === 0}
+                className="inline-flex items-center gap-1 text-xs text-[#d4d4d8] hover:text-[#e4e4e7] disabled:opacity-30 disabled:cursor-not-allowed transition"
+              >
+                <ChevronLeft size={13} />
+                上一题
+              </button>
+              <button
+                type="button"
+                onClick={handleNext}
+                disabled={current.required && current.field_type !== 'boolean' && !isAnswered}
+                className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
+              >
+                {isLast ? (
+                  <>
+                    <Send size={13} />
+                    提交
+                  </>
+                ) : (
+                  <>
+                    下一题
+                    <ChevronRight size={13} />
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </div>

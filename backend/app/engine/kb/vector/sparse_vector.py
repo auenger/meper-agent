@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter
 
-import jieba
+import jieba  # type: ignore[import-untyped]
 from qdrant_client.http import models as qmodels
 
 # Cap the vocabulary dimension (hash modulo). 2^20 (~1M slots) keeps collision

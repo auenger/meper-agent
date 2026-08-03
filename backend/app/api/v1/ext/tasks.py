@@ -45,8 +45,11 @@ async def get_task(
     if doc is None:
         raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
 
-    # Only allow access to tasks created by this API Key's owner
-    if doc.get("created_by") != principal.owner_user_id:
+    # Only allow access to tasks created by this API Key's owner. Tasks
+    # created directly (Workflow invoke) carry the bare owner id; tasks
+    # created by an Agent on a user's behalf carry ``owner:sub`` /
+    # ``owner:visitor_id`` — both belong to this owner.
+    if not principal.owns_resource(doc.get("created_by")):
         raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
 
     return _doc_to_ext_task(doc)

@@ -13,12 +13,20 @@ from agent_flow_harness.context_engineering.sliding_window import SlidingWindowS
 from agent_flow_harness.context_engineering.split import split_system_history
 from agent_flow_harness.context_engineering.summarization import SummarizationStrategy
 from agent_flow_harness.context_engineering.token_estimator import count_tokens
+from agent_flow_harness.context_engineering.tool_output import compress_tool_outputs
+from agent_flow_harness.context_engineering.turns import (
+    DEFAULT_PROTECTED_TURNS,
+    split_by_turns,
+)
 
 __all__ = [
     "ContextStrategy",
+    "DEFAULT_PROTECTED_TURNS",
     "HybridStrategy",
     "SlidingWindowStrategy",
     "SummarizationStrategy",
+    "compress_tool_outputs",
     "count_tokens",
+    "split_by_turns",
     "split_system_history",
 ]
