@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # Agents can override via their own max_tokens field (0 = use this default).
     DEFAULT_SESSION_MAX_TOKENS: int = 200_00000
 
+    # LangGraph recursion limit — the max number of supersteps per graph run.
+    # Each REACT iteration (LLM call + tool execution) consumes ~2 supersteps,
+    # so 75 ≈ 37 tool-call rounds. Raise this for agents that legitimately
+    # need many steps (multi-file exploration, deep research, etc.).
+    AGENT_RECURSION_LIMIT: int = 150
+
     # Context compression (compress_node).
     # Protected turns: the most recent N user-assistant rounds are never
     # summarised — only older history is eligible. Tool results inside this

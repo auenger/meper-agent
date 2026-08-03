@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
     from app.engine.harness_integration.adapters.app_event import AppEvent
 
+from app.core.config import settings
 from app.engine.harness_integration.context import (
     _maybe_migrate_legacy,
     get_checkpointer,
@@ -89,6 +90,7 @@ async def stream(
             protected_turns=hctx["protected_turns"],
             compression_threshold=hctx["compression_threshold"],
             hard_limit_ratio=hctx["hard_limit_ratio"],
+            recursion_limit=settings.AGENT_RECURSION_LIMIT,
         )
         await _maybe_migrate_legacy(graph, config, legacy_records)
 
@@ -149,6 +151,7 @@ async def invoke(
             protected_turns=hctx["protected_turns"],
             compression_threshold=hctx["compression_threshold"],
             hard_limit_ratio=hctx["hard_limit_ratio"],
+            recursion_limit=settings.AGENT_RECURSION_LIMIT,
         )
         await _maybe_migrate_legacy(graph, config, legacy_records)
         result = await graph.ainvoke(state, config=config)
@@ -200,6 +203,7 @@ async def resume_agent(
             protected_turns=hctx["protected_turns"],
             compression_threshold=hctx["compression_threshold"],
             hard_limit_ratio=hctx["hard_limit_ratio"],
+            recursion_limit=settings.AGENT_RECURSION_LIMIT,
         )
         return await graph.ainvoke(Command(resume=resume_value), config=config)
     finally:
@@ -245,6 +249,7 @@ async def resume(
             protected_turns=hctx["protected_turns"],
             compression_threshold=hctx["compression_threshold"],
             hard_limit_ratio=hctx["hard_limit_ratio"],
+            recursion_limit=settings.AGENT_RECURSION_LIMIT,
         )
 
         event_stream = graph.astream_events(
