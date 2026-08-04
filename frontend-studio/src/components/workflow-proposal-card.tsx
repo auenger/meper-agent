@@ -56,26 +56,27 @@ export default function WorkflowProposalCard({
   const inputEntries = Object.entries(proposal.input_preview);
 
   return (
-    <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans">
+    <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans shadow-sm">
       {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-indigo-500/20">
-        <Bot className="text-indigo-300" size={16} />
-        <span className="text-[13px] font-semibold text-indigo-200">工作流确认</span>
+      <div className="flex items-center gap-2 px-3.5 py-2.5">
+        <Bot className="text-indigo-400" size={16} />
+        <span className="text-[13px] font-semibold text-indigo-400">工作流确认</span>
       </div>
 
-      {/* Body */}
-      <div className="px-4 py-3 space-y-2">
+      {/* Body — solid dark inner block for high text contrast (mirrors
+          ask_clarification / ClarificationFormCard). */}
+      <div className="mx-2.5 mb-2.5 rounded-lg bg-[#121214] border border-[#27272a] px-3.5 py-3 space-y-2">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] text-zinc-400">工作流:</span>
-          <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-500/30">
+          <span className="text-[11px] text-indigo-400">工作流:</span>
+          <span className="text-xs px-2 py-0.5 rounded bg-indigo-500/20 text-[#fafafa] border border-indigo-500/30">
             {proposal.workflow_name}
           </span>
         </div>
 
         {proposal.workflow_description && (
           <div>
-            <span className="text-[11px] text-zinc-400">描述:</span>
-            <p className="text-xs text-zinc-300 mt-0.5 leading-relaxed">
+            <span className="text-[11px] text-indigo-400">描述:</span>
+            <p className="text-xs text-[#fafafa] mt-0.5 leading-relaxed">
               {proposal.workflow_description}
             </p>
           </div>
@@ -83,14 +84,14 @@ export default function WorkflowProposalCard({
 
         {inputEntries.length > 0 && (
           <div>
-            <span className="text-[11px] text-zinc-400">输入参数:</span>
+            <span className="text-[11px] text-indigo-400">输入参数:</span>
             <div className="mt-0.5 space-y-0.5">
               {inputEntries.map(([key, value]) => (
                 <div key={key} className="flex items-start gap-2">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 shrink-0">
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-[#27272a] text-[#a1a1aa] shrink-0">
                     {key}
                   </span>
-                  <span className="text-xs text-zinc-300 break-all">
+                  <span className="text-xs text-[#fafafa] break-all">
                     {typeof value === 'string' ? value : JSON.stringify(value)}
                   </span>
                 </div>
@@ -102,45 +103,45 @@ export default function WorkflowProposalCard({
         {proposal.has_human_node && (
           <div className="text-[10px] text-amber-400">⚠ 该工作流包含人工审批节点</div>
         )}
-      </div>
 
-      {/* Actions */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-t border-indigo-500/20 bg-[#121214]/40">
-        {action === 'idle' && (
-          <>
-            <button
-              type="button"
-              onClick={handleConfirm}
-              className="px-3.5 py-1.5 rounded-lg text-xs bg-indigo-600 text-white hover:bg-indigo-500 transition cursor-pointer inline-flex items-center gap-1.5"
-            >
+        {/* Actions — inside the solid block so buttons read clearly too. */}
+        <div className="flex items-center gap-2 pt-1">
+          {action === 'idle' && (
+            <>
+              <button
+                type="button"
+                onClick={handleConfirm}
+                className="px-3.5 py-1.5 rounded-lg text-xs bg-indigo-600 text-white hover:bg-indigo-500 transition cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <CheckCircle2 size={13} />
+                确认执行
+              </button>
+              <button
+                type="button"
+                onClick={handleReject}
+                className="px-3.5 py-1.5 rounded-lg text-xs bg-[#09090b] border border-[#3f3f46] text-[#fafafa] hover:bg-[#27272a] transition cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <XCircle size={13} />
+                拒绝
+              </button>
+            </>
+          )}
+          {action === 'confirming' && (
+            <span className="text-xs text-indigo-300">正在发送确认...</span>
+          )}
+          {action === 'confirmed' && (
+            <span className="text-xs text-emerald-400 inline-flex items-center gap-1">
               <CheckCircle2 size={13} />
-              确认执行
-            </button>
-            <button
-              type="button"
-              onClick={handleReject}
-              className="px-3.5 py-1.5 rounded-lg text-xs bg-[#121214] border border-[#27272a] text-slate-300 hover:bg-[#27272a] transition cursor-pointer inline-flex items-center gap-1.5"
-            >
+              已确认
+            </span>
+          )}
+          {action === 'rejected' && (
+            <span className="text-xs text-zinc-500 inline-flex items-center gap-1">
               <XCircle size={13} />
-              拒绝
-            </button>
-          </>
-        )}
-        {action === 'confirming' && (
-          <span className="text-xs text-indigo-300">正在发送确认...</span>
-        )}
-        {action === 'confirmed' && (
-          <span className="text-xs text-emerald-400 inline-flex items-center gap-1">
-            <CheckCircle2 size={13} />
-            已确认
-          </span>
-        )}
-        {action === 'rejected' && (
-          <span className="text-xs text-zinc-500 inline-flex items-center gap-1">
-            <XCircle size={13} />
-            已取消
-          </span>
-        )}
+              已取消
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

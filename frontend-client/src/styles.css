@@ -206,6 +206,14 @@ textarea {
   font-size: 11px;
 }
 
+/* The agent-switcher Dropdown renders in a portal, so it isn't a flex child of
+   the sidebar — bound it by viewport height instead of flex. Without this the
+   menu grows unbounded with many agents and overflows the page. */
+.agent-switcher-menu {
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
 .new-session-button {
   min-height: 42px;
   margin: 4px 16px 18px;

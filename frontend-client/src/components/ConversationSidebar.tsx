@@ -58,6 +58,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         </Typography.Text>
         <Dropdown
           trigger={['click']}
+          overlayClassName="agent-switcher-menu"
           menu={{
             selectedKeys: props.selectedAgentId ? [props.selectedAgentId] : [],
             items: props.agents.map((agent) => ({
