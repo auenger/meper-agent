@@ -1,14 +1,16 @@
-import { useState, FormEvent } from 'react';
+import { useState, useEffect, FormEvent } from 'react';
+import { createPortal } from 'react-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   Key, ShieldAlert, Plus, Sliders, CheckCircle, Check, Copy,
-  AlertTriangle, RefreshCw, ChevronDown, ChevronUp, ChevronRight,
+  AlertTriangle, RefreshCw, ChevronDown, ChevronUp, ChevronRight, Pencil,
 } from 'lucide-react';
 import { agentApi } from '../services/agent-api';
 import { workflowsApi } from '../services/workflows-api';
 import {
   apiKeysApi, apiKeyKeys, ALL_API_KEY_SCOPES, SCOPE_LABELS,
-  type ApiKeyItem, type ApiKeyScope, type ApiKeyCreatePayload, type ApiKeyCreateResponse,
+  type ApiKeyItem, type ApiKeyScope,
+  type ApiKeyCreatePayload, type ApiKeyCreateResponse, type ApiKeyUpdatePayload,
 } from '../services/api-keys-api';
 
 type AccessMode = 'legacy' | 'callback';
@@ -74,6 +76,7 @@ export function SystemSettings() {
   const [createdKey, setCreatedKey] = useState<ApiKeyCreateResponse | null>(null);
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
 
   // Agent/workflow option lists — always loaded (used by bindings picker AND detail name resolution).
   const { data: agentsData } = useQuery({
@@ -499,6 +502,15 @@ export function SystemSettings() {
                       </button>
                       {key.status === 'active' && (
                         <button
+                          onClick={() => setEditingKey(key)}
+                          className="p-1 px-2 border border-[#27272a] text-amber-400 hover:text-white hover:border-amber-500/50 rounded-lg transition text-[10px] cursor-pointer flex items-center gap-1 font-sans"
+                        >
+                          <Pencil className="w-3 h-3" />
+                          编辑
+                        </button>
+                      )}
+                      {key.status === 'active' && (
+                        <button
                           onClick={() => handleRevoke(key)}
                           disabled={revokeMutation.isPending}
                           className="p-1 px-2 border border-rose-950/20 text-rose-400 hover:text-white hover:bg-rose-950 rounded-lg transition text-[10px] cursor-pointer font-semibold disabled:opacity-40 font-sans"
@@ -611,6 +623,286 @@ export function SystemSettings() {
           </div>
         </div>
       </div>
+
+      {/* Edit dialog (portal) */}
+      {editingKey && (
+        <EditKeyModal
+          keyItem={editingKey}
+          onClose={() => setEditingKey(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
+/*  EditKeyModal — edit an existing API Key (name / scopes / bindings /   */
+/*  access mode / rate limit). Rendered via portal; reuses the create     */
+/*  form's field layout and amber-dark styling. PUT /api/v1/api-keys/{id}. */
+/* ─────────────────────────────────────────────────────────────────────── */
+
+function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () => void }) {
+  const qc = useQueryClient();
+
+  // ── form state, initialised from the key being edited ─────────────────
+  const [name, setName] = useState(keyItem.name);
+  const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(keyItem.scopes));
+  const [mode, setMode] = useState<AccessMode>(keyItem.user_info_url ? 'callback' : 'legacy');
+  const [userInfoUrl, setUserInfoUrl] = useState(keyItem.user_info_url ?? '');
+  const [rateLimit, setRateLimit] = useState(keyItem.rate_limit);
+  const [boundAgents, setBoundAgents] = useState<Set<string>>(new Set(keyItem.bindings.agents));
+  const [boundWorkflows, setBoundWorkflows] = useState<Set<string>>(new Set(keyItem.bindings.workflows));
+  const [showBindings, setShowBindings] = useState(false);
+  const [error, setError] = useState('');
+
+  // agent / workflow option lists (same sources as the create form)
+  const { data: agentsData } = useQuery({
+    queryKey: ['api-keys', 'agent-options'],
+    queryFn: () => agentApi.list({ page: 1, page_size: 100, status: 'all' }),
+  });
+  const { data: workflowsData } = useQuery({
+    queryKey: ['api-keys', 'workflow-options'],
+    queryFn: () => workflowsApi.list({ page: 1, page_size: 100 }),
+  });
+
+  // close on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const updateMutation = useMutation({
+    mutationFn: (payload: ApiKeyUpdatePayload) => apiKeysApi.update(keyItem.id, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: apiKeyKeys.lists() });
+      onClose();
+    },
+    onError: (e) => setError(errMsg(e, '保存失败，请重试')),
+  });
+
+  const handleSave = (e: FormEvent) => {
+    e.preventDefault();
+    setError('');
+    if (!name.trim()) return setError('请填写 Key 名称');
+    if (scopes.size === 0) return setError('至少选择一项权限');
+    if (mode === 'callback' && !userInfoUrl.trim())
+      return setError('回调验证模式需填写 introspection 端点');
+    updateMutation.mutate({
+      name: name.trim(),
+      scopes: [...scopes],
+      rate_limit: rateLimit,
+      user_info_url: mode === 'callback' ? userInfoUrl.trim() : '',
+      bindings: { agents: [...boundAgents], workflows: [...boundWorkflows] },
+    });
+  };
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4"
+      onClick={onClose}
+    >
+      <form
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={handleSave}
+        className="w-full max-w-lg max-h-[85vh] overflow-y-auto bg-[#18181b] border border-[#27272a] rounded-xl shadow-2xl flex flex-col"
+      >
+        {/* header */}
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#27272a]">
+          <div className="flex items-center gap-2">
+            <Pencil className="w-4 h-4 text-amber-400" />
+            <span className="text-sm font-bold text-white font-sans">编辑 API Key</span>
+            <span className="text-[10px] text-slate-500 font-mono">{keyItem.key_prefix}</span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-slate-400 hover:text-white transition cursor-pointer"
+            aria-label="关闭"
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* body */}
+        <div className="px-5 py-4 space-y-3 flex-1 overflow-y-auto">
+          {/* name */}
+          <div className="space-y-1">
+            <label className="text-[11px] text-[#a1a1aa] font-sans">Key 名称</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="如：MES 产线 A、官网访客"
+              maxLength={100}
+              className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
+            />
+          </div>
+
+          {/* scopes */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] text-[#a1a1aa] font-sans">权限（至少一项）</label>
+            <div className="flex flex-wrap gap-2">
+              {ALL_API_KEY_SCOPES.map((s) => {
+                const active = scopes.has(s);
+                return (
+                  <button
+                    type="button"
+                    key={s}
+                    onClick={() => setScopes((prev) => toggleInSet(prev, s))}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-mono border transition cursor-pointer ${
+                      active
+                        ? 'bg-amber-500/20 border-amber-500/50 text-amber-300'
+                        : 'bg-[#121214] border-[#27272a] text-slate-400 hover:border-slate-600'
+                    }`}
+                  >
+                    {active && <Check className="w-3 h-3 inline mr-1" />}
+                    {SCOPE_LABELS[s]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* access mode */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] text-[#a1a1aa] font-sans">访问模式（终端用户身份）</label>
+            <div className="flex gap-4 text-xs">
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
+                <input
+                  type="radio"
+                  checked={mode === 'legacy'}
+                  onChange={() => setMode('legacy')}
+                  className="accent-amber-500"
+                />
+                访客模式（visitor_id，匿名）
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
+                <input
+                  type="radio"
+                  checked={mode === 'callback'}
+                  onChange={() => setMode('callback')}
+                  className="accent-amber-500"
+                />
+                回调验证（X-User-Token）
+              </label>
+            </div>
+            {mode === 'callback' && (
+              <input
+                type="url"
+                value={userInfoUrl}
+                onChange={(e) => setUserInfoUrl(e.target.value)}
+                placeholder="introspection 端点 URL（RFC 7662），如 https://your-idp/oauth/introspect"
+                className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
+              />
+            )}
+          </div>
+
+          {/* bindings (collapsible) */}
+          <div className="space-y-1.5">
+            <button
+              type="button"
+              onClick={() => setShowBindings((v) => !v)}
+              className="flex items-center gap-1 text-[11px] text-[#a1a1aa] hover:text-white cursor-pointer font-sans"
+            >
+              {showBindings ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              资源绑定（可选，留空 = 不限制）
+            </button>
+            {showBindings && (
+              <div className="space-y-3 pl-1">
+                <div className="space-y-1">
+                  <span className="text-[10px] text-slate-500 font-sans">绑定智能体（{boundAgents.size}）</span>
+                  <div className="max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
+                    {(agentsData?.items ?? []).map((a) => {
+                      const active = boundAgents.has(a.id);
+                      return (
+                        <button
+                          type="button"
+                          key={a.id}
+                          onClick={() => setBoundAgents((prev) => toggleInSet(prev, a.id))}
+                          className={`px-2 py-0.5 rounded text-[10px] border transition cursor-pointer ${
+                            active
+                              ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                              : 'bg-[#121214] border-[#27272a] text-slate-400 hover:border-slate-600'
+                          }`}
+                        >
+                          {a.name}
+                        </button>
+                      );
+                    })}
+                    {(agentsData?.items ?? []).length === 0 && (
+                      <span className="text-[10px] text-slate-600 font-sans">暂无智能体</span>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-[10px] text-slate-500 font-sans">绑定工作流（{boundWorkflows.size}）</span>
+                  <div className="max-h-28 overflow-y-auto flex flex-wrap gap-1.5">
+                    {(workflowsData?.items ?? []).map((w) => {
+                      const active = boundWorkflows.has(w.id);
+                      return (
+                        <button
+                          type="button"
+                          key={w.id}
+                          onClick={() => setBoundWorkflows((prev) => toggleInSet(prev, w.id))}
+                          className={`px-2 py-0.5 rounded text-[10px] border transition cursor-pointer ${
+                            active
+                              ? 'bg-indigo-500/20 border-indigo-500/50 text-indigo-300'
+                              : 'bg-[#121214] border-[#27272a] text-slate-400 hover:border-slate-600'
+                          }`}
+                        >
+                          {w.name}
+                        </button>
+                      );
+                    })}
+                    {(workflowsData?.items ?? []).length === 0 && (
+                      <span className="text-[10px] text-slate-600 font-sans">暂无工作流</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* rate limit */}
+          <div className="flex items-center gap-3">
+            <label className="text-[11px] text-[#a1a1aa] font-sans shrink-0">每分钟请求上限</label>
+            <input
+              type="number"
+              min={1}
+              max={10000}
+              value={rateLimit}
+              onChange={(e) => setRateLimit(Math.max(1, Math.min(10000, Number(e.target.value) || 60)))}
+              className="w-24 px-2 py-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans"
+            />
+            <span className="text-[10px] text-slate-500 font-sans">次/分</span>
+          </div>
+
+          {error && <p className="text-[11px] text-rose-400 font-sans">{error}</p>}
+        </div>
+
+        {/* footer */}
+        <div className="flex justify-end gap-2 px-5 py-3 border-t border-[#27272a]">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 border border-[#27272a] text-[#a1a1aa] hover:text-white hover:border-slate-600 rounded-lg text-xs cursor-pointer transition font-sans"
+          >
+            取消
+          </button>
+          <button
+            type="submit"
+            disabled={updateMutation.isPending}
+            className="px-4 py-2 bg-gradient-to-r from-amber-500 to-yellow-600 hover:from-amber-600 hover:to-yellow-700 disabled:opacity-50 text-slate-950 font-bold rounded-lg shadow cursor-pointer transition font-sans text-xs flex items-center gap-1"
+          >
+            <Check className="w-4 h-4 text-slate-950" />
+            {updateMutation.isPending ? '保存中…' : '保存修改'}
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body,
   );
 }

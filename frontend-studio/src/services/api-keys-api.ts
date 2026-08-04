@@ -86,6 +86,20 @@ export interface ApiKeyCreatePayload {
   user_info_url?: string | null
 }
 
+/**
+ * Partial-update payload (mirror of backend ApiKeyUpdate — all fields optional).
+ * Used by the edit dialog to PATCH an existing key.
+ */
+export interface ApiKeyUpdatePayload {
+  name?: string
+  scopes?: ApiKeyScope[]
+  bindings?: ApiKeyBindings
+  rate_limit?: number
+  expires_at?: string | null
+  /** Pass '' to clear (back to legacy mode); a URL to switch to callback mode. */
+  user_info_url?: string | null
+}
+
 export interface ApiKeyListResponse {
   items: ApiKeyItem[]
   total: number
@@ -123,6 +137,18 @@ export const apiKeysApi = {
   async revoke(apiKeyId: string): Promise<void> {
     await apiClient.delete(`/api/v1/api-keys/${encodeURIComponent(apiKeyId)}`)
   },
+
+  /**
+   * Update an existing API Key (partial update — all fields optional).
+   * PUT /api/v1/api-keys/{id}
+   */
+  async update(apiKeyId: string, payload: ApiKeyUpdatePayload): Promise<ApiKeyItem> {
+    const res = await apiClient.put<ApiKeyItem>(
+      `/api/v1/api-keys/${encodeURIComponent(apiKeyId)}`,
+      payload,
+    )
+    return res.data
+  },
 }
 
 /* ─── Query key factory ─── */
@@ -131,4 +157,5 @@ export const apiKeyKeys = {
   all: ['api-keys'] as const,
   lists: () => [...apiKeyKeys.all, 'list'] as const,
   list: () => [...apiKeyKeys.lists()] as const,
+  detail: (id: string) => [...apiKeyKeys.all, 'detail', id] as const,
 }

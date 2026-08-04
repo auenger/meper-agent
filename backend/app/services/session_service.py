@@ -220,11 +220,12 @@ class MessageService:
         update_fields: dict = {
             "message_count": (await SessionService.get_session(session_id) or {}).get("message_count", 0) + 1,
         }
-        # Only set title from user message if session title is still empty
+        # Only set title from user message if session title is still empty.
+        # Truncate to 30 chars + ellipsis (matches the chat sidebar's width).
         if role == "user":
             session_doc = await SessionService.get_session(session_id)
             if session_doc and not session_doc.get("title"):
-                update_fields["title"] = content[:200]
+                update_fields["title"] = content[:30] + ("…" if len(content) > 30 else "")
         await SessionService.update_session(session_id, update_fields)
 
         return doc

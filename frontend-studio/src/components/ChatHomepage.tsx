@@ -454,6 +454,12 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
     agentsProp && agentsProp.length > 0
       ? agentsProp
       : (agentsData?.items ?? []).map(toStudioAgent);
+  // `agents` is recomputed (new array ref) on every render via .map(), so it
+  // must NOT be a dependency of the history-loading effect — otherwise that
+  // effect re-fires mid-stream and wipes the optimistic first message. Keep a
+  // ref so the effect can read the latest agent name/avatar without re-running.
+  const agentsRef = useRef<Agent[]>(agents);
+  agentsRef.current = agents;
 
   // ── Models: build an id → name map so the chat header / input box can show
   // the human-readable model name instead of the raw "model_..." id. ──
@@ -572,8 +578,16 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   }, [sessions, activeSessionId]);
 
   // Load messages when the active session changes.
+  // NOTE: depends on `activeSessionId` only. `agents` is recomputed (new array
+  // ref) on every render, so listing it as a dependency would re-fire this
+  // effect mid-stream and wipe the optimistic first message. Read it via
+  // agentsRef instead. Likewise guard against re-entry while a stream is live.
+  const isStreamingRef = useRef(false);
+  isStreamingRef.current = isStreaming;
   useEffect(() => {
     let cancelled = false;
+    // While streaming, never reset/reload — would erase the live bubbles.
+    if (isStreamingRef.current) return;
     if (!activeSessionId) {
       setLiveMessages([]);
       return;
@@ -588,7 +602,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         for (const rec of detail.messages) {
           if (rec.role === 'user') mapped.push(userMessageToDisplay(rec));
           else {
-            const agent = agents.find((a) => a.id === detail.session.agent_id);
+            const agent = agentsRef.current.find((a) => a.id === detail.session.agent_id);
             mapped.push(
               agentMessageToDisplay(rec, agent?.name ?? 'Agent', agent?.avatar ?? '🤖'),
             );
@@ -615,7 +629,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, agents]);
+  }, [activeSessionId]);
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -648,7 +662,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
 
   const handleStartNewWithAgent = async (agent: Agent) => {
     try {
-      const sess = await sessionApi.create(agent.id, `${agent.name} 空间`);
+      // Pass empty title — backend sets it from the first user message
+      // (truncated to 30 chars + ellipsis). See session_service.add_message.
+      const sess = await sessionApi.create(agent.id, '');
       setShowAgentSelectModal(false);
       setShowDropdown(false);
       refreshSessions();
