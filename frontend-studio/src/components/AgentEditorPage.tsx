@@ -24,6 +24,7 @@ import { toStudioAgent, fromStudioAgent } from '../services/adapters';
 import { Select, type SelectOptionGroup } from './ui';
 import { toast } from './ui/toast';
 import type { Agent } from '../types';
+import AvatarField from './AvatarField';
 
 const inputCls =
   'w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-white placeholder:text-[#52525b] focus:outline-none focus:border-indigo-600 transition font-sans';
@@ -196,14 +197,12 @@ export function AgentEditorPage({
 
       {/* ── Section: 基本信息 ── */}
       <Section title="基本信息" icon={<Bot className="w-3.5 h-3.5" />} defaultOpen>
-        <div className="grid grid-cols-[1fr_80px] gap-4">
-          <Field label="智能体名称 *">
-            <input className={inputCls} value={form.name} onChange={(e) => set({ name: e.target.value })} />
-          </Field>
-          <Field label="头像">
-            <input className={`${inputCls} text-center text-lg`} value={form.avatar} onChange={(e) => set({ avatar: e.target.value })} />
-          </Field>
-        </div>
+        <Field label="智能体名称 *">
+          <input className={inputCls} value={form.name} onChange={(e) => set({ name: e.target.value })} />
+        </Field>
+        <Field label="头像">
+          <AvatarField value={form.avatar} agentId={agentId} onChange={(url) => set({ avatar: url })} />
+        </Field>
         <Field label="职责描述">
           <input className={inputCls} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="这个 Agent 专门解决什么问题…" />
         </Field>

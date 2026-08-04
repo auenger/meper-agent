@@ -15,6 +15,7 @@ import { toStudioAgent } from '../services/adapters';
 import { getFileBlob, downloadFile as downloadFileById } from '../services/file-api';
 import { parseSSEStream } from '../lib/sse-parser';
 import { SessionFilesPanel, type SessionFilesPanelHandle } from './SessionFilesPanel';
+import AvatarRender from './AvatarRender';
 import { Markdown } from './Markdown';
 import { detectPreviewKind } from './FilePreview';
 import { FilePreviewModal } from './FilePreviewModal';
@@ -189,21 +190,9 @@ function fileRefToAttachment(file?: FileRef): Message['attachment'] | undefined 
   return { name, type, content: file.storage_key || name };
 }
 
-/** 机器人头像：默认 emoji 用 AFLogo.png，自定义 emoji 原样展示（后续再优化）。
- *  `DEFAULT_AVATAR_EMOJI` 与 services/adapters.ts 的 DEFAULT_AGENT_AVATAR 保持一致。 */
-const DEFAULT_AVATAR_EMOJI = '🤖';
+/** 机器人头像：委托 AvatarRender 统一渲染（URL→img / emoji→兼容 / 空→logo）。 */
 function BotAvatar({ avatar, className }: { avatar?: string; className?: string }) {
-  if (!avatar || avatar === DEFAULT_AVATAR_EMOJI) {
-    return (
-      <img
-        src="/AFLogo.png"
-        alt="bot"
-        className={`object-contain select-none ${className ?? ''}`}
-        draggable={false}
-      />
-    );
-  }
-  return <span className={`leading-none ${className ?? ''}`}>{avatar}</span>;
+  return <AvatarRender value={avatar} className={className} />;
 }
 
 /* ─── 对话内附件预览（用户上传 + agent 产出统一渲染） ─── */
@@ -590,7 +579,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
           else {
             const agent = agents.find((a) => a.id === detail.session.agent_id);
             mapped.push(
-              agentMessageToDisplay(rec, agent?.name ?? 'Agent', agent?.avatar ?? '🤖'),
+              agentMessageToDisplay(rec, agent?.name ?? 'Agent', agent?.avatar ?? ''),
             );
           }
         }

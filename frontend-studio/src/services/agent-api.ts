@@ -18,6 +18,7 @@ export interface Agent {
   id: string
   name: string
   description: string
+  avatar: string
   welcome_message: string
   recommended_items: { label: string; prompt: string }[]
   prompt_slots: Record<string, string>
@@ -48,6 +49,8 @@ export interface AgentCreateInput {
 export interface AgentUpdateInput {
   name: string
   description?: string
+  /** 头像 URL 路径；空串=清除回默认 logo */
+  avatar?: string
   /** 终端用户首屏欢迎词（Markdown） */
   welcome_message?: string
   /** 终端用户首屏推荐问题/操作 */
@@ -288,6 +291,21 @@ export const agentApi = {
   async update(agentId: string, input: AgentUpdateInput): Promise<Agent> {
     const res = await apiClient.put<Agent>(`/api/v1/agents/${encodeURIComponent(agentId)}`, input)
     return res.data
+  },
+
+  /**
+   * Upload an agent avatar image (already cropped to PNG client-side).
+   * POST /api/v1/agents/{id}/avatar — multipart 'file'. Returns the avatar URL.
+   */
+  async uploadAvatar(agentId: string, file: Blob): Promise<string> {
+    const form = new FormData()
+    form.append('file', file, 'avatar.png')
+    const res = await apiClient.post<{ avatar: string }>(
+      `/api/v1/agents/${encodeURIComponent(agentId)}/avatar`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return res.data.avatar
   },
 
   /**

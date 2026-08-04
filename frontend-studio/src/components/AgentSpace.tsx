@@ -6,6 +6,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys } from '../services/agent-api';
 import { toStudioAgent } from '../services/adapters';
 import type { Agent } from '../types';
+import AvatarRender from './AvatarRender';
 
 /**
  * AgentSpace — agent card list + create dialog.
@@ -109,8 +110,8 @@ export function AgentSpace({
                 <div className="p-5 space-y-4">
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-3">
-                      <div className="w-12 h-12 bg-[#121214] rounded-xl flex items-center justify-center text-2.5xl border border-[#27272a] shadow-inner select-none">
-                        {agent.avatar}
+                      <div className="w-12 h-12 bg-[#121214] rounded-xl flex items-center justify-center text-2.5xl border border-[#27272a] shadow-inner select-none overflow-hidden">
+                        <AvatarRender value={agent.avatar} className="w-full h-full" textClassName="text-2.5xl" />
                       </div>
                       <div className="space-y-0.5">
                         <h4 className="text-normal font-bold text-white tracking-tight flex items-center gap-1.5 font-sans">

@@ -46,6 +46,7 @@ class Agent(BaseModel):
     id: str = Field(default_factory=lambda: generate_id("agent"), alias="_id")
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
+    avatar: str = Field(default="", description="头像：图片 URL 路径(/api/v1/agent-avatars/{id}.png)或空")
     welcome_message: str = Field(
         default="", max_length=2000, description="终端用户首屏欢迎词（Markdown）"
     )

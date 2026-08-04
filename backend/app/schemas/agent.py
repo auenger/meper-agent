@@ -52,8 +52,9 @@ class AgentCreate(BaseModel):
         description="Agent 简要描述",
         examples=["负责客户问答的智能助手"],
     )
+    avatar: str = Field(default="", description="头像 URL 路径；空=默认 logo")
 
-    @field_validator("name", "description", mode="after")
+    @field_validator("name", "description", "avatar", mode="after")
     @classmethod
     def _sanitize_text_fields(cls, v: str) -> str:
         """后端纵深防御：清洗存储型 XSS 载荷（保留普通文本与 LLM 所需的
@@ -104,6 +105,10 @@ class AgentUpdate(BaseModel):
         default="",
         max_length=500,
         description="Agent 简要描述",
+    )
+    avatar: str = Field(
+        default="",
+        description="头像 URL 路径；空串=清除回默认 logo",
     )
     welcome_message: str = Field(
         default="",
@@ -169,7 +174,7 @@ class AgentUpdate(BaseModel):
         description="会话 Token 上限（累计，0 = 使用全局默认）",
     )
 
-    @field_validator("name", "description", "welcome_message", mode="after")
+    @field_validator("name", "description", "welcome_message", "avatar", mode="after")
     @classmethod
     def _sanitize_text_fields(cls, v: str) -> str:
         """后端纵深防御：清洗存储型 XSS 载荷。"""
@@ -197,6 +202,7 @@ class AgentResponse(BaseModel):
     id: str
     name: str
     description: str
+    avatar: str = Field(default="")
     welcome_message: str = Field(default="")
     recommended_items: list[RecommendedItem] = Field(default_factory=list)
     prompt_slots: dict[str, str] = Field(default_factory=dict)
