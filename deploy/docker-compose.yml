@@ -30,10 +30,12 @@ services:
       - WORKSPACES_CONTAINER_DIR=${WORKSPACES_CONTAINER_DIR:-/data/workspaces}
       - SKILLS_CONTAINER_DIR=${SKILLS_CONTAINER_DIR:-/data/skills}
       - KB_CONTAINER_DIR=${KB_CONTAINER_DIR:-/data/knowledge_bases}
+      - AVATARS_CONTAINER_DIR=${AVATARS_CONTAINER_DIR:-/data/avatars}
       # Host-side paths (passed to Docker daemon for sandbox bind mounts)
       - WORKSPACES_HOST_DIR=${WORKSPACES_HOST_DIR:-${HOME}/.agent-flow/workspaces}
       - SKILLS_HOST_DIR=${SKILLS_HOST_DIR:-${HOME}/.agent-flow/skills}
       - KB_HOST_DIR=${KB_HOST_DIR:-${HOME}/.agent-flow/knowledge_bases}
+      - AVATARS_HOST_DIR=${AVATARS_HOST_DIR:-${HOME}/.agent-flow/avatars}
       # Sandbox
       - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
@@ -46,6 +48,8 @@ services:
       # Skills — mounted read-only into sandbox containers
       - ${SKILLS_HOST_DIR:-${HOME}/.agent-flow/skills}:${SKILLS_CONTAINER_DIR:-/data/skills}
       - ${KB_HOST_DIR:-${HOME}/.agent-flow/knowledge_bases}:${KB_CONTAINER_DIR:-/data/knowledge_bases}
+      # Agent avatars
+      - ${AVATARS_HOST_DIR:-${HOME}/.agent-flow/avatars}:${AVATARS_CONTAINER_DIR:-/data/avatars}
     depends_on:
       mongodb:
         condition: service_started
@@ -67,9 +71,11 @@ services:
       - WORKSPACES_CONTAINER_DIR=${WORKSPACES_CONTAINER_DIR:-/data/workspaces}
       - SKILLS_CONTAINER_DIR=${SKILLS_CONTAINER_DIR:-/data/skills}
       - KB_CONTAINER_DIR=${KB_CONTAINER_DIR:-/data/knowledge_bases}
+      - AVATARS_CONTAINER_DIR=${AVATARS_CONTAINER_DIR:-/data/avatars}
       - WORKSPACES_HOST_DIR=${WORKSPACES_HOST_DIR:-${HOME}/.agent-flow/workspaces}
       - SKILLS_HOST_DIR=${SKILLS_HOST_DIR:-${HOME}/.agent-flow/skills}
       - KB_HOST_DIR=${KB_HOST_DIR:-${HOME}/.agent-flow/knowledge_bases}
+      - AVATARS_HOST_DIR=${AVATARS_HOST_DIR:-${HOME}/.agent-flow/avatars}
       - SANDBOX_ENABLED=${SANDBOX_ENABLED:-true}
       - SANDBOX_IMAGE=${SANDBOX_IMAGE:-agent-sandbox:latest}
     volumes:
@@ -77,6 +83,8 @@ services:
       - ${WORKSPACES_HOST_DIR:-${HOME}/.agent-flow/workspaces}:${WORKSPACES_CONTAINER_DIR:-/data/workspaces}
       - ${SKILLS_HOST_DIR:-${HOME}/.agent-flow/skills}:${SKILLS_CONTAINER_DIR:-/data/skills}
       - ${KB_HOST_DIR:-${HOME}/.agent-flow/knowledge_bases}:${KB_CONTAINER_DIR:-/data/knowledge_bases}
+      # Agent avatars
+      - ${AVATARS_HOST_DIR:-${HOME}/.agent-flow/avatars}:${AVATARS_CONTAINER_DIR:-/data/avatars}
     depends_on:
       - redis
       - mongodb

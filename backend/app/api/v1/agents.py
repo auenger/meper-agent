@@ -1,10 +1,13 @@
 """Agent API endpoints — CRUD operations + execution routing for Agent lifecycle."""
 import json
+import pathlib
+import re
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
-from app.core.errors import NotFoundError
+from app.core.config import settings
+from app.core.errors import NotFoundError, ValidationError
 from app.core.security import get_current_user, require_any_role
 from app.models.agent import AgentStatus
 from app.models.compat import resolve_skill_ids
@@ -49,6 +52,7 @@ def _doc_to_response(doc: dict) -> AgentResponse:
         id=doc["_id"],
         name=doc["name"],
         description=doc.get("description", ""),
+        avatar=doc.get("avatar", ""),
         welcome_message=doc.get("welcome_message", ""),
         recommended_items=doc.get("recommended_items", []),
         prompt_slots=doc.get("prompt_slots", {}),
@@ -175,10 +179,51 @@ async def update_agent(
         max_tokens=body.max_tokens,
         welcome_message=body.welcome_message,
         recommended_items=[item.model_dump() for item in body.recommended_items],
+        avatar=body.avatar,
     )
     if doc is None:
         raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
     return _doc_to_response(doc)
+
+
+# 头像上传：MIME/大小校验 + 落盘 + set_avatar（绕开 published 守卫）
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
+_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+@router.post("/{agent_id}/avatar", summary="Upload Agent avatar image")
+async def upload_avatar(
+    agent_id: str,
+    file: UploadFile = File(...),
+    _: UserResponse = Depends(require_any_role("admin", "developer")),
+) -> dict:
+    # agent 存在性
+    if await AgentService.get_agent(agent_id) is None:
+        raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
+    # agent_id 白名单（防路径穿越）
+    if not _AGENT_ID_RE.fullmatch(agent_id):
+        raise ValidationError(code="INVALID_AGENT_ID", message="非法 agent_id")
+    # MIME + 大小
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_ALLOWED_MIME:
+        raise ValidationError(code="AVATAR_TYPE", message="仅支持 PNG / JPEG / WEBP")
+    content = await file.read()
+    if not content:
+        raise ValidationError(code="AVATAR_EMPTY", message="图片内容为空")
+    if len(content) > _AVATAR_MAX_BYTES:
+        raise ValidationError(code="AVATAR_TOO_LARGE", message="图片不超过 2MB")
+    # 落盘（覆盖写，固定 {agent_id}.png；前端已裁剪为 PNG）
+    avatars_dir = pathlib.Path(settings.AVATARS_CONTAINER_DIR)
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    target = (avatars_dir / f"{agent_id}.png").resolve()
+    if avatars_dir.resolve() not in target.parents:
+        raise ValidationError(code="AVATAR_PATH", message="文件路径越界")
+    target.write_bytes(content)
+    # 写回 agent.avatar（相对 URL，前端 <img src> 直接用）
+    avatar_url = f"/api/v1/agent-avatars/{agent_id}.png"
+    await AgentService.set_avatar(agent_id, avatar_url)
+    return {"avatar": avatar_url}
 
 
 @router.post("/{agent_id}/publish", response_model=AgentResponse, summary="Publish an Agent")

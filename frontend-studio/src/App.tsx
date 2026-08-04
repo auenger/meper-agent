@@ -446,9 +446,6 @@ export default function App() {
             <h1 className={`text-sm font-semibold ${theme === 'dark' ? 'text-[#fafafa]' : 'text-slate-800'}`}>
               {activeTab === 'profile' ? '个人设置' : visibleNav.find((n) => n.id === activeTab)?.label}
             </h1>
-            <span className="bg-green-500/10 text-green-500 text-[10px] px-2 py-0.5 rounded border border-green-500/20 font-bold uppercase tracking-wide">
-              VM Live
-            </span>
           </div>
 
           {/* 通知中心：铃铛 + 未读角标 + 下拉面板（点击通知跳转任务协作看板并 highlight） */}
