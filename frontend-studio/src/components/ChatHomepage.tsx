@@ -1224,7 +1224,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         <div className="p-3.5 border-t border-[#27272a] bg-[#121214] rounded-none">
           <div className="flex items-center gap-2">
             <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-[10px] text-[#71717a] font-mono">Agent Flow SSE: Connected</span>
+            <span className="text-[10px] text-[#71717a] font-mono">MEPER Agent SSE: Connected</span>
           </div>
         </div>
       </div>
@@ -1276,7 +1276,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom p-6 space-y-5">
           <div className="flex items-center justify-center">
             <span className="px-3 py-1 rounded bg-[#18181b] border border-[#27272a]/60 text-[#71717a] text-[10px] font-mono">
-              对话由 Agent Flow 引擎实时流式生成
+              对话由 MEPER Agent 引擎实时流式生成
             </span>
           </div>
 

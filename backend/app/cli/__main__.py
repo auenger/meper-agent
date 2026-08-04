@@ -8,7 +8,7 @@ def main() -> None:
     """Parse CLI arguments and dispatch to subcommands."""
     parser = argparse.ArgumentParser(
         prog="agent-flow",
-        description="Agent Flow — administrative CLI",
+        description="MEPER Agent — administrative CLI",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

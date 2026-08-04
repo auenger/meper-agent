@@ -140,7 +140,7 @@ async def test_webhook(webhook_id: str) -> WebhookTestResult:
 
     test_payload = {
         "event": "test",
-        "message": "This is a test webhook event from Agent Flow",
+        "message": "This is a test webhook event from MEPER Agent",
         "timestamp": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(),
     }
 
