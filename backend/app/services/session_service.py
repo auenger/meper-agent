@@ -1,6 +1,7 @@
 """Session and Message business logic — CRUD operations."""
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from loguru import logger
@@ -113,6 +114,34 @@ class SessionService:
         if result.deleted_count > 0:
             # Delete all messages in this session
             await MessageService._collection().delete_many({"session_id": session_id})
+
+            # Clean up LangGraph checkpointer thread (thread_id == session_id).
+            # The full agent execution history (state snapshots, tool_calls,
+            # intermediate steps) lives in the checkpoints/checkpoint_writes
+            # collections keyed by thread_id; without this it would leak as
+            # orphan data and remain readable via get_thread_messages.
+            # pymongo 是同步驱动,直接调用会阻塞 event loop,用 to_thread 卸到线程池。
+            try:
+                from app.engine.harness_integration import get_checkpointer
+
+                checkpointer = get_checkpointer()
+                cp_col = getattr(checkpointer, "checkpoint_collection", None)
+                writes_col = getattr(checkpointer, "writes_collection", None)
+                thread_filter = {"thread_id": session_id}  # exact match, not prefix
+
+                def _delete() -> None:
+                    if cp_col is not None:
+                        cp_col.delete_many(thread_filter)
+                    if writes_col is not None:
+                        writes_col.delete_many(thread_filter)
+
+                await asyncio.to_thread(_delete)
+            except Exception as exc:
+                logger.warning(
+                    "session_checkpointer_cleanup_failed",
+                    session_id=session_id,
+                    error=str(exc),
+                )
 
             # Clean up workspace files
             try:

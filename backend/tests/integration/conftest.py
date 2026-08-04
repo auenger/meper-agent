@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from app.db import mongodb as mongodb_module
 from app.services.agent_service import AgentService
 from app.services.user_service import UserService
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorCollection
@@ -36,6 +37,29 @@ def pytest_collection_modifyitems(
         for item in items:
             if "integration" in item.keywords:
                 item.add_marker(skip_integration)
+
+
+@pytest.fixture(autouse=True)
+def _reset_app_mongodb_client() -> Generator[None, None, None]:
+    """Reset the app-wide singleton Motor client around every test.
+
+    Under ``asyncio_mode = "auto"`` each async test runs on its own event
+    loop, but ``app.db.mongodb._client`` is a process-wide singleton. Once the
+    first test initializes it, the client binds to that test's loop; when the
+    loop closes at teardown, any later test that reaches ``get_database()``
+    (e.g. ``AgentService.delete_agent`` queries the ``workflows`` collection)
+    hits ``RuntimeError: Event loop is closed``.
+
+    Dropping the singleton before and after each test forces a fresh client
+    that binds to the current test's own loop.
+    """
+    mongodb_module._client = None
+    yield
+    # Close anything the test may have created, then clear the reference so
+    # the next test starts clean.
+    if mongodb_module._client is not None:
+        mongodb_module._client.close()
+    mongodb_module._client = None
 
 
 @pytest_asyncio.fixture(scope="function")
