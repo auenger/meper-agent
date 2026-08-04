@@ -1,9 +1,13 @@
 /**
- * Tasks API — 任务详情/干预/产物（对接后端 /api/v1/tasks）。
+ * Tasks API — 任务详情/干预/产物。
  *
  * 复用 ./client 的 apiRequest（自动带 token + 401 refresh + ApiError）。
  * 字段 snake_case，与后端 schema 对齐；类型精简自 frontend-studio 的 tasks-api.ts，
  * 只取 dispatch_workflow 卡片需要的部分。
+ *
+ * 鉴权模式分流：AUTH_MODE === 'apikey'（嵌入/访客）时全部走外部接口
+ * /v1/ext/tasks/* 与 /v1/ext/workflows/*；否则走内部 /v1/tasks/* 与
+ * /v1/workflows/*。内部接口只认 JWT，apikey 调用会 401，故必须分流。
  */
 import { apiRequest, AUTH_MODE } from './client'
 
@@ -122,12 +126,15 @@ export interface NodeTimelineResponse {
 }
 
 const PATH = (id: string) => `/v1/tasks/${encodeURIComponent(id)}`
+const EXT_TASK_PATH = (id: string) => `/v1/ext/tasks/${encodeURIComponent(id)}`
+const EXT_WORKFLOW_PATH = (id: string) => `/v1/ext/workflows/${encodeURIComponent(id)}`
 
 /**
  * apikey 模式下任务详情走外部接口 /v1/ext/tasks/{id}（返回 ExtTaskResponse，
  * 字段是 TaskDetail 的子集：缺 timeline/version/checkpoint/created_by 等）。
  * 这里补上缺省值，让调用方拿到的对象形状与 TaskDetail 一致，避免 undefined 崩溃。
- * （intervene/outputs/node-timeline 在 apikey 模式下外部接口未提供，不在本分支处理。）
+ * （其余子接口 intervene/outputs/node-timeline/workflow 在 apikey 模式下也走 ext，
+ * 见 tasksApi 各方法。）
  */
 async function getTaskDetail(taskId: string): Promise<TaskDetail> {
   if (AUTH_MODE === 'apikey') {
@@ -159,33 +166,50 @@ export const tasksApi = {
     return getTaskDetail(taskId)
   },
 
-  /** POST /v1/tasks/{id}/intervene — approve/reject/skip/retry/resume/cancel，带 version 乐观锁。 */
+  /**
+   * POST intervene — approve/reject/skip/retry/resume/cancel，带 version 乐观锁。
+   * jwt 模式走 /v1/tasks/{id}/intervene；apikey 模式走 /v1/ext/tasks/{id}/intervene。
+   */
   intervene(taskId: string, body: TaskIntervenePayload): Promise<TaskInterveneResponse> {
-    return apiRequest<TaskInterveneResponse>(`${PATH(taskId)}/intervene`, {
+    const path = AUTH_MODE === 'apikey' ? `${EXT_TASK_PATH(taskId)}/intervene` : `${PATH(taskId)}/intervene`
+    return apiRequest<TaskInterveneResponse>(path, {
       method: 'POST',
       body: JSON.stringify(body),
     })
   },
 
-  /** GET /v1/tasks/{id}/outputs — 产物文件列表（无产物返回 404，语义化为空列表）。 */
+  /**
+   * GET 产物文件列表（无产物返回 404，语义化为空列表）。
+   * jwt 模式走 /v1/tasks/{id}/outputs；apikey 模式走 /v1/ext/tasks/{id}/outputs。
+   */
   async listOutputs(taskId: string): Promise<TaskOutputFile[]> {
+    const path = AUTH_MODE === 'apikey' ? `${EXT_TASK_PATH(taskId)}/outputs` : `${PATH(taskId)}/outputs`
     try {
-      return await apiRequest<TaskOutputFile[]>(`${PATH(taskId)}/outputs`)
+      return await apiRequest<TaskOutputFile[]>(path)
     } catch (err) {
       if ((err as { status?: number })?.status === 404) return []
       throw err
     }
   },
 
-  /** GET /v1/workflows/{id} — 工作流定义（取 nodes 建 node_id→label 映射）。无权限时抛错，调用方降级。 */
+  /**
+   * GET 工作流定义（取 nodes 建 node_id→label 映射）。无权限时抛错，调用方降级。
+   * jwt 模式走 /v1/workflows/{id}；apikey 模式走 /v1/ext/workflows/{id}
+   * （ExtWorkflowDetailResponse.nodes 含 node_id/type/label，结构兼容 WorkflowDetail）。
+   */
   getWorkflow(workflowId: string): Promise<WorkflowDetail> {
-    return apiRequest<WorkflowDetail>(`/v1/workflows/${encodeURIComponent(workflowId)}`)
+    const path = AUTH_MODE === 'apikey' ? EXT_WORKFLOW_PATH(workflowId) : `/v1/workflows/${encodeURIComponent(workflowId)}`
+    return apiRequest<WorkflowDetail>(path)
   },
 
-  /** GET /v1/tasks/{id}/nodes/{nodeId}/timeline — Agent 节点 REACT trace（thinking/tool_call/text）。 */
+  /**
+   * GET Agent 节点 REACT trace（thinking/tool_call/text）。
+   * jwt 模式走 /v1/tasks/{id}/nodes/{nid}/timeline；apikey 模式走 /v1/ext/tasks/{id}/nodes/{nid}/timeline。
+   */
   getNodeTimeline(taskId: string, nodeId: string): Promise<NodeTimelineResponse> {
+    const base = AUTH_MODE === 'apikey' ? EXT_TASK_PATH(taskId) : PATH(taskId)
     return apiRequest<NodeTimelineResponse>(
-      `${PATH(taskId)}/nodes/${encodeURIComponent(nodeId)}/timeline`,
+      `${base}/nodes/${encodeURIComponent(nodeId)}/timeline`,
     )
   },
 }

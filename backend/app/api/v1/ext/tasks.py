@@ -1,10 +1,19 @@
-"""External API — Task status query."""
+"""External API — Task status query, outputs, node timeline, intervention."""
 from fastapi import APIRouter, Depends
 
-from app.api.v1.ext import auth_and_rate_limit
+from app.api.v1.ext import auth_and_rate_limit, resolve_user_id
 from app.core.auth_apikey import ApiKeyPrincipal
 from app.core.errors import NotFoundError
+from app.models.file_library import FileConsumerKind
+from app.models.task import TaskStatus
 from app.schemas.ext_api import ExtTaskResponse
+from app.schemas.file_library import FileRefResponse
+from app.schemas.task import (
+    NodeTimelineEntry,
+    NodeTimelineResponse,
+    TaskIntervene,
+    TaskInterveneResponse,
+)
 from app.services.task_service import TaskService
 
 router = APIRouter(tags=["external-tasks"])
@@ -20,9 +29,28 @@ def _doc_to_ext_task(doc: dict) -> ExtTaskResponse:
         input=doc.get("input", {}),
         output=doc.get("output"),
         error=doc.get("error"),
-        created_at=doc.get("created_at", ""),
-        updated_at=doc.get("updated_at", ""),
+        created_at=doc["created_at"],
+        updated_at=doc["updated_at"],
     )
+
+
+async def _get_owned_task(task_id: str, principal: ApiKeyPrincipal) -> dict:
+    """Load a Task and enforce API-Key ownership.
+
+    Shared by all task sub-resources (detail / outputs / node timeline /
+    intervention). Only tasks created by this API Key's owner are
+    accessible; others return 404 (not 403) to avoid leaking existence.
+
+    Tasks created directly (Workflow invoke) carry the bare owner id; tasks
+    created by an Agent on a user's behalf carry ``owner:sub`` /
+    ``owner:visitor_id`` — both belong to this owner.
+    """
+    doc = await TaskService.get_task(task_id)
+    if doc is None:
+        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
+    if not principal.owns_resource(doc.get("created_by")):
+        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
+    return doc
 
 
 @router.get(
@@ -40,16 +68,142 @@ async def get_task(
     Only tasks created by this API Key's owner are accessible.
     """
     principal.require_scope("executions:read")
-
-    doc = await TaskService.get_task(task_id)
-    if doc is None:
-        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
-
-    # Only allow access to tasks created by this API Key's owner. Tasks
-    # created directly (Workflow invoke) carry the bare owner id; tasks
-    # created by an Agent on a user's behalf carry ``owner:sub`` /
-    # ``owner:visitor_id`` — both belong to this owner.
-    if not principal.owns_resource(doc.get("created_by")):
-        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
-
+    doc = await _get_owned_task(task_id, principal)
     return _doc_to_ext_task(doc)
+
+
+@router.get(
+    "/tasks/{task_id}/outputs",
+    response_model=list[FileRefResponse],
+    summary="List Task output files",
+)
+async def list_task_outputs(
+    task_id: str,
+    principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
+) -> list[dict]:
+    """List files produced by an Agent node during Task execution.
+
+    Requires ``executions:read`` scope.
+    Only tasks created by this API Key's owner are accessible.
+    """
+    principal.require_scope("executions:read")
+    await _get_owned_task(task_id, principal)
+
+    from app.services.file_service import FileService
+    from app.services.file_storage import LocalFileStorage
+
+    file_service = FileService(LocalFileStorage())
+    cursor = file_service._file_refs().find(
+        {
+            "origin_kind": FileConsumerKind.WORKFLOW_RUN.value,
+            "origin_id": task_id,
+        },
+    ).sort("created_at", -1)
+    docs = await cursor.to_list(length=None)
+    # Return as dicts so FastAPI can serialize them with the FileRefResponse
+    # schema (Pydantic handles the _id → id alias from MongoDB).
+    return [FileRefResponse.model_validate(doc).model_dump(mode="json") for doc in docs]
+
+
+@router.get(
+    "/tasks/{task_id}/nodes/{node_id}/timeline",
+    response_model=NodeTimelineResponse,
+    summary="Get Agent node execution detail",
+)
+async def get_node_timeline(
+    task_id: str,
+    node_id: str,
+    principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
+) -> NodeTimelineResponse:
+    """Return the full execution trace (thinking/tool_call/tool_result/text) of
+    an Agent node, read on demand from the LangGraph checkpointer thread.
+
+    Requires ``executions:read`` scope.
+    Only tasks created by this API Key's owner are accessible.
+    Returns 404 when the node has no checkpoint yet.
+    """
+    principal.require_scope("executions:read")
+    await _get_owned_task(task_id, principal)
+
+    from app.engine.harness_integration import get_checkpointer
+    from app.services.message_converters import messages_to_timeline_entries
+
+    thread_id = f"{task_id}_{node_id}"
+    checkpointer = get_checkpointer()
+    tuple_ = await checkpointer.aget_tuple({"configurable": {"thread_id": thread_id}})
+
+    if tuple_ is None or not tuple_.checkpoint:
+        raise NotFoundError(
+            code="NODE_TIMELINE_NOT_FOUND",
+            message=f"节点 {node_id} 无执行记录",
+        )
+
+    messages = tuple_.checkpoint.get("channel_values", {}).get("messages", [])
+    timeline = messages_to_timeline_entries(messages, include_user=True)
+
+    return NodeTimelineResponse(
+        task_id=task_id,
+        node_id=node_id,
+        thread_id=thread_id,
+        timeline=[NodeTimelineEntry(**e) for e in timeline],
+        message_count=len(messages),
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/intervene",
+    response_model=TaskInterveneResponse,
+    summary="Intervene a Task (approve/reject/skip/cancel/resume/retry)",
+)
+async def intervene_task(
+    task_id: str,
+    body: TaskIntervene,
+    principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
+) -> TaskInterveneResponse:
+    """Intervene in a Task: approve, reject, skip, cancel, resume, retry.
+
+    Requires ``workflows:invoke`` scope (write operation on an execution).
+    Only tasks created by this API Key's owner are accessible.
+
+    Core logic is shared with the internal JWT endpoint via
+    ``TaskService.intervene``. The actor identity is resolved from the
+    API-Key principal (callback-verification ``owner:sub`` or legacy
+    ``owner:visitor_id``).
+    """
+    principal.require_scope("workflows:invoke")
+    await _get_owned_task(task_id, principal)
+
+    # Resolve end-user identity for attribution (timeline / variables).
+    # In callback-verification mode principal.user_id is "owner:sub"; in
+    # legacy mode there is no visitor_id on this path, so it falls back to
+    # the bare owner_user_id.
+    triggered_by = resolve_user_id(principal, None)
+
+    doc = await TaskService.intervene(
+        task_id=task_id,
+        action=body.action,
+        comment=body.comment,
+        version=body.version,
+        reason=body.reason,
+        target_node_id=body.target_node_id,
+        variables=body.variables,
+        triggered_by=triggered_by,
+        triggered_by_type="api_key",
+    )
+
+    action_messages = {
+        "approve": "审批通过",
+        "reject": "已驳回",
+        "skip": "已跳过",
+        "cancel": "已取消",
+        "resume": "已恢复",
+        "retry": "重试中",
+        "rewind": "已退回重跑",
+    }
+
+    return TaskInterveneResponse(
+        task_id=task_id,
+        status=TaskStatus(doc["status"]),
+        version=doc.get("version", 1),
+        message=action_messages.get(body.action, "操作成功"),
+    )

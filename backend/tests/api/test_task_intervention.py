@@ -2,9 +2,9 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from app.api.v1.tasks import _sanitize_node_id
 from app.core.security import create_access_token
 from app.schemas.user import UserResponse, UserStatus
+from app.services.task_service import _sanitize_node_id
 from fastapi.testclient import TestClient
 
 TASK_ID = "task_01HAPPROVAL"

@@ -1,6 +1,8 @@
 """External API schemas — public-facing responses for API Key consumers."""
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, Field
 
 from app.models.agent import RecommendedItem
@@ -165,8 +167,8 @@ class ExtTaskResponse(BaseModel):
     input: dict = Field(default_factory=dict)
     output: dict | None = None
     error: dict | None = None
-    created_at: str
-    updated_at: str
+    created_at: datetime
+    updated_at: datetime
 
 
 # ---------------------------------------------------------------------------

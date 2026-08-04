@@ -1,14 +1,9 @@
 """Task API endpoints — CRUD, state transitions, intervention, stats."""
-import hashlib
-import json
-import re
-from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.errors import ValidationError as AppValidationError
 from app.core.security import get_current_user
-from app.models.task import TaskStatus, utc_now
+from app.models.task import TaskStatus
 from app.schemas.common import PaginatedResponse
 from app.schemas.file_library import FileRefResponse
 from app.schemas.task import (
@@ -87,64 +82,6 @@ def _doc_to_summary(doc: dict) -> TaskSummary:
 
 
 # ── Endpoints ──
-
-
-def _sanitize_node_id(node_id: str) -> str:
-    """Sanitize a node id for use in a variables key.
-
-    Produces a collision-resistant key by combining a sanitized version of the
-    original id (so the result is still readable and expression-friendly) with a
-    short hash suffix (so distinct ids that happen to sanitize to the same
-    string do not silently overwrite each other's decisions).
-    """
-    sanitized = re.sub(r"[^a-zA-Z0-9_]", "_", node_id) or "node"
-    digest = hashlib.sha1(node_id.encode("utf-8")).hexdigest()[:6]
-    return f"{sanitized}_{digest}"
-
-
-def _normalize_comment(raw: str | dict[str, Any] | None) -> Any:
-    """把 comment 输入归一化为「值本身」，用于写入 variables。
-
-    设计目标：comment 在 variables 里始终存值本身，下游 ``{{node.comment}}``
-    引用行为与改造前保持一致（text 存 string，json 存 object）。
-
-    - None / 空 → ""（保持现有行为）
-    - str → 原样返回（向后兼容）
-    - {"type": "text", "value": v} → 返回 v（string）
-    - {"type": "json", "value": v} → 返回 v（dict/list 原样，可被 ``{{node.comment.field}}`` 钻取）
-    - 未知 type / 结构异常 → 兜底当文本处理
-    """
-    if raw is None or raw == "":
-        return ""
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict):
-        ctype = raw.get("type")
-        value = raw.get("value")
-        if ctype == "json":
-            return value
-        # text 或未知 type：统一当文本处理
-        if isinstance(value, str):
-            return value
-        return str(value) if value is not None else ""
-    return str(raw)
-
-
-def _comment_to_text(raw: str | dict[str, Any] | None) -> str:
-    """把 comment 渲染成纯文本，用于 error_message、timeline 等可读展示场景。"""
-    if raw is None or raw == "":
-        return ""
-    if isinstance(raw, str):
-        return raw
-    if isinstance(raw, dict):
-        value = raw.get("value")
-        if raw.get("type") == "json":
-            try:
-                return json.dumps(value, ensure_ascii=False)
-            except (TypeError, ValueError):
-                return str(value)
-        return value if isinstance(value, str) else str(value or "")
-    return str(raw)
 
 
 @router.post(
@@ -247,7 +184,7 @@ async def intervene_task(
     body: TaskIntervene,
     current_user: UserResponse = Depends(get_current_user),
 ) -> TaskInterveneResponse:
-    """Intervene a Task: approve, reject, skip, cancel, resume, retry.
+    """Intervene a Task: approve, reject, skip, cancel, resume, retry, rewind.
 
     Action flows:
     - approve: transition(RUNNING) → write decision to variables → resume
@@ -255,206 +192,24 @@ async def intervene_task(
     - reject: transition(FAILED) → no resume
     - cancel: transition(CANCELLED)
     - resume: transition(RUNNING) → resume
-    - retry: transition(PENDING) → clear checkpoint/error → start workflow
+    - retry: clear checkpoint/error → start workflow
+    - rewind: trim target + downstream → resume
 
-    Requires ``version`` field for optimistic locking.
-    Returns 409 on version conflict.
+    Core logic lives in ``TaskService.intervene`` (shared with the external
+    API-Key endpoint). Requires ``version`` field for optimistic locking;
+    returns 409 on version conflict.
     """
-    valid_actions = {"approve", "reject", "skip", "cancel", "resume", "retry", "rewind"}
-
-    if body.action not in valid_actions:
-        raise AppValidationError(
-            code="TASK_INVALID_ACTION",
-            message=f"不支持的操作: {body.action}",
-        )
-
-    # Get current task document for checkpoint info
-    doc = await TaskService.get_task_or_404(task_id)
-
-    # Guard: approve/reject/skip require WAITING_HUMAN. If a timeout or another
-    # actor has already moved the task out of that state, the optimistic-lock
-    # check inside transition_task will return 409 — but rejecting early with a
-    # 4xx gives a clearer signal and avoids writing variables for a decision
-    # that the workflow is no longer waiting on.
-    if body.action in {"approve", "reject", "skip"} and doc.get("status") != TaskStatus.WAITING_HUMAN.value:
-        raise AppValidationError(
-            code="TASK_NOT_WAITING_HUMAN",
-            message=f"任务当前状态为 {doc.get('status')},无法执行 {body.action}",
-        )
-
-    if body.action == "approve":
-        # Transition waiting_human → running
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.RUNNING,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="approve",
-            timeline_data={"comment": _comment_to_text(body.comment), "action": "approve"},
-        )
-        # Write decision to variables
-        checkpoint_data = doc.get("checkpoint", {})
-        human_node_id = checkpoint_data.get("paused_at_node", "") if checkpoint_data else ""
-        if human_node_id:
-            decision_data = {
-                "decision": "approve",
-                "comment": _normalize_comment(body.comment),
-                "approver": current_user.id,
-                "decided_at": utc_now().isoformat(),
-            }
-            # Merge decision fields into the human node's own variable key
-            # so that ``{{node_id.comment}}`` resolves correctly after resume.
-            current_node_vars = dict(
-                (doc.get("variables") or {}).get(human_node_id) or {}
-            )
-            current_node_vars.update(decision_data)
-            await TaskService.update_variables(
-                task_id=task_id,
-                variables={
-                    f"human_decision_{_sanitize_node_id(human_node_id)}": decision_data,
-                    human_node_id: current_node_vars,
-                },
-                version=doc.get("version", 1),
-                reason=body.comment,
-                triggered_by=current_user.id,
-            )
-        # Resume workflow execution
-        TaskService.resume_task_execution(task_id)
-
-    elif body.action == "skip":
-        # Transition waiting_human → running
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.RUNNING,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="skip",
-            timeline_data={"comment": _comment_to_text(body.comment), "action": "skip"},
-        )
-        # Resume workflow execution (no decision written)
-        TaskService.resume_task_execution(task_id)
-
-    elif body.action == "reject":
-        # Transition waiting_human → failed (no resume)
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.FAILED,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="reject",
-            timeline_data={"comment": _comment_to_text(body.comment), "action": "reject"},
-            error_info={
-                "error_message": f"人工驳回: {_comment_to_text(body.comment) or '无原因'}",
-                "error_code": "HUMAN_REJECTED",
-            },
-        )
-        # Write decision to variables
-        checkpoint_data = doc.get("checkpoint", {})
-        human_node_id = checkpoint_data.get("paused_at_node", "") if checkpoint_data else ""
-        if human_node_id:
-            decision_data = {
-                "decision": "reject",
-                "comment": _normalize_comment(body.comment),
-                "approver": current_user.id,
-                "decided_at": utc_now().isoformat(),
-            }
-            # Merge decision fields into the human node's own variable key
-            # so that ``{{node_id.comment}}`` resolves correctly after resume.
-            current_node_vars = dict(
-                (doc.get("variables") or {}).get(human_node_id) or {}
-            )
-            current_node_vars.update(decision_data)
-            await TaskService.update_variables(
-                task_id=task_id,
-                variables={
-                    f"human_decision_{_sanitize_node_id(human_node_id)}": decision_data,
-                    human_node_id: current_node_vars,
-                },
-                version=doc.get("version", 1),
-                reason=body.comment,
-                triggered_by=current_user.id,
-            )
-
-    elif body.action == "cancel":
-        # Transition to cancelled (CANCELLED is now a recoverable paused state)
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.CANCELLED,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="cancel",
-            timeline_data={"reason": body.reason or "", "action": "cancel"},
-        )
-        # Notify the running worker to stop (best-effort revoke as backup;
-        # the engine also cooperatively checks the DB flag at node boundaries
-        # and inside the agent REACT loop).
-        await TaskService.cancel_running_task(task_id)
-
-    elif body.action == "resume":
-        # Transition waiting_human → running  OR  cancelled → running
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.RUNNING,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="resume",
-            timeline_data={"reason": body.reason or "", "action": "resume"},
-        )
-        # Resume workflow execution (from checkpoint — works for both
-        # waiting_human and cancelled states).
-        TaskService.resume_task_execution(task_id)
-
-    elif body.action == "retry":
-        # Transition failed → running（直接重新执行，不经过 pending，
-        # 因为看板不显示 pending 状态的 task，经过 pending 如果派发失败会"消失"）。
-        doc = await TaskService.transition_task(
-            task_id=task_id,
-            to_status=TaskStatus.RUNNING,
-            triggered_by=current_user.id,
-            triggered_by_type="user",
-            timeline_event_type="retry",
-            timeline_data={"reason": body.reason or "", "action": "retry"},
-        )
-        # 重试 = 重新开始：清除所有运行时数据 + 附属文件 + checkpointer。
-        # 让 task 回到初始状态后从头执行。
-        from app.db.mongodb import get_database
-        db = get_database()
-        await db["tasks"].update_one(
-            {"_id": task_id},
-            {
-                "$set": {
-                    "output": None,
-                    "variables": {},
-                    "variable_snapshots": [],
-                    "call_chain": [],
-                    "timeline": [],
-                    "error": None,
-                    "checkpoint": None,
-                    "celery_task_id": "",
-                    "updated_at": utc_now(),
-                }
-            },
-        )
-        # 清理附属数据：FileRef/FileUsage + workspace 文件 + checkpointer
-        await TaskService._cleanup_task_artifacts(task_id, delete_workspace=True)
-        # Start workflow execution from scratch
-        TaskService.resume_task_execution(task_id)
-
-    elif body.action == "rewind":
-        # Rewind: trim target_node_id + downstream from checkpoint, optionally
-        # merge variables, atomically transition waiting_human → running, then
-        # resume (engine re-executes target + downstream; untrimmed skipped).
-        # WAITING_HUMAN / checkpoint / target validation is enforced inside
-        # rewind_task (raises ConflictError/ValidationError → ExceptionMiddleware
-        # maps to 409/422). No try/except needed here, same as approve/reject.
-        doc = await TaskService.rewind_task(
-            task_id=task_id,
-            target_node_id=body.target_node_id or "",
-            variables=body.variables,
-            comment=body.comment,
-            triggered_by=current_user.id,
-            version=body.version,
-        )
+    doc = await TaskService.intervene(
+        task_id=task_id,
+        action=body.action,
+        comment=body.comment,
+        version=body.version,
+        reason=body.reason,
+        target_node_id=body.target_node_id,
+        variables=body.variables,
+        triggered_by=current_user.id,
+        triggered_by_type="user",
+    )
 
     action_messages = {
         "approve": "审批通过",
