@@ -211,7 +211,12 @@ export function useChat(
         const pending = [...history]
           .reverse()
           .flatMap((message) => [...message.tools].reverse())
-          .find((tool) => tool.name === 'ask_clarification' && !tool.result)
+          .find(
+            (tool) =>
+              (tool.name === 'ask_clarification' ||
+                tool.name === 'confirm_workflow') &&
+              !tool.result,
+          )
         if (pending) {
           let args: Record<string, unknown> = {}
           try {
@@ -219,25 +224,44 @@ export function useChat(
           } catch {
             args = {}
           }
-          const rawOptions = args.options
-          setHitl({
-            taskId: pending.id,
-            question: String(args.question || '请补充信息后继续。'),
-            clarificationType: String(args.clarification_type || 'missing_info'),
-            context: typeof args.context === 'string' ? args.context : undefined,
-            options: Array.isArray(rawOptions)
-              ? rawOptions.map(String)
-              : typeof rawOptions === 'string'
-                ? (() => {
-                    try {
-                      const parsed = JSON.parse(rawOptions)
-                      return Array.isArray(parsed) ? parsed.map(String) : []
-                    } catch {
-                      return []
-                    }
-                  })()
-                : [],
-          })
+          if (pending.name === 'confirm_workflow') {
+            // confirm_workflow args: workflow_name / description / params.
+            const preview = args.params
+            setHitl({
+              taskId: pending.id,
+              kind: 'workflow_confirmation',
+              question: '',
+              clarificationType: 'missing_info',
+              options: [],
+              workflowName: String(args.workflow_name ?? ''),
+              workflowDescription: String(args.description ?? ''),
+              inputPreview:
+                preview && typeof preview === 'object' && !Array.isArray(preview)
+                  ? (preview as Record<string, unknown>)
+                  : undefined,
+            })
+          } else {
+            const rawOptions = args.options
+            setHitl({
+              taskId: pending.id,
+              kind: 'clarification',
+              question: String(args.question || '请补充信息后继续。'),
+              clarificationType: String(args.clarification_type || 'missing_info'),
+              context: typeof args.context === 'string' ? args.context : undefined,
+              options: Array.isArray(rawOptions)
+                ? rawOptions.map(String)
+                : typeof rawOptions === 'string'
+                  ? (() => {
+                      try {
+                        const parsed = JSON.parse(rawOptions)
+                        return Array.isArray(parsed) ? parsed.map(String) : []
+                      } catch {
+                        return []
+                      }
+                    })()
+                  : [],
+            })
+          }
         }
         void Promise.all(
           history.map(async (message) => {
@@ -396,16 +420,39 @@ export function useChat(
             }
             onFilesChanged()
           } else if (event.type === 'interrupt') {
-            const clarificationTool = Array.from(acc.tools.values())
+            // The interrupt may come from ask_clarification (kind=clarification)
+            // or confirm_workflow (kind=workflow_confirmation). Find the
+            // pending tool that triggered it (either name) to grab its id.
+            const interruptTool = Array.from(acc.tools.values())
               .reverse()
-              .find((tool) => tool.name === 'ask_clarification' && !tool.result)
-            setHitl({
-              taskId: clarificationTool?.id || event.interrupt_id || '',
-              question: event.question ?? '请补充信息后继续。',
-              clarificationType: event.clarification_type ?? 'missing_info',
-              context: event.context ?? undefined,
-              options: event.options ?? [],
-            })
+              .find(
+                (tool) =>
+                  (tool.name === 'ask_clarification' ||
+                    tool.name === 'confirm_workflow') &&
+                  !tool.result,
+              )
+            const taskId = interruptTool?.id || event.interrupt_id || ''
+            if (event.kind === 'workflow_confirmation') {
+              setHitl({
+                taskId,
+                kind: 'workflow_confirmation',
+                question: '',
+                clarificationType: 'missing_info',
+                options: [],
+                workflowName: event.workflow_name ?? '',
+                workflowDescription: event.workflow_description ?? '',
+                inputPreview: event.input_preview ?? undefined,
+              })
+            } else {
+              setHitl({
+                taskId,
+                kind: 'clarification',
+                question: event.question ?? '请补充信息后继续。',
+                clarificationType: event.clarification_type ?? 'missing_info',
+                context: event.context ?? undefined,
+                options: event.options ?? [],
+              })
+            }
             flush(acc, 'success')
             setRunning(false)
             return

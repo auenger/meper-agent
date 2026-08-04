@@ -643,6 +643,47 @@ textarea {
   flex: 1;
 }
 
+/* confirm_workflow card — param preview layout. */
+.workflow-confirmation-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.workflow-confirmation-params {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workflow-confirmation-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workflow-confirmation-param {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.workflow-confirmation-param-key {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--client-surface-hover, rgba(0, 0, 0, 0.06));
+  font-size: 12px;
+  font-family: var(--client-mono, monospace);
+  opacity: 0.85;
+}
+
+.workflow-confirmation-param-value {
+  word-break: break-all;
+  font-size: 13px;
+}
+
 .file-preview-image {
   display: block;
   max-width: 100%;

@@ -221,65 +221,131 @@ export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }
 
           <footer className="composer-dock">
             {hitl ? (
-              <Alert
-                className="hitl-card"
-                type="warning"
-                showIcon
-                icon={<QuestionCircleOutlined />}
-                message={
-                  hitl.clarificationType === 'risk_confirmation'
-                    ? '操作确认'
-                    : 'Agent 需要补充信息'
-                }
-                description={
-                  <div className="clarification-content">
-                    <Typography.Text>{hitl.question}</Typography.Text>
-                    {hitl.context ? (
-                      <Typography.Text type="secondary">{hitl.context}</Typography.Text>
-                    ) : null}
-                    {hitl.options.length > 0 ? (
-                      <div className="clarification-options">
-                        {hitl.options.map((option) => (
-                          <Button
-                            key={option}
-                            onClick={() => submitClarification(option)}
-                          >
-                            {option}
-                          </Button>
-                        ))}
+              hitl.kind === 'workflow_confirmation' ? (
+                <Alert
+                  className="hitl-card"
+                  type="warning"
+                  showIcon
+                  icon={<QuestionCircleOutlined />}
+                  message="工作流确认"
+                  description={
+                    <div className="clarification-content">
+                      <div className="workflow-confirmation-row">
+                        <Typography.Text type="secondary">工作流：</Typography.Text>
+                        <Typography.Text strong>
+                          {hitl.workflowName || '（未命名）'}
+                        </Typography.Text>
                       </div>
-                    ) : null}
-                    {hitl.clarificationType === 'risk_confirmation' ? (
+                      {hitl.workflowDescription ? (
+                        <Typography.Text type="secondary">
+                          {hitl.workflowDescription}
+                        </Typography.Text>
+                      ) : null}
+                      {hitl.inputPreview &&
+                      Object.keys(hitl.inputPreview).length > 0 ? (
+                        <div className="workflow-confirmation-params">
+                          <Typography.Text type="secondary">输入参数：</Typography.Text>
+                          <div className="workflow-confirmation-params-list">
+                            {Object.entries(hitl.inputPreview).map(([key, value]) => (
+                              <div key={key} className="workflow-confirmation-param">
+                                <span className="workflow-confirmation-param-key">
+                                  {key}
+                                </span>
+                                <span className="workflow-confirmation-param-value">
+                                  {typeof value === 'string'
+                                    ? value
+                                    : JSON.stringify(value)}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="clarification-options">
-                        <Button onClick={() => submitClarification('取消')}>取消</Button>
                         <Button
                           danger
                           type="primary"
-                          onClick={() => submitClarification('确认')}
+                          loading={running}
+                          onClick={() => submitClarification('拒绝')}
+                        >
+                          拒绝
+                        </Button>
+                        <Button
+                          type="primary"
+                          loading={running}
+                          onClick={() =>
+                            submitClarification(
+                              `确认执行 ${hitl.workflowName ?? ''}`.trim(),
+                            )
+                          }
                         >
                           确认执行
                         </Button>
                       </div>
-                    ) : null}
-                    <div className="clarification-input">
-                      <Input
-                        value={clarificationAnswer}
-                        onChange={(event) => setClarificationAnswer(event.target.value)}
-                        onPressEnter={() => submitClarification(clarificationAnswer)}
-                        placeholder="输入你的回答"
-                        disabled={running}
-                      />
-                      <Button
-                        type="primary"
-                        disabled={!clarificationAnswer.trim() || running}
-                        onClick={() => submitClarification(clarificationAnswer)}
-                      >
-                        发送
-                      </Button>
                     </div>
-                  </div>
-                }
-              />
+                  }
+                />
+              ) : (
+                <Alert
+                  className="hitl-card"
+                  type="warning"
+                  showIcon
+                  icon={<QuestionCircleOutlined />}
+                  message={
+                    hitl.clarificationType === 'risk_confirmation'
+                      ? '操作确认'
+                      : 'Agent 需要补充信息'
+                  }
+                  description={
+                    <div className="clarification-content">
+                      <Typography.Text>{hitl.question}</Typography.Text>
+                      {hitl.context ? (
+                        <Typography.Text type="secondary">{hitl.context}</Typography.Text>
+                      ) : null}
+                      {hitl.options.length > 0 ? (
+                        <div className="clarification-options">
+                          {hitl.options.map((option) => (
+                            <Button
+                              key={option}
+                              onClick={() => submitClarification(option)}
+                            >
+                              {option}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : null}
+                      {hitl.clarificationType === 'risk_confirmation' ? (
+                        <div className="clarification-options">
+                          <Button onClick={() => submitClarification('取消')}>取消</Button>
+                          <Button
+                            danger
+                            type="primary"
+                            onClick={() => submitClarification('确认')}
+                          >
+                            确认执行
+                          </Button>
+                        </div>
+                      ) : null}
+                      <div className="clarification-input">
+                        <Input
+                          value={clarificationAnswer}
+                          onChange={(event) => setClarificationAnswer(event.target.value)}
+                          onPressEnter={() => submitClarification(clarificationAnswer)}
+                          placeholder="输入你的回答"
+                          disabled={running}
+                        />
+                        <Button
+                          type="primary"
+                          disabled={!clarificationAnswer.trim() || running}
+                          onClick={() => submitClarification(clarificationAnswer)}
+                        >
+                          发送
+                        </Button>
+                      </div>
+                    </div>
+                  }
+                />
+              )
             ) : null}
             {files.length > 0 ? (
               <Attachments

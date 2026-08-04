@@ -130,10 +130,16 @@ export interface ChatMessage {
 
 export interface HitlState {
   taskId: string
+  /** Discriminator: clarification (ask_clarification) vs workflow_confirmation (confirm_workflow). */
+  kind: 'clarification' | 'workflow_confirmation'
   question: string
   clarificationType: string
   context?: string
   options: string[]
+  // workflow_confirmation fields (confirm_workflow) — only set when kind === 'workflow_confirmation'.
+  workflowName?: string
+  workflowDescription?: string
+  inputPreview?: Record<string, unknown>
 }
 
 export interface SessionFile {
@@ -173,10 +179,16 @@ export interface StreamEvent {
   tool_name?: string
   args?: Record<string, unknown>
   auto?: boolean
+  // interrupt payload — clarification (ask_clarification) fields
   question?: string
   clarification_type?: string
   context?: string | null
   options?: string[] | null
+  // interrupt payload — workflow_confirmation (confirm_workflow) fields
+  kind?: 'clarification' | 'workflow_confirmation'
+  workflow_name?: string
+  workflow_description?: string
+  input_preview?: Record<string, unknown> | null
   interrupt_id?: string
   status?: 'success' | 'error'
   source?: 'llm' | 'tool' | 'graph'
