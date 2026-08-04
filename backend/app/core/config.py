@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    APP_NAME: str = "Agent Flow"
+    APP_NAME: str = "MEPER Agent"
     APP_ENV: str = "development"
     DEBUG: bool = False
 
