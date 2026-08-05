@@ -63,7 +63,7 @@ export function toStudioAgent(a: BackendAgent): Agent {
   return {
     id: a.id,
     name: a.name,
-    avatar: DEFAULT_AGENT_AVATAR,
+    avatar: a.avatar ?? '',
     description: a.description ?? '',
     welcomeMessage: a.welcome_message ?? '',
     recommendedItems: (a.recommended_items ?? []).map((it) => ({
@@ -102,6 +102,7 @@ export function fromStudioAgent(a: Agent): {
   builtin_config?: string[]
   workflow_ids?: string[]
   knowledge_base_ids?: string[]
+  avatar?: string
   max_retry?: number
   max_tokens?: number
 } {
@@ -121,6 +122,7 @@ export function fromStudioAgent(a: Agent): {
   return {
     name: a.name,
     description: a.description,
+    avatar: a.avatar,
     welcome_message: a.welcomeMessage ?? '',
     recommended_items: (a.recommendedItems ?? []).map((it) => ({
       label: it.label,

@@ -92,6 +92,7 @@ class AgentService:
         max_tokens: int = 0,
         welcome_message: str = "",
         recommended_items: list[dict] | None = None,
+        avatar: str = "",
     ) -> dict:
         """Create a new Agent in draft status.
 
@@ -155,6 +156,7 @@ class AgentService:
             "max_tokens": agent.max_tokens,
             "welcome_message": welcome_message,
             "recommended_items": recommended_items or [],
+            "avatar": avatar,
             "status": agent.status.value,
             "created_at": agent.created_at,
             "updated_at": agent.updated_at,
@@ -247,6 +249,7 @@ class AgentService:
         max_tokens: int = 0,
         welcome_message: str = "",
         recommended_items: list[dict] | None = None,
+        avatar: str = "",
     ) -> dict | None:
         """Update an existing Agent's configuration.
 
@@ -315,6 +318,7 @@ class AgentService:
             "max_tokens": max_tokens,
             "welcome_message": welcome_message,
             "recommended_items": recommended_items or [],
+            "avatar": avatar,
             "updated_at": now_iso,
         }
 
@@ -329,6 +333,26 @@ class AgentService:
             agent_id=agent_id,
         )
         return updated
+
+    @staticmethod
+    async def set_avatar(agent_id: str, avatar_url: str) -> dict | None:
+        """Set only the avatar field.
+
+        Bypasses the published-immutability guard of ``update_agent`` — the
+        avatar is a cosmetic field (display only), not agent config/behavior,
+        so changing it on a published agent is allowed. Used by the avatar
+        upload endpoint.
+        """
+        col = AgentService._collection()
+        if await col.find_one({"_id": agent_id}) is None:
+            return None
+        from app.models.base import utc_now
+
+        await col.update_one(
+            {"_id": agent_id},
+            {"$set": {"avatar": avatar_url, "updated_at": utc_now().isoformat()}},
+        )
+        return await AgentService.get_agent(agent_id)
 
     @staticmethod
     async def delete_agent(agent_id: str) -> bool:
@@ -395,6 +419,18 @@ class AgentService:
                     agent_id=agent_id,
                     error=str(exc),
                 )
+
+            # Best-effort: 删除该 Agent 的头像文件（失败仅记日志，不阻断删除）
+            try:
+                import pathlib
+
+                from app.core.config import settings
+
+                avatar_file = pathlib.Path(settings.AVATARS_CONTAINER_DIR) / f"{agent_id}.png"
+                if avatar_file.exists():
+                    avatar_file.unlink()
+            except Exception as exc:
+                logger.warning("agent_avatar_cleanup_failed", agent_id=agent_id, error=str(exc))
 
             logger.info(
                 "agent_deleted",

@@ -1,9 +1,11 @@
 """FastAPI application entry point."""
 import asyncio
+import pathlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.middleware.exception_mw import ExceptionMiddleware
 from app.api.middleware.logging_mw import LoggingMiddleware
@@ -62,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title=settings.APP_NAME,
-    description="Agent Flow - AI Agent orchestration platform",
+    description="MEPER Agent - AI Agent orchestration platform",
     version="0.1.0",
     docs_url="/api/v1/docs",
     redoc_url="/api/v1/redoc",
@@ -86,6 +88,11 @@ app.add_middleware(ExtApiStatsMiddleware)
 
 # API routes
 app.include_router(api_v1_router, prefix="/api/v1")
+
+# Agent 头像静态目录（无鉴权读取，<img src> 直接用；上传端点仍鉴权）。
+_avatars_dir = pathlib.Path(settings.AVATARS_CONTAINER_DIR)
+_avatars_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/api/v1/agent-avatars", StaticFiles(directory=str(_avatars_dir)), name="agent-avatars")
 
 
 @app.get("/", tags=["root"])

@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     )
 
     # Application
-    APP_NAME: str = "Agent Flow"
+    APP_NAME: str = "MEPER Agent"
     APP_ENV: str = "development"
     DEBUG: bool = False
 
@@ -131,6 +131,14 @@ class Settings(BaseSettings):
     # Host-side path for Knowledge Bases (the one users configure in .env).
     KB_HOST_DIR: str = "~/.agent-flow/knowledge_bases"
 
+    # Agent avatars — root directory where uploaded avatar images live.
+    # Each avatar is a single file ``{AVATARS_CONTAINER_DIR}/{agent_id}.png``
+    # (overwrite on re-upload). Served read-only via StaticFiles mount.
+    # None = derive from AVATARS_HOST_DIR (local dev).
+    # Docker: set explicitly by docker-compose (e.g. /data/avatars).
+    AVATARS_CONTAINER_DIR: str | None = None
+    AVATARS_HOST_DIR: str = "~/.agent-flow/avatars"
+
     # Knowledge Base tool limits (truncation / caps, aligned with langxin tree KB).
     KB_GLOB_MAX_RESULTS: int = 200
     KB_GREP_MAX_FILES: int = 50
@@ -179,12 +187,15 @@ class Settings(BaseSettings):
         self.WORKSPACES_HOST_DIR = os.path.expanduser(self.WORKSPACES_HOST_DIR)
         self.SKILLS_HOST_DIR = os.path.expanduser(self.SKILLS_HOST_DIR)
         self.KB_HOST_DIR = os.path.expanduser(self.KB_HOST_DIR)
+        self.AVATARS_HOST_DIR = os.path.expanduser(self.AVATARS_HOST_DIR)
         if self.WORKSPACES_CONTAINER_DIR is None:
             self.WORKSPACES_CONTAINER_DIR = self.WORKSPACES_HOST_DIR
         if self.SKILLS_CONTAINER_DIR is None:
             self.SKILLS_CONTAINER_DIR = self.SKILLS_HOST_DIR
         if self.KB_CONTAINER_DIR is None:
             self.KB_CONTAINER_DIR = self.KB_HOST_DIR
+        if self.AVATARS_CONTAINER_DIR is None:
+            self.AVATARS_CONTAINER_DIR = self.AVATARS_HOST_DIR
         return self
 
     # ── Sandbox ──────────────────────────────────────────────────────────

@@ -1,1 +1,1 @@
-"""Agent Flow CLI — administrative commands."""
+"""MEPER Agent CLI — administrative commands."""

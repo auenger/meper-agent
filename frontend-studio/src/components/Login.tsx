@@ -106,17 +106,17 @@ export default function Login() {
       </button>
 
       <div className="relative w-full max-w-sm mx-4">
-        {/* brand — real AgentFlow mark (AFLogo.png) instead of a letter tile */}
+        {/* brand — real MEPER Agent mark (AFLogo.png) instead of a letter tile */}
         <div className="flex flex-col items-center mb-7">
           <img
             src="/AFLogo.png"
-            alt="AgentFlow"
+            alt="MEPER Agent"
             className="w-14 h-14 mb-3 object-contain select-none drop-shadow-[0_4px_12px_rgba(99,102,241,0.35)]"
             draggable={false}
           />
-          <h1 className="text-xl font-semibold tracking-tight">AgentFlow</h1>
+          <h1 className="text-xl font-semibold tracking-tight">MEPER Agent</h1>
           <p className="text-[11px] text-[#71717a] uppercase tracking-widest font-bold mt-1">
-            Agent Flow Studio
+            MEPER Agent Studio
           </p>
         </div>
 

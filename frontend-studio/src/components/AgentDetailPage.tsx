@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { agentApi, agentKeys } from '../services/agent-api';
 import { modelApi, modelKeys } from '../services/model-api';
 import { toStudioAgent, displayToAgentStatus } from '../services/adapters';
+import AvatarRender from './AvatarRender';
 import { ChatHomepage } from './ChatHomepage';
 
 const STATUS_DOT: Record<string, string> = {
@@ -119,8 +120,8 @@ export function AgentDetailPage({
         {/* Left: config */}
         <aside className="lg:col-span-4 rounded-xl border border-[#27272a] bg-[#18181b] overflow-y-auto p-5 space-y-4">
           <div className="flex items-center gap-3 pb-4 border-b border-[#27272a]">
-            <div className={`w-12 h-12 rounded-xl ${agent.iconColor} flex items-center justify-center text-2xl shrink-0`}>
-              {agent.avatar}
+            <div className={`w-12 h-12 rounded-xl ${agent.iconColor} flex items-center justify-center text-2xl shrink-0 overflow-hidden`}>
+              <AvatarRender value={agent.avatar} className="w-full h-full" textClassName="text-2xl" />
             </div>
             <div className="min-w-0 flex-1">
               <h3 className="text-sm font-bold text-white truncate">{agent.name}</h3>
