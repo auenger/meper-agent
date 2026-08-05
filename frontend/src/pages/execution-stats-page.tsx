@@ -19,6 +19,7 @@ import {
 import {
   statsApi, type ChannelStats, type ExecutionStats, type ExecutionLogItem,
 } from '../services/stats-api'
+import { type NormalizedApiError } from '../services/api-client'
 
 const { RangePicker } = DatePicker
 
@@ -85,9 +86,9 @@ export default function ExecutionStatsPage() {
 
   const errorDetail = useMemo(() => {
     if (!isError || !error) return null
-    const anyErr = error as { response?: { status?: number; data?: { error?: { message?: string } } }; message?: string }
-    const status = anyErr.response?.status
-    const backendMsg = anyErr.response?.data?.error?.message
+    const anyErr = error as NormalizedApiError
+    const status = anyErr.statusCode
+    const backendMsg = anyErr.message
     return status ? `HTTP ${status}${backendMsg ? `：${backendMsg}` : ''}` : (anyErr.message || '未知错误')
   }, [isError, error])
 

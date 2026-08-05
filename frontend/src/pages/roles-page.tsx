@@ -10,6 +10,7 @@ import { PlusOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import type { Role } from '../types/permission'
 import { roleApi } from '../services/role-api'
+import { type NormalizedApiError } from '../services/api-client'
 import { RoleFormModal } from '../components/role-form-modal'
 
 export default function RolesPage() {
@@ -51,8 +52,8 @@ export default function RolesPage() {
       message.success('角色已删除')
       fetchRoles()
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '删除失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '删除失败')
     }
   }
 

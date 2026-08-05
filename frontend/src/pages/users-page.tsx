@@ -19,6 +19,7 @@ import { useTheme } from '../contexts/ThemeContext'
 import { useAuthStore } from '../stores/auth-store'
 import { userApi, type User } from '../services/user-api'
 import { roleApi } from '../services/role-api'
+import { type NormalizedApiError } from '../services/api-client'
 import type { Role } from '../types/permission'
 import { usePermission } from '../hooks/use-permission'
 import dayjs from 'dayjs'
@@ -130,8 +131,8 @@ export default function UsersPage() {
       createForm.resetFields()
       fetchUsers()
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '创建失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '创建失败')
     } finally {
       setSubmitting(false)
     }
@@ -145,8 +146,8 @@ export default function UsersPage() {
       message.success(newStatus === 'active' ? '用户已启用' : '用户已禁用')
       fetchUsers()
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '操作失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '操作失败')
     }
   }
 
@@ -157,8 +158,8 @@ export default function UsersPage() {
       message.success('用户已删除')
       fetchUsers()
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '删除失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '删除失败')
     }
   }
 
@@ -169,8 +170,8 @@ export default function UsersPage() {
       message.success('角色已更新')
       fetchUsers()
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '更新角色失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '更新角色失败')
     }
   }
 
@@ -185,8 +186,8 @@ export default function UsersPage() {
       resetPwdForm.resetFields()
       setTargetUser(null)
     } catch (err: unknown) {
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '重置密码失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '重置密码失败')
     } finally {
       setSubmitting(false)
     }

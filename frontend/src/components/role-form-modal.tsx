@@ -9,6 +9,7 @@ import { useEffect } from 'react'
 import { Modal, Form, Input, message } from 'antd'
 import type { Role } from '../types/permission'
 import { roleApi, type RoleCreatePayload, type RoleUpdatePayload } from '../services/role-api'
+import { type NormalizedApiError } from '../services/api-client'
 import { PermissionCheckboxGroup } from './permission-checkbox-group'
 
 interface RoleFormModalProps {
@@ -69,8 +70,8 @@ export function RoleFormModal({ open, role, onClose, onSuccess }: RoleFormModalP
     } catch (err: unknown) {
       // Form validation errors are handled by AntD
       if (err && typeof err === 'object' && 'errorFields' in err) return
-      const apiErr = err as { response?: { data?: { error?: { message?: string } } } }
-      message.error(apiErr?.response?.data?.error?.message ?? '操作失败')
+      const apiErr = err as NormalizedApiError
+      message.error(apiErr.message ?? '操作失败')
     }
   }
 
