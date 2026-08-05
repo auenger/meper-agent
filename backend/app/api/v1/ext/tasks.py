@@ -26,9 +26,13 @@ def _doc_to_ext_task(doc: dict) -> ExtTaskResponse:
         workflow_id=doc["workflow_id"],
         workflow_version=doc.get("workflow_version", ""),
         status=doc["status"],
+        version=doc.get("version", 1),
         input=doc.get("input", {}),
         output=doc.get("output"),
         error=doc.get("error"),
+        checkpoint=doc.get("checkpoint"),
+        created_by=doc.get("created_by", ""),
+        created_by_type=doc.get("created_by_type", ""),
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
     )

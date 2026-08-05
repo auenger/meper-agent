@@ -164,9 +164,13 @@ class ExtTaskResponse(BaseModel):
     workflow_id: str
     workflow_version: str
     status: str
+    version: int = 1
     input: dict = Field(default_factory=dict)
     output: dict | None = None
     error: dict | None = None
+    checkpoint: dict | None = None
+    created_by: str = ""
+    created_by_type: str = ""
     created_at: datetime
     updated_at: datetime
 

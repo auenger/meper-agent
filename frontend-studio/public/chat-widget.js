@@ -240,9 +240,17 @@
 
   // 终端用户 token（X-User-Token）：显式 data-user-token 优先，否则读 data-token-cookie（默认 mep-access-token）。
   // 每次握手动态读取，保证 cookie 内 token 轮转后取到最新值。
+  // 兼容：若配置的 cookie 名读不到，回退尝试下划线变体（mep_access_token），
+  // 因为部分接入方登录系统用的是下划线命名。
   function resolveUserToken() {
     if (state.config.userToken) return state.config.userToken;
-    return readCookie(state.config.tokenCookie);
+    var primary = readCookie(state.config.tokenCookie);
+    if (primary) return primary;
+    var underscoreVariant = state.config.tokenCookie.replace(/-/g, '_');
+    if (underscoreVariant !== state.config.tokenCookie) {
+      return readCookie(underscoreVariant);
+    }
+    return '';
   }
 
   function sendConfig() {

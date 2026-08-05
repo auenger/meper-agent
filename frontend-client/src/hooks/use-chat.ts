@@ -11,6 +11,7 @@ import {
 import type {
   AttachmentView,
   ChatMessage,
+  ContentBlock,
   HitlState,
   MessageRecord,
   StreamEvent,
@@ -93,55 +94,66 @@ function fromHistory(record: MessageRecord): ChatMessage {
     return {
       id: record.id,
       role: 'user',
-      text: parsed.text,
-      reasoning: '',
-      tools: [],
+      content: parsed.text ? [{ type: 'text', text: parsed.text }] : [],
       attachments: storedAttachments.length ? storedAttachments : parsed.attachments,
       charts: [],
       status: 'success',
       createdAt: record.created_at ? new Date(record.created_at) : undefined,
     }
   }
+  // 单次线性遍历 timeline_entries,按真实顺序产出 content blocks,
+  // 不再用 filter+join(那会丢失 thinking/text/tool 的交错顺序)。
   const entries = record.timeline_entries ?? []
-  const tools: ToolRun[] = []
-  const pendingTools = new Map<string, ToolRun>()
+  const blocks: ContentBlock[] = []
+  /** key = tool_call id(entry.id),用于和 tool_result(entry.tool_call_id)精确配对。 */
+  const pendingById = new Map<string, ToolRun>()
+  /** 退化兜底:key = tool_name,用于旧数据(无 id)按名称配对。 */
+  const pendingByName = new Map<string, ToolRun>()
+  let allTools: ToolRun[] = []
   for (const [index, entry] of entries.entries()) {
-    if (entry.type === 'tool_call' || entry.type === 'tool') {
+    if (entry.type === 'thinking' && entry.content) {
+      blocks.push({ type: 'reasoning', text: entry.content })
+    } else if (
+      (entry.type === 'text' || entry.type === 'final_answer') &&
+      entry.content
+    ) {
+      blocks.push({ type: 'text', text: entry.content })
+    } else if (entry.type === 'tool_call' || entry.type === 'tool') {
+      const toolCallId = entry.id || entry.tool_call_id || ''
       const tool: ToolRun = {
         id: `history-tool-${index}`,
+        toolCallId,
         name: entry.tool_name || 'tool',
         args: entry.args ? JSON.stringify(entry.args, null, 2) : undefined,
         status: entry.type === 'tool' ? 'complete' : 'running',
       }
-      tools.push(tool)
+      blocks.push({ type: 'tool', tool })
+      allTools.push(tool)
       if (entry.type === 'tool_call') {
-        pendingTools.set(entry.tool_name || 'tool', tool)
+        if (toolCallId) pendingById.set(toolCallId, tool)
+        pendingByName.set(entry.tool_name || 'tool', tool)
       }
     } else if (entry.type === 'tool_result') {
-      const matched = pendingTools.get(entry.tool_name || 'tool')
+      // 优先用 tool_call_id 精确配对;退化兜底用 tool_name
+      const resultId = entry.tool_call_id || entry.id || ''
+      const matched = (resultId && pendingById.get(resultId)) || pendingByName.get(entry.tool_name || 'tool')
       if (matched) {
         matched.result = entry.content
         matched.status = 'complete'
-        pendingTools.delete(entry.tool_name || 'tool')
+        if (resultId) pendingById.delete(resultId)
+        pendingByName.delete(entry.tool_name || 'tool')
       }
     }
   }
-  const reasoning = entries
-    .filter((entry) => entry.type === 'thinking')
-    .map((entry) => entry.content ?? '')
-    .join('')
-  const text =
-    entries
-      .filter((entry) => entry.type === 'text' || entry.type === 'final_answer')
-      .map((entry) => entry.content ?? '')
-      .join('') || record.content || ''
-  const attachments = tools.flatMap((tool) => outputAttachments(tool.result ?? ''))
+  // 兜底:如果没有任何 text block,用 record.content 作为正文(向后兼容旧数据)
+  if (!blocks.some((b) => b.type === 'text') && record.content) {
+    blocks.push({ type: 'text', text: record.content })
+  }
+  const attachments = allTools.flatMap((tool) => outputAttachments(tool.result ?? ''))
   return {
     id: record.id,
     role: 'assistant',
-    text,
-    reasoning,
-    tools,
+    content: blocks,
     attachments,
     charts: [],
     status: 'success',
@@ -151,13 +163,33 @@ function fromHistory(record: MessageRecord): ChatMessage {
 
 interface AssistantAccumulator {
   id: string
-  text: string
-  reasoning: string
-  tools: Map<string, ToolRun>
+  /** 按事件到达顺序排列的内容块(保留 text/thinking/tool 的交错顺序)。 */
+  blocks: ContentBlock[]
   attachments: Map<string, AttachmentView>
   charts: Map<string, string>
   /** 流内 error 事件记录的错误文本。一旦设置，后续 flush 会保持 error 状态。 */
   errorText?: string
+}
+
+/** blocks 数组辅助操作:在末尾追加/合并 text 或 reasoning 块。
+ * 如果最后一个块是同类(text→text, reasoning→reasoning),则 append 到它;
+ * 否则 push 一个新块。这样相邻的同类型事件合并成一个块,跨类型保持顺序。 */
+function appendTextBlock(
+  blocks: ContentBlock[],
+  type: 'text' | 'reasoning',
+  content: string,
+) {
+  const last = blocks[blocks.length - 1]
+  if (last && last.type === type) {
+    last.text += content
+  } else {
+    blocks.push({ type, text: content })
+  }
+}
+
+/** 从 blocks 中找出所有 tool 块的 tool 对象(用于附件/chart 提取等)。 */
+function allToolsFromBlocks(blocks: ContentBlock[]): ToolRun[] {
+  return blocks.filter((b): b is ContentBlock & { type: 'tool' } => b.type === 'tool').map((b) => b.tool)
 }
 
 function isImageName(name: string): boolean {
@@ -210,7 +242,12 @@ export function useChat(
         setMessages(history)
         const pending = [...history]
           .reverse()
-          .flatMap((message) => [...message.tools].reverse())
+          .flatMap((message) =>
+            message.content
+              .filter((b): b is ContentBlock & { type: 'tool' } => b.type === 'tool')
+              .map((b) => b.tool)
+              .reverse(),
+          )
           .find(
             (tool) =>
               (tool.name === 'ask_clarification' ||
@@ -284,8 +321,9 @@ export function useChat(
             )
             const charts: string[] = []
             if (message.role === 'assistant') {
+              const tools = allToolsFromBlocks(message.content)
               const outputNames = new Set(
-                message.tools.flatMap((tool) =>
+                tools.flatMap((tool) =>
                   outputAttachments(tool.result ?? '').map((item) => item.name),
                 ),
               )
@@ -341,9 +379,7 @@ export function useChat(
     const next: ChatMessage = {
       id: acc.id,
       role: 'assistant',
-      text: acc.text,
-      reasoning: acc.reasoning,
-      tools: Array.from(acc.tools.values()),
+      content: acc.blocks.map((b) => ({ ...b })),
       attachments: Array.from(acc.attachments.values()),
       charts: Array.from(acc.charts.values()),
       status: effectiveStatus,
@@ -360,40 +396,51 @@ export function useChat(
       try {
         for await (const event of events) {
           if ((event.type === 'text_delta' || event.type === 'text') && event.content) {
-            if (event.type === 'text') acc.text = event.content
-            else acc.text += event.content
+            // text 和 text_delta 都追加到末尾 text block(不再覆盖)。
+            // text 是完整块、text_delta 是增量,但流里可以有多个 text 事件
+            // (工具调用前后各一段文字),必须保留全部。
+            appendTextBlock(acc.blocks, 'text', event.content)
           } else if (
             (event.type === 'thinking' || event.type === 'thinking_delta') &&
             event.content
           ) {
-            acc.reasoning += event.content
+            appendTextBlock(acc.blocks, 'reasoning', event.content)
           } else if (event.type === 'tool_call') {
-            const id = `tool-${acc.tools.size + 1}`
-            const current = acc.tools.get(id)
-            acc.tools.set(id, {
-              id,
-              name: event.tool_name || current?.name || 'tool',
-              args: event.args ? JSON.stringify(event.args, null, 2) : current?.args,
-              result: current?.result,
-              isError: current?.isError,
-              auto: event.auto ?? current?.auto,
-              status: 'running',
+            const toolCallId = event.id || ''
+            const id = `tool-${allToolsFromBlocks(acc.blocks).length + 1}`
+            acc.blocks.push({
+              type: 'tool',
+              tool: {
+                id,
+                toolCallId,
+                name: event.tool_name || 'tool',
+                args: event.args ? JSON.stringify(event.args, null, 2) : undefined,
+                auto: event.auto,
+                status: 'running',
+              },
             })
           } else if (event.type === 'tool_result' && event.content) {
-            const id =
-              Array.from(acc.tools.values()).find((tool) => tool.status === 'running')?.id ||
-              `tool-${acc.tools.size + 1}`
-            const current = acc.tools.get(id)
+            // 优先用 tool_call_id 精确配对;退化兜底:找最后一个 running 的 tool block
+            const resultId = event.tool_call_id || ''
+            const toolBlock = resultId
+              ? [...acc.blocks]
+                  .reverse()
+                  .find(
+                    (b): b is ContentBlock & { type: 'tool' } =>
+                      b.type === 'tool' && b.tool.toolCallId === resultId,
+                  )
+              : [...acc.blocks]
+                  .reverse()
+                  .find(
+                    (b): b is ContentBlock & { type: 'tool' } =>
+                      b.type === 'tool' && b.tool.status === 'running',
+                  )
             const isError = event.status === 'error'
-            acc.tools.set(id, {
-              id,
-              name: current?.name || event.tool_name || 'tool',
-              args: current?.args,
-              result: event.content,
-              isError,
-              auto: event.auto ?? current?.auto,
-              status: isError ? 'error' : 'complete',
-            })
+            if (toolBlock) {
+              toolBlock.tool.result = event.content
+              toolBlock.tool.isError = isError
+              toolBlock.tool.status = isError ? 'error' : 'complete'
+            }
             for (const attachment of outputAttachments(event.content)) {
               acc.attachments.set(attachment.id, attachment)
               if (isImageName(attachment.name)) {
@@ -422,16 +469,18 @@ export function useChat(
           } else if (event.type === 'interrupt') {
             // The interrupt may come from ask_clarification (kind=clarification)
             // or confirm_workflow (kind=workflow_confirmation). Find the
-            // pending tool that triggered it (either name) to grab its id.
-            const interruptTool = Array.from(acc.tools.values())
+            // pending tool block that triggered it (either name) to grab its id.
+            const interruptTool = [...acc.blocks]
               .reverse()
               .find(
-                (tool) =>
-                  (tool.name === 'ask_clarification' ||
-                    tool.name === 'confirm_workflow') &&
-                  !tool.result,
+                (b) =>
+                  b.type === 'tool' &&
+                  (b.tool.name === 'ask_clarification' ||
+                    b.tool.name === 'confirm_workflow') &&
+                  !b.tool.result,
               )
-            const taskId = interruptTool?.id || event.interrupt_id || ''
+            const taskId =
+              (interruptTool?.type === 'tool' && interruptTool.tool.id) || event.interrupt_id || ''
             if (event.kind === 'workflow_confirmation') {
               setHitl({
                 taskId,
@@ -457,8 +506,10 @@ export function useChat(
             setRunning(false)
             return
           } else if (event.done) {
-            for (const tool of acc.tools.values()) {
-              if (tool.status === 'running') tool.status = 'complete'
+            for (const block of acc.blocks) {
+              if (block.type === 'tool' && block.tool.status === 'running') {
+                block.tool.status = 'complete'
+              }
             }
             flush(acc, 'success')
             onFilesChanged()
@@ -517,9 +568,7 @@ export function useChat(
       })
       const acc: AssistantAccumulator = {
         id: assistantId,
-        text: '',
-        reasoning: '',
-        tools: new Map(),
+        blocks: [],
         attachments: new Map(),
         charts: new Map(),
       }
@@ -529,9 +578,7 @@ export function useChat(
         {
           id: userId,
           role: 'user',
-          text: trimmed,
-          reasoning: '',
-          tools: [],
+          content: trimmed ? [{ type: 'text', text: trimmed }] : [],
           attachments,
           charts: [],
           status: 'success',
@@ -540,9 +587,7 @@ export function useChat(
         {
           id: assistantId,
           role: 'assistant',
-          text: '',
-          reasoning: '',
-          tools: [],
+          content: [],
           attachments: [],
           charts: [],
           status: 'loading',
@@ -613,9 +658,7 @@ export function useChat(
       const clarificationToolId = hitl.taskId
       const acc = accRef.current ?? {
         id: genId(),
-        text: '',
-        reasoning: '',
-        tools: new Map<string, ToolRun>(),
+        blocks: [] as ContentBlock[],
         attachments: new Map<string, AttachmentView>(),
         charts: new Map<string, string>(),
       }
@@ -626,9 +669,7 @@ export function useChat(
           {
             id: acc.id,
             role: 'assistant',
-            text: '',
-            reasoning: '',
-            tools: [],
+            content: [],
             attachments: [],
             charts: [],
             status: 'loading',
@@ -640,10 +681,10 @@ export function useChat(
       setMessages((current) =>
         current.map((message) => ({
           ...message,
-          tools: message.tools.map((tool) =>
-            tool.id === clarificationToolId
-              ? { ...tool, result: answer, status: 'complete' as const }
-              : tool,
+          content: message.content.map((block) =>
+            block.type === 'tool' && block.tool.id === clarificationToolId
+              ? { ...block, tool: { ...block.tool, result: answer, status: 'complete' as const } }
+              : block,
           ),
         })),
       )

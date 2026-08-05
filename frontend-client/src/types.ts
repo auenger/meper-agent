@@ -85,6 +85,10 @@ export interface MessageRecord {
     content?: string
     tool_name?: string
     args?: Record<string, unknown>
+    /** tool_call entry 的唯一 id(来自 AIMessage.tool_calls[i].id)。 */
+    id?: string
+    /** tool_result entry 对应的 tool_call id(来自 ToolMessage.tool_call_id)。 */
+    tool_call_id?: string
   }>
   files?: Array<{
     id?: string
@@ -99,6 +103,8 @@ export interface MessageRecord {
 export interface ToolRun {
   id: string
   name: string
+  /** LangGraph tool_call id,用于精确配对 tool_call ↔ tool_result。 */
+  toolCallId?: string
   args?: string
   result?: string
   isError?: boolean
@@ -115,12 +121,18 @@ export interface AttachmentView {
   source: 'upload' | 'output' | 'local'
 }
 
+/** 内容块:assistant 消息按真实执行顺序排列的原子单元。
+ * text / reasoning / tool 三类交替出现,保留 agent 思考-工具-回复的原始顺序。 */
+export type ContentBlock =
+  | { type: 'text'; text: string }
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool'; tool: ToolRun }
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
-  text: string
-  reasoning: string
-  tools: ToolRun[]
+  /** user 消息:单个 text block;assistant 消息:按执行顺序交错的 blocks。 */
+  content: ContentBlock[]
   attachments: AttachmentView[]
   charts: string[]
   status: 'loading' | 'success' | 'error' | 'abort'
@@ -179,6 +191,11 @@ export interface StreamEvent {
   tool_name?: string
   args?: Record<string, unknown>
   auto?: boolean
+  /** tool_call 事件的唯一 id(LangGraph AIMessage.tool_calls[i].id)。
+   * 用于和后续 tool_result 事件的 tool_call_id 精确配对。 */
+  id?: string
+  /** tool_result 事件对应的 tool_call id(来自 ToolMessage.tool_call_id)。 */
+  tool_call_id?: string
   // interrupt payload — clarification (ask_clarification) fields
   question?: string
   clarification_type?: string

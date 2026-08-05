@@ -208,10 +208,19 @@ textarea {
 
 /* The agent-switcher Dropdown renders in a portal, so it isn't a flex child of
    the sidebar — bound it by viewport height instead of flex. Without this the
-   menu grows unbounded with many agents and overflows the page. */
+   menu grows unbounded with many agents and overflows the page.
+   antd Dropdown 内层 menu 默认也带 overflowY:auto（见 antd dropdown style
+   &-menu-vertical），外层再设 overflow 会产生嵌套双滚动条。这里用外层限高
+   + 滚动，并把直接子层的 overflow 重置掉，确保只有一个滚动条。*/
 .agent-switcher-menu {
   max-height: 60vh;
   overflow-y: auto;
+}
+
+.agent-switcher-menu > ul,
+.agent-switcher-menu > div {
+  max-height: none;
+  overflow: visible;
 }
 
 .new-session-button {
@@ -482,8 +491,9 @@ textarea {
 .tool-run {
   margin: 6px 0 10px;
   border: 1px solid var(--client-border);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--client-surface-muted) 62%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--client-surface-muted) 50%, transparent);
+  transition: border-color 0.2s;
 }
 
 .reasoning-panel .ant-collapse-content,
@@ -492,11 +502,17 @@ textarea {
 }
 
 .tool-run-running {
-  border-color: #b88a35;
+  border-color: rgba(200, 140, 40, 0.5);
+  background: rgba(200, 140, 40, 0.05);
 }
 
 .tool-run-error {
-  border-color: color-mix(in srgb, var(--client-danger) 65%, var(--client-border));
+  border-color: color-mix(in srgb, var(--client-danger) 55%, var(--client-border));
+  background: color-mix(in srgb, var(--client-danger) 5%, transparent);
+}
+
+.tool-run-complete {
+  border-color: color-mix(in srgb, var(--client-border) 80%, #52c41a 20%);
 }
 
 .tool-title {
@@ -522,6 +538,132 @@ textarea {
 
 .tool-result-body {
   margin-top: 6px;
+}
+
+.tool-group-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tool-group-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--client-text);
+}
+
+.tool-group-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 交互式工具已答卡片(ask_clarification / confirm_workflow) — 按角色配色 */
+.interactive-card {
+  margin: 6px 0 10px;
+  border-radius: 12px;
+  border: 1px solid;
+  overflow: hidden;
+}
+
+.interactive-card-header {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.interactive-card-label {
+  flex: 1;
+}
+
+.interactive-card-inner {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--client-surface);
+  border-top: 1px solid;
+}
+
+.interactive-card-question {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.interactive-card-answer {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--client-border);
+  font-size: 13px;
+}
+
+.interactive-card-answer > span {
+  font-weight: 500;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.interactive-card-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.interactive-card-params {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.interactive-card-param {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.interactive-card-param-key {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--client-surface-muted);
+  color: var(--client-text-muted);
+  font-size: 11px;
+}
+
+.interactive-card-param-value {
+  word-break: break-all;
+}
+
+/* 澄清提问 — 蓝色(问答语义) */
+.interactive-card-clarification {
+  border-color: rgba(22, 119, 255, 0.3);
+  background: rgba(22, 119, 255, 0.06);
+}
+.interactive-card-clarification .interactive-card-header {
+  color: #1668ff;
+}
+.interactive-card-clarification .interactive-card-inner {
+  border-top-color: rgba(22, 119, 255, 0.15);
+}
+
+/* 工作流确认 — 紫色(自动化语义) */
+.interactive-card-workflow {
+  border-color: rgba(114, 46, 209, 0.3);
+  background: rgba(114, 46, 209, 0.06);
+}
+.interactive-card-workflow .interactive-card-header {
+  color: #722ed1;
+}
+.interactive-card-workflow .interactive-card-inner {
+  border-top-color: rgba(114, 46, 209, 0.15);
 }
 
 .message-attachments {

@@ -149,7 +149,7 @@ async function getTaskDetail(taskId: string): Promise<TaskDetail> {
       output: ext.output ?? null,
       created_by: ext.created_by ?? '',
       created_by_type: ext.created_by_type ?? '',
-      version: ext.version ?? 0,
+      version: ext.version ?? 1,
       error: ext.error ?? null,
       checkpoint: ext.checkpoint ?? null,
       timeline: ext.timeline ?? [],
