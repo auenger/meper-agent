@@ -19,7 +19,7 @@ import {
   Typography,
 } from 'antd'
 import type { UploadFile } from 'antd'
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -59,6 +59,65 @@ export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }
   } = useChat(agent?.id ?? null, sessionId, () =>
     setFilesRefreshKey((value) => value + 1),
   )
+
+  // ── 自动滚动跟随 ────────────────────────────────────────────────
+  // 历史背景:.message-viewport(外层 overflow:auto)与 Bubble.List 内部
+  // 的 scroll-box 形成双层滚动,Bubble.List 的 autoScroll 拿不到正确的贴底
+  // 判定。这里关闭 Bubble.List 的 autoScroll,改由外层 viewport 自实现:
+  // 用户贴底时跟随流式输出,上滚超过阈值就不打扰,切会话时滚到最新一条。
+  const viewportRef = useRef<HTMLElement | null>(null)
+  const isPinnedRef = useRef(true) // 用户是否处于「贴底」状态
+  const PIN_THRESHOLD = 120 // 距底部多少 px 内视为贴底
+
+  const scrollToBottom = (behavior: ScrollBehavior = 'auto') => {
+    const el = viewportRef.current
+    if (!el) return
+    el.scrollTo({ top: el.scrollHeight, behavior })
+  }
+
+  const handleViewportScroll = () => {
+    const el = viewportRef.current
+    if (!el) return
+    const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    isPinnedRef.current = distanceToBottom < PIN_THRESHOLD
+  }
+
+  // 内容尺寸变化时(流式增量、图片加载完成等),贴底则跟随
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    // 观察直接子节点(.ant-bubble-list / skeleton / empty)的高度变化
+    const observer = new ResizeObserver(() => {
+      if (isPinnedRef.current) scrollToBottom('auto')
+    })
+    observer.observe(el)
+    // 子树挂载/卸载也要重新观察
+    const mo = new MutationObserver(() => {
+      if (isPinnedRef.current) scrollToBottom('auto')
+    })
+    mo.observe(el, { childList: true, subtree: true })
+    return () => {
+      observer.disconnect()
+      mo.disconnect()
+    }
+  }, [sessionId])
+
+  // 切换会话:重置贴底并滚到最新一条
+  useEffect(() => {
+    isPinnedRef.current = true
+    // 等首屏渲染完成后再滚
+    requestAnimationFrame(() => scrollToBottom('auto'))
+  }, [sessionId])
+
+  // 消息变化(新增消息、流式增量、状态变更):贴底则跟随
+  const lastMessage = messages[messages.length - 1]
+  const lastMessageKey = lastMessage
+    ? `${lastMessage.id}:${lastMessage.status}:${lastMessage.content.length}`
+    : ''
+  useEffect(() => {
+    if (isPinnedRef.current) scrollToBottom('auto')
+  }, [lastMessageKey, messages.length, loading])
+  // ── 自动滚动跟随 END ────────────────────────────────────────────
 
   const attachmentItems = useMemo<UploadFile[]>(
     () =>
@@ -164,7 +223,12 @@ export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }
         </div>
       ) : (
         <>
-          <section className="message-viewport" aria-live="polite">
+          <section
+            className="message-viewport"
+            aria-live="polite"
+            ref={viewportRef}
+            onScroll={handleViewportScroll}
+          >
             {loading ? (
               <div className="message-loading">
                 <Skeleton active avatar paragraph={{ rows: 3 }} />
@@ -192,7 +256,7 @@ export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }
               </div>
             ) : (
               <Bubble.List
-                autoScroll
+                autoScroll={false}
                 items={messages.map((chatMessage) => ({
                   key: chatMessage.id,
                   role: chatMessage.role === 'user' ? 'user' : 'ai',

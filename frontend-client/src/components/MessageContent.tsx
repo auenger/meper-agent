@@ -11,8 +11,8 @@ import {
 } from '@ant-design/icons'
 import { Mermaid } from '@ant-design/x'
 import { App, Button, Collapse, Image, Tag, Tooltip, Typography } from 'antd'
-import { isValidElement, type ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
+import { isValidElement, useMemo, useState, type ReactNode } from 'react'
+import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { downloadSessionFile, downloadUploadedFile } from '../api/chat'
@@ -65,48 +65,50 @@ function toRenderSegments(blocks: ContentBlock[]): RenderSegment[] {
   return segments
 }
 
+/** 共享的 react-markdown components 配置(无光标)。 */
+const MARKDOWN_COMPONENTS: Components = {
+  a: ({ href, children: label }) => (
+    <a href={href} target="_blank" rel="noreferrer">
+      {label}
+    </a>
+  ),
+  code: ({ className, children: codeChildren, ...props }) => {
+    const language = /language-([^\s]+)/.exec(className ?? '')?.[1]
+    const source = String(codeChildren).replace(/\n$/, '')
+    if (language === 'echarts' || language === 'chart') {
+      return <ChartBlock source={source} />
+    }
+    if (language === 'mermaid') {
+      return <Mermaid>{source}</Mermaid>
+    }
+    return (
+      <code className={className} {...props}>
+        {codeChildren}
+      </code>
+    )
+  },
+  pre: ({ children: preChildren, ...props }) =>
+    isValidElement(preChildren) &&
+    (preChildren.type === ChartBlock || preChildren.type === Mermaid) ? (
+      preChildren
+    ) : (
+      <pre {...props}>{preChildren}</pre>
+    ),
+  table: ({ children: tableChildren, ...props }) => (
+    <div className="markdown-table-wrap">
+      <table {...props}>{tableChildren}</table>
+    </div>
+  ),
+}
+
+/** Markdown 渲染(带统一的 components 配置)。 */
 function Markdown({ children }: { children: string }) {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      components={{
-        a: ({ href, children: label }) => (
-          <a href={href} target="_blank" rel="noreferrer">
-            {label}
-          </a>
-        ),
-        code: ({ className, children: codeChildren, ...props }) => {
-          const language = /language-([^\s]+)/.exec(className ?? '')?.[1]
-          const source = String(codeChildren).replace(/\n$/, '')
-          if (language === 'echarts' || language === 'chart') {
-            return <ChartBlock source={source} />
-          }
-          if (language === 'mermaid') {
-            return <Mermaid>{source}</Mermaid>
-          }
-          return (
-            <code className={className} {...props}>
-              {codeChildren}
-            </code>
-          )
-        },
-        pre: ({ children: preChildren, ...props }) => (
-          isValidElement(preChildren) &&
-          (preChildren.type === ChartBlock || preChildren.type === Mermaid) ? (
-            preChildren
-          ) : (
-            <pre {...props}>{preChildren}</pre>
-          )
-        ),
-        table: ({ children: tableChildren, ...props }) => (
-          <div className="markdown-table-wrap">
-            <table {...props}>{tableChildren}</table>
-          </div>
-        ),
-      }}
-    >
-      {children}
-    </ReactMarkdown>
+    <div className="md-host">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
+        {children}
+      </ReactMarkdown>
+    </div>
   )
 }
 
@@ -153,14 +155,48 @@ function groupTools(tools: ToolRun[]): ToolGroup[] {
   return groups
 }
 
-/** 聚合工具组:一行摘要(数量 + 状态)+ 展开后只列工具名。
- * 折叠态:运行中显示"N/M 完成 · 正在执行...";全部完成显示"使用了 N 个工具"。 */
+/** 工具名展示:知识库类工具用更友好的中文名,其余用原名。 */
+function toolDisplayName(name: string): { text: string; isKnowledge: boolean } {
+  const isKnowledge = name === 'kb_retrieve' || name === 'search_kb'
+  return { text: isKnowledge ? '知识库检索' : name, isKnowledge }
+}
+
+/** 单个工具节点的详情(请求参数 / 执行结果),timeline 中点击节点后行内展开。 */
+function ToolNodeDetails({ tool }: { tool: ToolRun }) {
+  return (
+    <div className="tool-node-details">
+      {tool.args ? (
+        <section>
+          <Typography.Text type="secondary">请求参数</Typography.Text>
+          <pre>{tool.args}</pre>
+        </section>
+      ) : null}
+      {tool.result ? (
+        <section>
+          <Typography.Text type="secondary">执行结果</Typography.Text>
+          <div className="tool-result-body">
+            <Markdown>{tool.result}</Markdown>
+          </div>
+        </section>
+      ) : tool.status === 'running' ? (
+        <Typography.Text type="secondary">正在执行...</Typography.Text>
+      ) : null}
+    </div>
+  )
+}
+
+/** 聚合工具组:一行摘要(数量 + 状态)+ 展开后以 timeline(节点 + 竖线串联)列出工具,
+ * 让用户清楚看到执行了哪些工具、进行到第几步。每个 timeline 节点可点击,行内展开
+ * 该工具的请求参数/执行结果。折叠/展开交给 antd Collapse,不做「结束自动收缩」。 */
 function ToolRunsGroup({ tools }: { tools: ToolRun[] }) {
   const running = tools.filter((t) => t.status === 'running')
   const errored = tools.filter((t) => t.status === 'error')
-  const completed = tools.length - running.length - errored.length
+  const completedCount = tools.length - running.length - errored.length
   const isRunning = running.length > 0
   const hasError = errored.length > 0
+
+  // 行内展开详情的工具 id(null = 都不展开)
+  const [expandedToolId, setExpandedToolId] = useState<string | null>(null)
 
   // 整体状态图标:任一 running→转圈,任一 error→红叉,否则→绿勾
   const overallIcon = isRunning ? (
@@ -171,13 +207,14 @@ function ToolRunsGroup({ tools }: { tools: ToolRun[] }) {
     <CheckCircleOutlined />
   )
 
+  const cls = isRunning ? 'running' : hasError ? 'error' : 'complete'
+
+  // 摘要文案
   const summary = isRunning
     ? running.length === 1
-      ? `${completed}/${tools.length} 个工具完成 · 正在执行 ${running[0].name}...`
-      : `${completed}/${tools.length} 个工具完成 · 正在执行 ${running.length} 个工具...`
+      ? `${completedCount}/${tools.length} 完成 · 正在执行 ${toolDisplayName(running[0].name).text}...`
+      : `${completedCount}/${tools.length} 完成 · 正在执行 ${running.length} 个工具...`
     : `使用了 ${tools.length} 个工具`
-
-  const cls = isRunning ? 'running' : hasError ? 'error' : 'complete'
 
   return (
     <Collapse
@@ -195,19 +232,38 @@ function ToolRunsGroup({ tools }: { tools: ToolRun[] }) {
             </div>
           ),
           children: (
-            <div className="tool-group-details">
-              {tools.map((tool) => {
-                const isKnowledge = tool.name === 'kb_retrieve' || tool.name === 'search_kb'
+            <ol className="tool-timeline-list">
+              {tools.map((tool, index) => {
+                const { text, isKnowledge } = toolDisplayName(tool.name)
+                const isLast = index === tools.length - 1
+                const isOpen = expandedToolId === tool.id
                 return (
-                  <div key={tool.id} className="tool-group-item">
-                    {statusIcon(tool)}
-                    {isKnowledge ? <DatabaseOutlined /> : <ToolOutlined />}
-                    <span>{isKnowledge ? '知识库检索' : tool.name}</span>
-                    {tool.auto ? <Tag>自动召回</Tag> : null}
-                  </div>
+                  <li
+                    key={tool.id}
+                    className={`tool-timeline-node tool-timeline-node-${tool.status}${isOpen ? ' tool-timeline-node-open' : ''}${isLast ? ' tool-timeline-node-last' : ''}`}
+                  >
+                    <button
+                      type="button"
+                      className="tool-timeline-node-row"
+                      onClick={() => setExpandedToolId(isOpen ? null : tool.id)}
+                      aria-expanded={isOpen}
+                    >
+                      <span className="tool-timeline-node-icon">{statusIcon(tool)}</span>
+                      <span className="tool-timeline-node-label">
+                        {isKnowledge ? <DatabaseOutlined /> : <ToolOutlined />}
+                        <span className="tool-timeline-node-name">{text}</span>
+                        {tool.auto ? <Tag className="tool-timeline-node-tag">自动召回</Tag> : null}
+                      </span>
+                    </button>
+                    {isOpen ? (
+                      <div className="tool-timeline-node-details-wrap">
+                        <ToolNodeDetails tool={tool} />
+                      </div>
+                    ) : null}
+                  </li>
                 )
               })}
-            </div>
+            </ol>
           ),
         },
       ]}
@@ -413,6 +469,12 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
   const { message: toast } = App.useApp()
   const charts = [...promotedCharts(message.content), ...message.charts]
   const segments = toRenderSegments(message.content)
+  // 兜底去重:同名附件可能被上游重复收集,按 id 收敛,避免重复渲染 + 重复 React key
+  const uniqueAttachments = useMemo(() => {
+    const map = new Map<string, AttachmentView>()
+    for (const att of message.attachments) map.set(att.id, att)
+    return Array.from(map.values())
+  }, [message.attachments])
   // 拼接所有 text block 作为复制内容
   const fullText = message.content
     .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
@@ -450,9 +512,9 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
         // 普通工具(无论单个还是多个)一律走精简聚合样式
         return <ToolRunsGroup key={`group:${index}`} tools={group.tools} />
       })}
-      {message.attachments.length > 0 ? (
+      {uniqueAttachments.length > 0 ? (
         <div className="message-attachments">
-          {message.attachments.map((attachment) => (
+          {uniqueAttachments.map((attachment) => (
             <AttachmentItem
               key={attachment.id}
               attachment={attachment}
@@ -464,7 +526,8 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
       {charts.map((source, index) => (
         <ChartBlock key={`chart:${index}:${source.slice(0, 32)}`} source={source} />
       ))}
-      {message.status === 'loading' && segments.length === 0 ? (
+      {/* 首 token 前的纯等待提示 */}
+      {message.role === 'assistant' && message.status === 'loading' && segments.length === 0 ? (
         <Typography.Text type="secondary">正在响应...</Typography.Text>
       ) : null}
       {message.error ? (

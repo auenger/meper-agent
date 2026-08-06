@@ -149,7 +149,15 @@ function fromHistory(record: MessageRecord): ChatMessage {
   if (!blocks.some((b) => b.type === 'text') && record.content) {
     blocks.push({ type: 'text', text: record.content })
   }
-  const attachments = allTools.flatMap((tool) => outputAttachments(tool.result ?? ''))
+  // 跨 tool 去重:同名 output 文件常出现在多个 tool_result 里(写文件后被后续
+  // tool/agent 回显路径),用 Map 按 id 收敛,与流式路径(acc.attachments.set)对齐。
+  const attachmentMap = new Map<string, AttachmentView>()
+  for (const tool of allTools) {
+    for (const att of outputAttachments(tool.result ?? '')) {
+      attachmentMap.set(att.id, att)
+    }
+  }
+  const attachments = Array.from(attachmentMap.values())
   return {
     id: record.id,
     role: 'assistant',
