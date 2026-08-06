@@ -49,7 +49,7 @@ class KbSearchManager:
     async def search(self, query: str, kb_id: str | None = None, top_k: int = 5) -> str:
         """Run hybrid retrieval across the bound vector KBs.
 
-        Returns a JSON string of ``[{kb_id, text, score, source_file, page}]``.
+        Returns a JSON string of ``[{kb_id, text, score, source_file, page, section, image_ref_ids}]``.
         """
         from app.engine.kb.vector.retriever import retrieve
 

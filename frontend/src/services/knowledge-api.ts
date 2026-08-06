@@ -89,6 +89,9 @@ export interface KbUploadResult {
 
 export type KbDocStatus = 'pending' | 'parsing' | 'embedding' | 'completed' | 'failed'
 
+/** Chunking strategy recorded per document at upload time. */
+export type KbChunkStrategy = 'recursive' | 'structure'
+
 export interface KbDocument {
   id: string
   name: string
@@ -98,6 +101,7 @@ export interface KbDocument {
   parse_progress: number
   parse_error: string
   chunk_count: number
+  chunk_strategy: KbChunkStrategy
   created_at: string
   updated_at: string
 }
@@ -114,6 +118,8 @@ export interface KbChunkItem {
   text: string
   source_file: string
   page: number | null
+  section?: string
+  image_ref_ids?: string[]
 }
 
 export interface KbSearchResultItem {
@@ -122,6 +128,8 @@ export interface KbSearchResultItem {
   doc_id: string
   source_file: string
   page: number | null
+  section?: string
+  image_ref_ids?: string[]
   kb_id?: string
 }
 
@@ -205,12 +213,21 @@ export const knowledgeApi = {
 
   /**
    * Upload files into a KB.
-   * POST /knowledge-bases/{id}/documents
+   * POST /knowledge-bases/{id}/documents?chunk_strategy=recursive|structure
    *
    * Folder upload supported: each File carries webkitRelativePath (e.g.
    * "notes/api.md") passed as the 3rd append() arg to preserve path.
+   *
+   * chunkStrategy selects the chunking strategy (vector KB only):
+   *   - "recursive" (default): token-based recursive split
+   *   - "structure": split by document structure (Markdown headers / HTML
+   *     tags / Word heading styles); unsupported types fall back to recursive
    */
-  async uploadDocuments(kbId: string, files: File[]): Promise<KbUploadResult> {
+  async uploadDocuments(
+    kbId: string,
+    files: File[],
+    chunkStrategy: KbChunkStrategy = 'recursive',
+  ): Promise<KbUploadResult> {
     const formData = new FormData()
     files.forEach((f) => {
       const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath || f.name
@@ -219,7 +236,10 @@ export const knowledgeApi = {
     const res = await apiClient.post<KbUploadResult>(
       `${BASE}/${encodeURIComponent(kbId)}/documents`,
       formData,
-      { headers: { 'Content-Type': 'multipart/form-data' } },
+      {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        params: { chunk_strategy: chunkStrategy },
+      },
     )
     return res.data
   },

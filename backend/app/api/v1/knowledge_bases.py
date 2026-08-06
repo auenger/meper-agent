@@ -1,8 +1,6 @@
 """KnowledgeBase API endpoints — Markdown KB CRUD + .md file management."""
 from __future__ import annotations
 
-import contextlib
-
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from app.core.security import get_current_user, require_permission
@@ -289,6 +287,10 @@ async def upload_documents(
     files: list[UploadFile] = File(
         ..., description="文件（tree KB: .md；vector KB: pdf/docx/md/txt；支持多文件/文件夹）"
     ),
+    chunk_strategy: str = Query(
+        "recursive",
+        description="切分策略: recursive（默认，递归 token 切分）/ structure（按文档结构切分）",
+    ),
     user: UserResponse = Depends(require_permission("knowledge:write")),
 ) -> KbUploadResponse:
     """Upload one or more files into the KB.
@@ -296,6 +298,11 @@ async def upload_documents(
     - tree KB: ``.md`` files written to the directory (relative paths preserved).
     - vector KB: original stored via FileRef, a pending KnowledgeDocument is
       created per file, and async indexing is dispatched.
+
+    ``chunk_strategy`` selects the chunking strategy for vector KB documents:
+    ``recursive`` (default, token-based) or ``structure`` (split by document
+    structure — Markdown headers / HTML tags / Word heading styles). File types
+    without recognizable structure gracefully fall back to ``recursive``.
     """
     payload: list[tuple[str, bytes]] = []
     for f in files:
@@ -305,7 +312,9 @@ async def upload_documents(
         raw = await f.read()
         payload.append((rel, raw))
 
-    result = await KnowledgeBaseService.upload_files(kb_id, payload, uploaded_by=user.id)
+    result = await KnowledgeBaseService.upload_files(
+        kb_id, payload, uploaded_by=user.id, chunk_strategy=chunk_strategy
+    )
     return KbUploadResponse(
         created=result["created"],
         errors=[KbUploadErrorItem(**e) for e in result["errors"]],
@@ -362,6 +371,7 @@ async def list_documents(
                 parse_progress=d.parse_progress,
                 parse_error=d.parse_error,
                 chunk_count=d.chunk_count,
+                chunk_strategy=d.chunk_strategy,
                 created_at=d.created_at,
                 updated_at=d.updated_at,
             )
@@ -398,9 +408,17 @@ async def delete_document(
         raise NotFoundError(
             code="DOC_NOT_FOUND", message=f"文档 {doc_id} 不存在"
         )
-    with contextlib.suppress(Exception):
-        # Qdrant purge failure shouldn't block metadata deletion.
+    try:
         await kb_vector_store.delete_by_doc(doc_id)
+    except Exception:
+        # Qdrant purge failure shouldn't block metadata deletion, but we log
+        # it so orphan vectors can be traced (they cause cross-doc leakage
+        # in search results if left behind).
+        import logging as _logging
+
+        _logging.getLogger(__name__).exception(
+            "qdrant_delete_failed_doc_orphan", extra={"doc_id": doc_id, "kb_id": kb_id}
+        )
     await KnowledgeDocumentService.delete(doc_id)
     # Refresh KB stats so the list view's file count/size stays accurate.
     await KnowledgeBaseService.recompute_vector_stats(kb_id)

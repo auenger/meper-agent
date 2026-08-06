@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from app.models.task import TaskStatus, utc_now
 from app.services.task_recovery import (
-    _execute_timeout_action,
+    execute_timeout_action,
     recover_orphan_running_tasks,
     recover_waiting_human_tasks,
 )
@@ -68,7 +68,7 @@ class TestRecoverWaitingHumanTasks:
             mock_db.return_value = {"tasks": mock_collection}
             mock_collection.find = MagicMock(return_value=mock_cursor)
 
-            with patch("app.services.task_recovery._execute_timeout_action", new_callable=AsyncMock) as mock_action:
+            with patch("app.services.task_recovery.execute_timeout_action", new_callable=AsyncMock) as mock_action:
                 await recover_waiting_human_tasks()
                 mock_action.assert_called_once_with(
                     task_id="task_timeout",
@@ -77,7 +77,7 @@ class TestRecoverWaitingHumanTasks:
 
     @pytest.mark.asyncio
     async def test_recover_non_timed_out_task(self) -> None:
-        """Non-timed-out task → restart timeout monitor with remaining time."""
+        """Non-timed-out task → left for the periodic sweep task, no action here."""
         now = utc_now()
         future_deadline = now + timedelta(minutes=5)
 
@@ -98,12 +98,10 @@ class TestRecoverWaitingHumanTasks:
             mock_db.return_value = {"tasks": mock_collection}
             mock_collection.find = MagicMock(return_value=mock_cursor)
 
-            with patch("app.services.task_recovery._restart_timeout_monitor", new_callable=AsyncMock) as mock_restart:
+            with patch("app.services.task_recovery.execute_timeout_action", new_callable=AsyncMock) as mock_action:
                 await recover_waiting_human_tasks()
-                mock_restart.assert_called_once()
-                # Verify remaining_ms is positive
-                call_kwargs = mock_restart.call_args.kwargs
-                assert call_kwargs["timeout_ms"] > 0
+                # 未超时 → 不立即执行 timeout_action（交给周期巡检）
+                mock_action.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_recover_no_timeout_configured(self) -> None:
@@ -125,18 +123,14 @@ class TestRecoverWaitingHumanTasks:
             mock_db.return_value = {"tasks": mock_collection}
             mock_collection.find = MagicMock(return_value=mock_cursor)
 
-            with (
-                patch("app.services.task_recovery._execute_timeout_action", new_callable=AsyncMock) as mock_action,
-                patch("app.services.task_recovery._restart_timeout_monitor", new_callable=AsyncMock) as mock_restart,
-            ):
+            with patch("app.services.task_recovery.execute_timeout_action", new_callable=AsyncMock) as mock_action:
                 await recover_waiting_human_tasks()
-                # Neither action should be called
+                # No timeout configured → no action
                 mock_action.assert_not_called()
-                mock_restart.assert_not_called()
 
 
 class TestExecuteTimeoutAction:
-    """Test _execute_timeout_action helper."""
+    """Test execute_timeout_action helper."""
 
     @pytest.mark.asyncio
     async def test_auto_approve_transitions_to_running(self) -> None:
@@ -145,7 +139,7 @@ class TestExecuteTimeoutAction:
             patch("app.services.task_service.TaskService.transition_task", new_callable=AsyncMock) as mock_transition,
             patch("app.services.task_service.TaskService.resume_task_execution") as mock_resume,
         ):
-            await _execute_timeout_action("task_1", "auto_approve")
+            await execute_timeout_action("task_1", "auto_approve")
 
             mock_transition.assert_called_once()
             call_kwargs = mock_transition.call_args.kwargs
@@ -159,7 +153,7 @@ class TestExecuteTimeoutAction:
             patch("app.services.task_service.TaskService.transition_task", new_callable=AsyncMock) as mock_transition,
             patch("app.services.task_service.TaskService.resume_task_execution") as mock_resume,
         ):
-            await _execute_timeout_action("task_1", "fail")
+            await execute_timeout_action("task_1", "fail")
 
             mock_transition.assert_called_once()
             call_kwargs = mock_transition.call_args.kwargs
@@ -173,7 +167,7 @@ class TestExecuteTimeoutAction:
             patch("app.services.task_service.TaskService.transition_task", new_callable=AsyncMock) as mock_transition,
             patch("app.services.task_service.TaskService.resume_task_execution") as mock_resume,
         ):
-            await _execute_timeout_action("task_1", "auto_skip")
+            await execute_timeout_action("task_1", "auto_skip")
 
             mock_transition.assert_called_once()
             call_kwargs = mock_transition.call_args.kwargs

@@ -12,15 +12,23 @@
  */
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Popconfirm, Modal, Spin, App as AntdApp } from 'antd'
+import { Popconfirm, Modal, Spin, App as AntdApp, Segmented, Image as AntdImage } from 'antd'
 import {
   UploadOutlined, ReloadOutlined, DeleteOutlined, SearchOutlined, FileTextOutlined,
   EyeOutlined, LoadingOutlined as LoaderIcon, CheckCircleFilled, CloseCircleFilled,
 } from '@ant-design/icons'
 import {
   knowledgeApi, knowledgeKeys,
-  type KnowledgeBase, type KbDocument, type KbDocStatus, type KbSearchResultItem, type KbChunkItem,
+  type KnowledgeBase, type KbDocument, type KbDocStatus, type KbChunkStrategy,
+  type KbSearchResultItem, type KbChunkItem,
 } from '../../services/knowledge-api'
+
+/* ─── helpers ─── */
+
+/** Build the download URL for a stored image FileRef. */
+function imageUrl(fileId: string): string {
+  return `/api/v1/files/${encodeURIComponent(fileId)}/download`
+}
 
 /* ─── helpers ─── */
 
@@ -75,6 +83,9 @@ function DocRow({
             <span>{doc.file_type.toUpperCase()}</span>
             <span>{formatSize(doc.file_size)}</span>
             {doc.chunk_count > 0 && <span>{doc.chunk_count} 切片</span>}
+            <span className="text-indigo-500">
+              {doc.chunk_strategy === 'structure' ? '结构切分' : '递归切分'}
+            </span>
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
@@ -130,6 +141,7 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   const [query, setQuery] = useState('')
   const [searchResults, setSearchResults] = useState<KbSearchResultItem[] | null>(null)
   const [viewDoc, setViewDoc] = useState<KbDocument | null>(null)
+  const [chunkStrategy, setChunkStrategy] = useState<KbChunkStrategy>('recursive')
 
   // Chunks for the currently-viewed document (read-only viewer).
   const chunksQ = useQuery({
@@ -147,7 +159,7 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   const docs = docsQ.data?.items ?? []
 
   const uploadM = useMutation({
-    mutationFn: (files: File[]) => knowledgeApi.uploadDocuments(kb.id, files),
+    mutationFn: (files: File[]) => knowledgeApi.uploadDocuments(kb.id, files, chunkStrategy),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kb.id) })
       if (res.errors.length) message.warning(`${res.errors.length} 个文件上传失败`)
@@ -203,6 +215,15 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
             >
               <ReloadOutlined spin={docsQ.isFetching} style={{ fontSize: 14 }} />
             </button>
+            <Segmented
+              size="small"
+              value={chunkStrategy}
+              onChange={(v) => setChunkStrategy(v as KbChunkStrategy)}
+              options={[
+                { label: '递归切分', value: 'recursive' },
+                { label: '结构切分', value: 'structure' },
+              ]}
+            />
             <label className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition">
               {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 13 }} /> : <UploadOutlined style={{ fontSize: 13 }} />}
               上传
@@ -271,10 +292,28 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
                 searchResults.map((r, i) => (
                   <div key={i} className="bg-surface rounded-lg p-3 space-y-1.5">
                     <div className="flex items-center justify-between text-[10px] font-mono">
-                      <span className="text-gray-500 truncate">{r.source_file}{r.page ? ` · P${r.page}` : ''}</span>
+                      <span className="text-gray-500 truncate">
+                        {r.source_file}
+                        {r.page ? ` · P${r.page}` : ''}
+                        {r.section ? ` · ${r.section}` : ''}
+                      </span>
                       <span className="text-emerald-500 shrink-0 ml-2">{r.score.toFixed(3)}</span>
                     </div>
                     <p className="text-xs text-gray-700 leading-relaxed line-clamp-4">{r.text}</p>
+                    {r.image_ref_ids && r.image_ref_ids.length > 0 && (
+                      <div className="flex gap-1.5 mt-1 flex-wrap">
+                        {r.image_ref_ids.map((fid) => (
+                          <AntdImage
+                            key={fid}
+                            src={imageUrl(fid)}
+                            className="rounded border border-line object-cover"
+                            width={48}
+                            height={48}
+                            preview={{ mask: false }}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))
               )}
@@ -300,13 +339,27 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
           <div className="space-y-3">
             {chunksQ.data!.map((c: KbChunkItem) => (
               <div key={c.chunk_index} className="bg-surface rounded-lg p-3">
-                <div className="flex items-center justify-between text-[10px] font-mono text-gray-400 mb-1">
-                  <span>切片 #{c.chunk_index + 1}</span>
+                <div className="flex items-center justify-between text-[10px] font-mono text-gray-600 mb-1">
+                  <span>切片 #{c.chunk_index + 1}{c.section ? ` · ${c.section}` : ''}</span>
                   {c.page && <span>第 {c.page} 页</span>}
                 </div>
-                <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-wrap font-mono">
+                <p className="text-xs text-gray-900 leading-relaxed whitespace-pre-wrap font-mono">
                   {c.text}
                 </p>
+                {c.image_ref_ids && c.image_ref_ids.length > 0 && (
+                  <div className="flex gap-1.5 mt-2 flex-wrap">
+                    <span className="text-[10px] text-gray-400 w-full mb-0.5">关联图片:</span>
+                    {c.image_ref_ids.map((fid) => (
+                      <AntdImage
+                        key={fid}
+                        src={imageUrl(fid)}
+                        className="rounded border border-line object-cover"
+                        width={64}
+                        height={64}
+                      />
+                    ))}
+                  </div>
+                )}
               </div>
             ))}
           </div>

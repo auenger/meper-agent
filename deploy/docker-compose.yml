@@ -91,6 +91,20 @@ services:
       - qdrant
     restart: unless-stopped
 
+  celery-beat:
+    # Celery beat 调度器：周期派发任务（Human 节点超时巡检、工作区清理等）。
+    # 复用 backend 镜像，只跑 beat，不需要 sandbox/docker.sock/workspaces 挂载。
+    image: ${BACKEND_IMAGE:-deploy-backend}
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info"]
+    env_file:
+      - .env
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   mongodb:
     # Pin to 7.0 — existing data volumes were created with FCV 7.0 and
     # MongoDB 8.x refuses to start without an explicit upgrade procedure.

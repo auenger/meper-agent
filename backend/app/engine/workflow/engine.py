@@ -845,17 +845,10 @@ class WorkflowEngine:
                     timeout_deadline=str(timeout_deadline),
                 )
 
-                # Start timeout monitor
-                if timeout_ms > 0:
-                    from app.engine.workflow.nodes.human import (
-                        get_human_timeout_monitor,
-                    )
-                    await get_human_timeout_monitor().start_monitor(
-                        task_id=self._task_id,
-                        node_id=node_id,
-                        timeout_ms=timeout_ms,
-                        timeout_action=timeout_action,
-                    )
+                # 超时由 Celery beat 周期任务 sweep_timed_out_human_tasks 扫描
+                # checkpoint.timeout_deadline 触发，不再在此启动进程内 monitor
+                # （worker 事件循环在 run_until_complete 返回后不再被驱动，
+                # asyncio.sleep 永不执行 → 超时永不触发）。
 
                 # Stop execution — wait for external intervention
                 raise WorkflowPausedError(

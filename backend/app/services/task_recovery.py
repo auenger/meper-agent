@@ -1,8 +1,12 @@
 """Task recovery service — restores waiting_human tasks after server restart.
 
-On startup, scans for tasks stuck in waiting_human status and:
-1. Executes timeout_action for already-timed-out tasks
-2. Restarts timeout monitors for tasks with remaining time
+On startup, scans for tasks stuck in waiting_human status and executes
+``timeout_action`` for already-timed-out tasks. Tasks not yet timed out are
+left for the periodic beat task ``sweep_timed_out_human_tasks`` to handle
+(see ``app/workers/tasks/human_timeout.py``) — there is no longer a process-
+local monitor, because the Celery worker's event loop is only driven for the
+duration of ``run_until_complete(engine)`` and cannot keep an asyncio.sleep
+alive past a Human-node pause.
 
 Also cleans up orphan ``running`` tasks left behind by a process restart:
 workflow execution runs in a Celery worker process, so a worker crash/restart
@@ -32,9 +36,9 @@ async def recover_waiting_human_tasks() -> None:
 
     Steps:
     1. Find all tasks with status=waiting_human that have a checkpoint
-    2. For each task:
-       - If timed out (timeout_deadline < now): execute timeout_action
-       - If not timed out: restart timeout monitor with remaining time
+    2. For each task already past its timeout_deadline: execute timeout_action
+       immediately. Tasks not yet timed out are left for the periodic beat
+       task ``sweep_timed_out_human_tasks`` to handle.
     """
     db = get_database()
     now = utc_now()
@@ -59,7 +63,6 @@ async def recover_waiting_human_tasks() -> None:
         checkpoint = doc.get("checkpoint", {})
         timeout_deadline = checkpoint.get("timeout_deadline")
         timeout_action = checkpoint.get("timeout_action", "fail")
-        paused_node_id = checkpoint.get("paused_at_node", "")
 
         try:
             if timeout_deadline:
@@ -77,22 +80,15 @@ async def recover_waiting_human_tasks() -> None:
                         task_id=task_id,
                         timeout_action=timeout_action,
                     )
-                    await _execute_timeout_action(
+                    await execute_timeout_action(
                         task_id=task_id,
                         timeout_action=timeout_action,
                     )
                 else:
-                    # Not yet timed out — restart monitor with remaining time
-                    remaining_ms = int((deadline - now).total_seconds() * 1000)
+                    # Not yet timed out — leave it to the periodic sweep task.
                     logger.info(
-                        "recover_task_restart_monitor",
+                        "recover_task_leave_to_sweep",
                         task_id=task_id,
-                        remaining_ms=remaining_ms,
-                    )
-                    await _restart_timeout_monitor(
-                        task_id=task_id,
-                        node_id=paused_node_id,
-                        timeout_ms=remaining_ms,
                         timeout_action=timeout_action,
                     )
             else:
@@ -100,7 +96,7 @@ async def recover_waiting_human_tasks() -> None:
                 logger.info(
                     "recover_task_no_timeout",
                     task_id=task_id,
-                    paused_node=paused_node_id,
+                    paused_node=checkpoint.get("paused_at_node", ""),
                 )
 
         except Exception as exc:
@@ -111,8 +107,11 @@ async def recover_waiting_human_tasks() -> None:
             )
 
 
-async def _execute_timeout_action(task_id: str, timeout_action: str) -> None:
-    """Execute the configured timeout action for a task.
+async def execute_timeout_action(task_id: str, timeout_action: str) -> None:
+    """Execute the configured timeout action for a waiting_human task.
+
+    Shared by startup recovery (``recover_waiting_human_tasks``) and the
+    periodic sweep task (``sweep_timed_out_human_tasks``).
 
     Args:
         task_id: The Task ID.
@@ -144,31 +143,6 @@ async def _execute_timeout_action(task_id: str, timeout_action: str) -> None:
     # For auto_approve / auto_skip, also resume execution
     if target_status == TaskStatus.RUNNING:
         TaskService.resume_task_execution(task_id)
-
-
-async def _restart_timeout_monitor(
-    task_id: str,
-    node_id: str,
-    timeout_ms: int,
-    timeout_action: str,
-) -> None:
-    """Restart the timeout monitor for a recovered task.
-
-    Args:
-        task_id: The Task ID.
-        node_id: The paused Human node ID.
-        timeout_ms: Remaining timeout in milliseconds.
-        timeout_action: Action on timeout.
-    """
-    from app.engine.workflow.nodes.human import get_human_timeout_monitor
-
-    monitor = get_human_timeout_monitor()
-    await monitor.start_monitor(
-        task_id=task_id,
-        node_id=node_id,
-        timeout_ms=timeout_ms,
-        timeout_action=timeout_action,
-    )
 
 
 async def recover_orphan_running_tasks() -> None:

@@ -98,3 +98,4 @@ architecture-overview.html
 __MACOSX/
 .zcode/
 deploy/data/
+celerybeat-schedule.db

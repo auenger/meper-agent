@@ -14,7 +14,7 @@ import {
   ArrowLeft, Loader2, Search, Trash2, Upload, RefreshCw, FileText, AlertCircle, CheckCircle2, Eye, X,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { knowledgeApi, knowledgeKeys, type KbChunkItem, type KbDocument, type KbSearchResultItem } from '../services/knowledge-api';
+import { knowledgeApi, knowledgeKeys, type KbChunkItem, type KbChunkStrategy, type KbDocument, type KbSearchResultItem } from '../services/knowledge-api';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
 
@@ -47,6 +47,7 @@ export function KbVectorDetailPage({
   const queryClient = useQueryClient();
   const [query, setQuery] = useState('');
   const [searchResults, setSearchResults] = useState<KbSearchResultItem[] | null>(null);
+  const [chunkStrategy, setChunkStrategy] = useState<KbChunkStrategy>('recursive');
 
   const docsQ = useQuery({
     queryKey: knowledgeKeys.documents(kbId),
@@ -62,7 +63,7 @@ export function KbVectorDetailPage({
   const docs = docsQ.data?.items ?? [];
 
   const uploadM = useMutation({
-    mutationFn: (files: File[]) => knowledgeApi.uploadDocuments(kbId, files),
+    mutationFn: (files: File[]) => knowledgeApi.uploadDocuments(kbId, files, chunkStrategy),
     onSuccess: (res) => {
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
       if (res.errors.length > 0) {
@@ -160,6 +161,22 @@ export function KbVectorDetailPage({
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${docsQ.isFetching ? 'animate-spin' : ''}`} />
               </button>
+              <div className="flex items-center rounded-lg bg-[#27272a] p-0.5">
+                {(['recursive', 'structure'] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setChunkStrategy(s)}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-semibold transition cursor-pointer ${
+                      chunkStrategy === s
+                        ? 'bg-emerald-600 text-white'
+                        : 'text-[#71717a] hover:text-white'
+                    }`}
+                    title={s === 'structure' ? '按文档结构切分（Markdown标题/HTML标签/Word样式）' : '递归 token 切分（默认）'}
+                  >
+                    {s === 'structure' ? '结构切分' : '递归切分'}
+                  </button>
+                ))}
+              </div>
               <label className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition">
                 {uploadM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                 上传
@@ -199,6 +216,9 @@ export function KbVectorDetailPage({
                           <span>{doc.file_type.toUpperCase()}</span>
                           <span>{formatSize(doc.file_size)}</span>
                           {doc.chunk_count > 0 && <span>{doc.chunk_count} 切片</span>}
+                          <span className="text-indigo-400">
+                            {doc.chunk_strategy === 'structure' ? '结构切分' : '递归切分'}
+                          </span>
                         </div>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
@@ -279,12 +299,28 @@ export function KbVectorDetailPage({
                 <p className="text-xs text-[#71717a] py-6 text-center">无匹配结果（可能文档尚未索引完成或阈值过高）。</p>
               ) : (
                 searchResults.map((r, i) => (
-                  <div key={i} className="bg-[#18181b] border border-[#27272a] rounded-lg p-3 space-y-1.5">
+                  <div key={i} className="bg-white border border-gray-200 rounded-lg p-3 space-y-1.5">
                     <div className="flex items-center justify-between text-[10px] font-mono">
-                      <span className="text-[#a1a1aa] truncate">{r.source_file}{r.page ? ` · P${r.page}` : ''}</span>
-                      <span className="text-emerald-400 shrink-0 ml-2">{r.score.toFixed(3)}</span>
+                      <span className="text-gray-500 truncate">
+                        {r.source_file}
+                        {r.page ? ` · P${r.page}` : ''}
+                        {r.section ? ` · ${r.section}` : ''}
+                      </span>
+                      <span className="text-emerald-500 shrink-0 ml-2">{r.score.toFixed(3)}</span>
                     </div>
-                    <p className="text-xs text-[#d4d4d8] leading-relaxed line-clamp-4">{r.text}</p>
+                    <p className="text-xs text-gray-900 leading-relaxed line-clamp-4">{r.text}</p>
+                    {r.image_ref_ids && r.image_ref_ids.length > 0 && (
+                      <div className="flex gap-1.5 mt-1 flex-wrap">
+                        {r.image_ref_ids.map((fid) => (
+                          <img
+                            key={fid}
+                            src={`/api/v1/files/${encodeURIComponent(fid)}/download`}
+                            className="w-12 h-12 rounded border border-gray-200 object-cover"
+                            alt=""
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))
               )}
@@ -345,13 +381,27 @@ export function KbVectorDetailPage({
 
 function ChunkBlock({ chunk }: { chunk: KbChunkItem }) {
   return (
-    <div className="bg-[#121214] border border-[#27272a] rounded-lg p-3 space-y-1.5">
-      <div className="flex items-center gap-2 text-[10px] font-mono text-[#71717a]">
-        <span className="text-zinc-400">#{chunk.chunk_index + 1}</span>
+    <div className="bg-white border border-gray-200 rounded-lg p-3 space-y-1.5">
+      <div className="flex items-center gap-2 text-[10px] font-mono text-gray-500">
+        <span className="text-gray-700">#{chunk.chunk_index + 1}</span>
         {chunk.source_file && <span className="truncate">{chunk.source_file}</span>}
         {chunk.page != null && <span>· P{chunk.page}</span>}
+        {chunk.section && <span className="truncate text-indigo-500">· {chunk.section}</span>}
       </div>
-      <p className="text-xs text-[#d4d4d8] leading-relaxed whitespace-pre-wrap break-words">{chunk.text}</p>
+      <p className="text-xs text-gray-900 leading-relaxed whitespace-pre-wrap break-words">{chunk.text}</p>
+      {chunk.image_ref_ids && chunk.image_ref_ids.length > 0 && (
+        <div className="flex gap-1.5 mt-1 flex-wrap">
+          <span className="text-[10px] text-gray-400 w-full mb-0.5">关联图片:</span>
+          {chunk.image_ref_ids.map((fid) => (
+            <img
+              key={fid}
+              src={`/api/v1/files/${encodeURIComponent(fid)}/download`}
+              className="w-16 h-16 rounded border border-gray-200 object-cover"
+              alt=""
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

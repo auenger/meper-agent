@@ -114,6 +114,7 @@ class KbDocumentItem(BaseModel):
     parse_progress: int = 0
     parse_error: str = ""
     chunk_count: int = 0
+    chunk_strategy: str = "recursive"
     created_at: str
     updated_at: str
 
@@ -142,6 +143,8 @@ class KbSearchResultItem(BaseModel):
     doc_id: str = ""
     source_file: str = ""
     page: int | None = None
+    section: str = ""
+    image_ref_ids: list[str] = Field(default_factory=list)
 
 
 class KbSearchResponse(BaseModel):
@@ -158,3 +161,5 @@ class KbChunkItem(BaseModel):
     text: str
     source_file: str = ""
     page: int | None = None
+    section: str = ""
+    image_ref_ids: list[str] = Field(default_factory=list)

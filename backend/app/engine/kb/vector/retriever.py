@@ -41,9 +41,9 @@ async def retrieve(
         score_threshold: minimum score to keep (default KB_VECTOR_SCORE_THRESHOLD).
 
     Returns:
-        List of ``{text, score, doc_id, source_file, page}`` sorted by
-        score descending. Empty list if KB has no indexed content or all
-        candidates fall below threshold.
+        List of ``{text, score, doc_id, source_file, page, section, image_ref_ids}``
+        sorted by score descending. Empty list if KB has no indexed content
+        or all candidates fall below threshold.
     """
     top_k = top_k or settings.KB_VECTOR_TOP_K
     recall_k = recall_k or settings.KB_VECTOR_RECALL_K

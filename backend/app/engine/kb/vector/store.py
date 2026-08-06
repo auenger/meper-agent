@@ -116,7 +116,7 @@ async def add_chunks(
     Args:
         kb_id: owning knowledge base id (used as payload filter).
         doc_id: owning document id (used for deletion by doc).
-        chunks: list of ``{text, source_file, page, chunk_index}``.
+        chunks: list of ``{text, source_file, page, chunk_index, section}``.
         dense_vectors: parallel list of dense embedding vectors (one per chunk).
         batch_size: upsert batch size (defaults to settings.KB_VECTOR_EMBED_BATCH).
 
@@ -153,6 +153,8 @@ async def add_chunks(
                         "text": ch["text"],
                         "source_file": ch.get("source_file", ""),
                         "page": ch.get("page"),
+                        "section": ch.get("section", ""),
+                        "image_ref_ids": ch.get("image_ref_ids", []),
                     },
                 )
             )
@@ -181,7 +183,7 @@ async def hybrid_search(
         k: number of candidates to return (before rerank).
 
     Returns:
-        List of ``{text, score, doc_id, source_file, page}`` sorted by score.
+        List of ``{text, score, doc_id, source_file, page, section}`` sorted by score.
     """
     client = get_qdrant_client()
     flt = qmodels.Filter(
@@ -221,6 +223,8 @@ async def hybrid_search(
                 "doc_id": pl.get("doc_id", ""),
                 "source_file": pl.get("source_file", ""),
                 "page": pl.get("page"),
+                "section": pl.get("section", ""),
+                "image_ref_ids": pl.get("image_ref_ids", []),
             }
         )
     return out
@@ -262,6 +266,8 @@ async def get_chunks_by_doc(doc_id: str, limit: int = 500) -> list[dict]:
                     "text": pl.get("text", ""),
                     "source_file": pl.get("source_file", ""),
                     "page": pl.get("page"),
+                    "section": pl.get("section", ""),
+                    "image_ref_ids": pl.get("image_ref_ids", []),
                 }
             )
         if not offset or len(chunks) >= limit:

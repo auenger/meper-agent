@@ -19,7 +19,7 @@ class AuditLog(BaseModel):
     to_status: str | None = None
     action: str | None = None  # approve, reject, skip, cancel, pause, resume, etc.
     triggered_by: str = "system"
-    triggered_by_type: str = Field(default="system", pattern=r"^(user|agent|system)$")
+    triggered_by_type: str = Field(default="system", pattern=r"^(user|agent|system|api_key)$")
     version: int = 0
     details: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=utc_now)

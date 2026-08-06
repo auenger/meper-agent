@@ -39,6 +39,7 @@ class KnowledgeDocumentService:
         file_type: str,
         file_size: int,
         uploaded_by: str = "",
+        chunk_strategy: str = "recursive",
     ) -> KnowledgeDocument:
         """Create a pending document record (pre-indexing)."""
         from app.models.base import generate_id
@@ -55,6 +56,7 @@ class KnowledgeDocumentService:
             "parse_progress": 0,
             "parse_error": "",
             "chunk_count": 0,
+            "chunk_strategy": chunk_strategy,
             "uploaded_by": uploaded_by,
             "created_at": now,
             "updated_at": now,

@@ -4,7 +4,7 @@ from loguru import logger
 from app.workers.celery_app import celery_app
 
 
-@celery_app.task(name="app.workers.tasks.maintenance.cleanup_workspaces")
+@celery_app.task(name="app.workers.tasks.maintenance.cleanup_expired_workspaces")
 def cleanup_expired_workspaces() -> dict:
     """Periodic task: remove expired workspace files.
 

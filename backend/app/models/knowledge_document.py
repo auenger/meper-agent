@@ -36,6 +36,11 @@ class KnowledgeDocument(BaseModel):
     parse_progress: int = Field(default=0, ge=0, le=100, description="0-100")
     parse_error: str = Field(default="", description="失败原因（parse_status=failed 时填充）")
     chunk_count: int = Field(default=0, ge=0, description="切片数量（completed 后填充）")
+    # Chunking strategy chosen at upload time: "recursive" (token-based
+    # recursive split, default) or "structure" (split by document structure
+    # — Markdown headers / HTML tags / Word heading styles; unsupported file
+    # types gracefully fall back to "recursive").
+    chunk_strategy: str = Field(default="recursive", description="切分策略: recursive / structure")
     uploaded_by: str = Field(default="", description="上传者 user_id")
     created_at: str = Field(default_factory=lambda: utc_now().isoformat())
     updated_at: str = Field(default_factory=lambda: utc_now().isoformat())

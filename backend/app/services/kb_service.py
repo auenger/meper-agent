@@ -219,6 +219,7 @@ class KnowledgeBaseService:
         kb_id: str,
         files: list[tuple[str, bytes]],
         uploaded_by: str = "",
+        chunk_strategy: str = "recursive",
     ) -> dict:
         """Upload a batch of files into a KB.
 
@@ -226,6 +227,9 @@ class KnowledgeBaseService:
         - tree: writes ``.md`` files to the on-disk directory (legacy logic).
         - vector: stores the original file via FileRef, creates a
           KnowledgeDocument (pending), and dispatches a Celery indexing task.
+
+        ``chunk_strategy`` ("recursive" | "structure") is recorded on each
+        vector document and consulted by the indexer (ignored for tree KBs).
 
         Returns ``{"created": [...], "errors": [...], "document_ids": [...]}``.
         For tree KB, ``document_ids`` is empty and ``created`` holds rel paths;
@@ -242,7 +246,7 @@ class KnowledgeBaseService:
         kb_type = kb_doc.get("type", "tree")
         if kb_type == "vector":
             return await KnowledgeBaseService._upload_vector(
-                kb_id, kb_doc, files, uploaded_by
+                kb_id, kb_doc, files, uploaded_by, chunk_strategy=chunk_strategy
             )
         return await KnowledgeBaseService._upload_tree(kb_id, files)
 
@@ -300,6 +304,8 @@ class KnowledgeBaseService:
         kb_doc: dict,
         files: list[tuple[str, bytes]],
         uploaded_by: str,
+        *,
+        chunk_strategy: str = "recursive",
     ) -> dict:
         """Vector KB upload — store original + create pending doc + dispatch index task."""
         from app.models.file_library import FileConsumerKind
@@ -357,6 +363,7 @@ class KnowledgeBaseService:
                     file_type=ext,
                     file_size=len(raw),
                     uploaded_by=uploaded_by,
+                    chunk_strategy=chunk_strategy,
                 )
                 document_ids.append(doc.id)
                 created.append(filename)

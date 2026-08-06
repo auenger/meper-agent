@@ -16,7 +16,15 @@ class TextBlock:
 
     text: str
     page: int | None = None  # 1-based page number (PDF); None for unpaginated
-    section: str = ""  # optional heading/section label
+    # Heading/section path of this block (e.g. "章节A > 子节B"). Filled by
+    # structure-aware parsers (e.g. parse_word_structured); empty for flat
+    # parsers. Carried into chunk dicts so retrieval results can cite the
+    # section a chunk belongs to.
+    section: str = ""
+    # FileRef ids of images extracted from this block's page (PDF image
+    # extraction / scan-page renders). Empty for text-only sources. Carried
+    # into chunk dicts so the UI can display the associated images.
+    image_ref_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -28,11 +36,21 @@ class ParseResult:
     total_pages: int | None = None
 
 
-def parse(file_bytes: bytes, file_type: str) -> ParseResult:
+def parse(file_bytes: bytes, file_type: str, *, structured: bool = False) -> ParseResult:
     """Dispatch to the right parser by file extension/type.
 
     ``file_type`` is normalized to lowercase without leading dot
     (e.g. "pdf", "docx", "md", "txt").
+
+    When ``structured`` is True, structure-aware file types use a parser that
+    preserves document structure (e.g. Word heading styles become ``section``
+    on each TextBlock; HTML keeps its heading tags for the header splitter).
+    File types without a dedicated structured parser fall back to their
+    regular flat parser; the chunker handles graceful degradation for them.
+    Currently ``docx`` (``parse_word_structured``) and ``html/htm``
+    (``parse_html_structured``) provide structured variants; md/markdown keeps
+    raw text (structure splitting is done inside the chunker via LangChain
+    splitters) and does not need a separate parser.
     """
     ft = (file_type or "").lower().lstrip(".")
     # Alias common variants.
@@ -49,6 +67,10 @@ def parse(file_bytes: bytes, file_type: str) -> ParseResult:
 
         return parse_pdf(file_bytes)
     if ft == "docx":
+        if structured:
+            from app.engine.kb.vector.parser.word_parser import parse_word_structured
+
+            return parse_word_structured(file_bytes)
         from app.engine.kb.vector.parser.word_parser import parse_word
 
         return parse_word(file_bytes)
@@ -65,6 +87,10 @@ def parse(file_bytes: bytes, file_type: str) -> ParseResult:
 
         return parse_csv(file_bytes)
     if ft in ("html", "htm"):
+        if structured:
+            from app.engine.kb.vector.parser.html_parser import parse_html_structured
+
+            return parse_html_structured(file_bytes)
         from app.engine.kb.vector.parser.html_parser import parse_html
 
         return parse_html(file_bytes)

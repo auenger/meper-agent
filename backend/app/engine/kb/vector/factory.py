@@ -1,22 +1,32 @@
-"""Vector model factories — embedding + reranker clients for vector KBs.
+"""Vector model factories — embedding + reranker + vision/OCR clients.
 
-Both clients are configured directly via environment variables
-(``KB_EMBEDDING_*`` / ``KB_RERANKER_*``), since embedding and reranker are
-platform-global singletons — they don't need Model table entries. This keeps
-deployment simple: set base_url + model + api_key in ``.env`` and vector KBs
-work, with no UI-side model configuration step.
+All clients are configured directly via environment variables
+(``KB_EMBEDDING_*`` / ``KB_RERANKER_*`` / ``KB_VISION_*`` / ``KB_OCR_*``),
+since they are platform-global singletons — they don't need Model table
+entries. This keeps deployment simple: set base_url + model + api_key in
+``.env`` and vector KBs work, with no UI-side model configuration step.
 
-Embedding is REQUIRED for vector KBs to function. Reranker is OPTIONAL —
-``get_reranker()`` returns ``None`` when unconfigured, and the retrieval
-pipeline degrades gracefully (skips the rerank stage).
+Embedding is REQUIRED for vector KBs to function. Reranker, vision, and OCR
+are all OPTIONAL — ``get_reranker()`` / ``get_vision_client()`` /
+``get_ocr_engine()`` return ``None`` when unconfigured, and the pipeline
+degrades gracefully.
 """
 from __future__ import annotations
 
 import httpx
 from langchain_core.embeddings import Embeddings
+from langchain_core.language_models.chat_models import BaseChatModel
 from loguru import logger
 
 from app.core.config import settings
+from app.engine.kb.vector.ocr_engine import RapidOCREngine
+
+
+class _NotLoaded:
+    """Sentinel meaning 'singleton not yet attempted' (distinct from None)."""
+
+
+NotLoaded = _NotLoaded()
 
 
 class RerankerClient:
@@ -130,6 +140,73 @@ def get_reranker() -> RerankerClient | None:
     return RerankerClient(base_url=base_url, model=model, api_key=api_key)
 
 
+def get_vision_client() -> BaseChatModel | None:
+    """Build the vision LLM client from ``KB_VISION_*`` env vars.
+
+    Optional. Used for recognizing text in PDF images / scan pages via an
+    OpenAI-compatible multimodal chat API (e.g. GPT-4o, Qwen-VL). Returns
+    ``None`` when unconfigured so the parser falls back to OCR or skips.
+
+    The returned client supports multimodal messages — callers construct
+    ``HumanMessage(content=[{"type": "text", ...}, {"type": "image_url", ...}])``.
+    """
+    base_url = settings.KB_VISION_BASE_URL
+    model = settings.KB_VISION_MODEL
+    if not (base_url and model):
+        return None
+    from langchain_openai import ChatOpenAI
+
+    api_key = settings.KB_VISION_API_KEY or "not-required"
+    logger.debug("vision_client_built", model=model, base_url=base_url)
+    return ChatOpenAI(
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        temperature=0,  # recognition should be deterministic
+    )
+
+
+# ── OCR engine (RapidOCR, lazy-loaded singleton) ──────────────────────
+
+_ocr_engine_singleton: RapidOCREngine | None | _NotLoaded = NotLoaded
+
+
+def get_ocr_engine() -> RapidOCREngine | None:
+    """Build the RapidOCR engine if ``KB_OCR_ENABLED``.
+
+    Optional. Returns ``None`` when disabled or when RapidOCR fails to import
+    (e.g. not installed). The engine is a lazy-loaded singleton so the model
+    is only loaded on first use, not at app startup.
+
+    Used as a fallback for ``get_vision_client()`` — when no vision model is
+    configured, OCR recognizes text in PDF images / scan pages locally.
+    """
+    global _ocr_engine_singleton
+    if _ocr_engine_singleton is not NotLoaded:
+        return _ocr_engine_singleton  # may be None (already tried & failed)
+
+    if not settings.KB_OCR_ENABLED:
+        _ocr_engine_singleton = None
+        return None
+
+    try:
+        _ocr_engine_singleton = RapidOCREngine(
+            languages=settings.KB_OCR_LANGUAGES,
+        )
+        logger.info(
+            "ocr_engine_loaded",
+            languages=settings.KB_OCR_LANGUAGES,
+        )
+    except Exception as exc:
+        logger.warning(
+            "ocr_engine_unavailable",
+            error=str(exc),
+            hint="Install rapidocr-onnxruntime or set KB_OCR_ENABLED=false",
+        )
+        _ocr_engine_singleton = None
+    return _ocr_engine_singleton
+
+
 def validate_vector_model_config() -> tuple[bool, str]:
     """Startup-time validation of vector model config.
 
@@ -151,5 +228,7 @@ __all__ = [
     "RerankerClient",
     "get_embedding_client",
     "get_reranker",
+    "get_vision_client",
+    "get_ocr_engine",
     "validate_vector_model_config",
 ]

@@ -106,7 +106,7 @@ class Settings(BaseSettings):
     # Docker: set explicitly by docker-compose (e.g. /data/skills).
     SKILLS_CONTAINER_DIR: str | None = None
     # Host-side path for Skills (the one users configure in .env).
-    SKILLS_HOST_DIR: str = "~/.agent-flow/skills"
+    SKILLS_HOST_DIR: str = "~/.agent-flow/data/skills"
 
     # Workspace filesystem — root directory for per-Session workspaces.
     # Layout: ``{WORKSPACES_CONTAINER_DIR}/{user_id}/{session_id}/{input,output,tmp}``.
@@ -114,7 +114,7 @@ class Settings(BaseSettings):
     # Docker: set explicitly by docker-compose (e.g. /data/workspaces).
     WORKSPACES_CONTAINER_DIR: str | None = None
     # Host-side path for Workspaces (the one users configure in .env).
-    WORKSPACES_HOST_DIR: str = "~/.agent-flow/workspaces"
+    WORKSPACES_HOST_DIR: str = "~/.agent-flow/data/workspaces"
 
     # Workspace retention — days to keep workspace files after Session deletion.
     WORKSPACE_RETENTION_DAYS: int = 30
@@ -174,6 +174,26 @@ class Settings(BaseSettings):
     # Vector KB upload limits.
     KB_VECTOR_MAX_FILE_SIZE: int = 50 * 1024 * 1024  # 50 MB per uploaded doc
     KB_VECTOR_ALLOWED_TYPES: str = "pdf,docx,pptx,xlsx,csv,md,markdown,txt,html,htm"
+
+    # ── Vision model (optional, for image/scan PDF recognition) ──────────
+    # When configured, images embedded in PDFs and scan-only pages are sent to
+    # this OpenAI-compatible multimodal model for text extraction / description.
+    # Same pattern as reranker: optional, degrades gracefully when unset.
+    KB_VISION_BASE_URL: str = ""
+    KB_VISION_MODEL: str = ""
+    KB_VISION_API_KEY: str = ""
+
+    # ── OCR fallback (RapidOCR, optional) ────────────────────────────────
+    # When the vision model is NOT configured, RapidOCR is used as a local
+    # fallback for recognizing text in images / scan pages. Set to False to
+    # disable (scan pages will then be skipped like before).
+    KB_OCR_ENABLED: bool = True
+    KB_OCR_LANGUAGES: str = "ch"  # RapidOCR language: ch (中文+英文) / en / ...
+
+    # ── Image extraction ─────────────────────────────────────────────────
+    # Extract & store images from PDF pages into FileRef so they can be viewed
+    # later in the chunk viewer / search results.
+    KB_EXTRACT_IMAGES: bool = True
 
     @model_validator(mode="after")
     def _default_internal_dirs_from_host(self) -> "Settings":

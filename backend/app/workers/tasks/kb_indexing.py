@@ -31,7 +31,11 @@ def index_kb_document(doc_id: str) -> dict[str, Any]:
 
 async def _index_async(doc_id: str) -> dict[str, Any]:
     from app.engine.kb.vector import store as kb_vector_store
-    from app.engine.kb.vector.factory import get_embedding_client
+    from app.engine.kb.vector.factory import (
+        get_embedding_client,
+        get_ocr_engine,
+        get_vision_client,
+    )
     from app.engine.kb.vector.parser import clean, parse, split
     from app.models.knowledge_document import EMBEDDING, PARSING
     from app.services.file_service import FileService
@@ -55,10 +59,48 @@ async def _index_async(doc_id: str) -> dict[str, Any]:
         _fref, raw = loaded
 
         # 2. Parse → clean → chunk.
+        # When the document's chunk strategy is "structure", parse with the
+        # structure-aware variant so TextBlocks carry heading-path ``section``
+        # (currently only docx provides a structured parser). The chunker then
+        # picks a structure splitter per file type (md/html/docx) and falls
+        # back to recursive for unsupported types.
+        chunk_strategy = getattr(doc, "chunk_strategy", "recursive") or "recursive"
+        structured = chunk_strategy == "structure"
         await KnowledgeDocumentService.update_status(doc_id, PARSING)
-        parse_result = parse(raw, doc.file_type)
+
+        ft = (doc.file_type or "").lower().lstrip(".")
+        if ft == "pdf":
+            # PDF: check if vision/OCR is available for image processing.
+            vision_client = get_vision_client()
+            ocr_engine = get_ocr_engine()
+            if vision_client is not None or ocr_engine is not None:
+                from app.core.config import settings
+                from app.engine.kb.vector.parser.image_extractor import ImageExtractor
+
+                image_extractor = ImageExtractor(
+                    vision_client=vision_client,
+                    ocr_engine=ocr_engine,
+                    file_service=file_service,
+                    doc_id=doc_id,
+                    owner_id=doc.uploaded_by,
+                    extract_images=settings.KB_EXTRACT_IMAGES,
+                )
+                from app.engine.kb.vector.parser.pdf_parser import parse_pdf_with_images
+
+                parse_result = await parse_pdf_with_images(raw, image_extractor)
+            else:
+                # No vision/OCR configured — pure text extraction.
+                parse_result = parse(raw, doc.file_type, structured=structured)
+        else:
+            parse_result = parse(raw, doc.file_type, structured=structured)
+
         cleaned = clean(parse_result)
-        chunks = split(cleaned, source_file=doc.name)
+        chunks = split(
+            cleaned,
+            source_file=doc.name,
+            strategy=chunk_strategy,
+            file_type=doc.file_type,
+        )
         if not chunks:
             raise RuntimeError("文档解析后无有效内容（可能为空文件或纯图片）")
 
