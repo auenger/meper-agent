@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException
+from langgraph.errors import GraphBubbleUp
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -56,28 +57,49 @@ def make_tool_wrapper(
 
         # Execute via the native ToolNode (handles errors, concurrency).
         #
-        # ToolException（工具业务失败）转成 error ToolMessage 返回给 LLM，
-        # 让模型据此决定下一步（重试 / 换工具 / 转告用户），而不是 re-raise
-        # 终止整个 agent 流。MCP adapter 在 MCP ``isError=true`` 时抛的正是
-        # ToolException（langchain_mcp_adapters/tools.py），langchain 工具的
-        # 业务校验失败也用它。
+        # 把工具执行异常转成 error ToolMessage 返回给 LLM，让模型据此决定下一步
+        # （重试 / 换工具 / 转告用户），而不是让异常冒泡终止整个 agent 流。
+        # 覆盖两类异常：
+        #   - ToolException：工具业务失败。MCP adapter 在 MCP ``isError=true``
+        #     时抛的正是它（langchain_mcp_adapters/tools.py），langchain 工具的
+        #     业务校验失败也用它。
+        #   - 其它普通 Exception：如 openapi 工具的 httpx 连接错误、code 工具的
+        #     执行错误等。默认 ToolNode(handle_tool_errors=...) 只消化
+        #     ToolInvocationError，其它异常会 re-raise 让图崩溃，导致前端工具卡在
+        #     「执行中」、agent 收不到错误无法继续，故在此兜底。
+        #
+        # 关键：必须先 ``except GraphBubbleUp: raise`` 放行人机协同中断。
+        # GraphInterrupt（HITL ask_clarification / confirm_workflow 用的
+        # interrupt()）是 GraphBubbleUp 子类，若被 ``except Exception`` 吞成
+        # error ToolMessage，会破坏人机协同（interrupt 无法挂起 graph）。
+        # LangGraph 在 _execute_tool_async 内部也遵循同样的顺序（先 GraphBubbleUp
+        # 后 Exception，tool_node.py:982-984）。
         #
         # 为何在这里处理而非用 ToolNode(handle_tool_errors=...)：langgraph 1.2.4
         # 的 ToolNode 在配了 awrap_tool_call 时，_arun_one 外层 except Exception
-        # 不检查 handled_types，会把 GraphInterrupt（HITL ask_clarification 用的
-        # interrupt()）也吞成 error ToolMessage，破坏人机协同。在此用
-        # ``except ToolException`` 精确捕获：GraphInterrupt 不是 ToolException
-        # 子类，会正确冒泡挂起 graph；其它系统异常（KeyError 等）也不被吞，
-        # 由上层 agent_execution_service 的兜底 except 处理。文案与旧 react
-        # 引擎 (engine/react.py:218) 一致。
+        # 会把 GraphInterrupt 也吞掉（_arun_one:1211 不区分 GraphBubbleUp），
+        # 所以必须由本 wrapper 精确放行。文案与旧 react 引擎 (engine/react.py:218)
+        # 一致。
         try:
             result = await execute(modified)
-        except ToolException as exc:
-            logger.warning(
-                "tool_execution_failed",
-                tool_name=tc.get("name", ""),
-                error=str(exc),
-            )
+        except GraphBubbleUp:
+            # 人机协同中断（HITL），必须原样冒泡挂起 graph，不可吞
+            raise
+        except Exception as exc:
+            if isinstance(exc, ToolException):
+                logger.warning(
+                    "tool_execution_failed",
+                    tool_name=tc.get("name", ""),
+                    error=str(exc),
+                )
+            else:
+                # 非业务异常（连接错误、执行错误等），记录 error 级别便于排查
+                logger.error(
+                    "tool_execution_error",
+                    tool_name=tc.get("name", ""),
+                    error=str(exc),
+                    exc_info=exc,
+                )
             result = ToolMessage(
                 content=f"Error executing tool: {exc}",
                 name=tc.get("name", ""),

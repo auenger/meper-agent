@@ -139,7 +139,11 @@ function fromHistory(record: MessageRecord): ChatMessage {
       const matched = (resultId && pendingById.get(resultId)) || pendingByName.get(entry.tool_name || 'tool')
       if (matched) {
         matched.result = entry.content
-        matched.status = 'complete'
+        // 按 entry.is_error 区分:工具执行失败(ToolMessage.status="error")标 error,
+        // 旧数据无该字段按正常完成处理。与流式路径(tool_result 事件 status)对齐。
+        const isError = entry.is_error === true
+        matched.isError = isError
+        matched.status = isError ? 'error' : 'complete'
         if (resultId) pendingById.delete(resultId)
         pendingByName.delete(entry.tool_name || 'tool')
       }
@@ -218,6 +222,7 @@ export function useChat(
   agentId: string | null,
   sessionId: string | null,
   onFilesChanged: () => void,
+  onSessionChanged?: () => void,
 ) {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [loading, setLoading] = useState(false)
@@ -427,8 +432,10 @@ export function useChat(
                 status: 'running',
               },
             })
-          } else if (event.type === 'tool_result' && event.content) {
+          } else if (event.type === 'tool_result') {
             // 优先用 tool_call_id 精确配对;退化兜底:找最后一个 running 的 tool block
+            // 注意:不要求 content 非空 —— 工具报错时可能只有 status=error 而 content
+            // 为空或很短,仍需据此把工具从 running 改为 error/complete。
             const resultId = event.tool_call_id || ''
             const toolBlock = resultId
               ? [...acc.blocks]
@@ -449,7 +456,7 @@ export function useChat(
               toolBlock.tool.isError = isError
               toolBlock.tool.status = isError ? 'error' : 'complete'
             }
-            for (const attachment of outputAttachments(event.content)) {
+            for (const attachment of outputAttachments(event.content ?? '')) {
               acc.attachments.set(attachment.id, attachment)
               if (isImageName(attachment.name)) {
                 try {
@@ -514,9 +521,15 @@ export function useChat(
             setRunning(false)
             return
           } else if (event.done) {
+            // 流结束但仍有工具停在 running:说明没收到它的 tool_result(异常中断)。
+            // 诚实地标为 error 并补提示文案,而不是伪装成 complete 误导用户。
             for (const block of acc.blocks) {
               if (block.type === 'tool' && block.tool.status === 'running') {
-                block.tool.status = 'complete'
+                block.tool.status = 'error'
+                block.tool.isError = true
+                if (!block.tool.result) {
+                  block.tool.result = '工具执行异常,未收到结果'
+                }
               }
             }
             flush(acc, 'success')
@@ -655,9 +668,11 @@ export function useChat(
       } finally {
         setRunning(false)
         abortRef.current = null
+        // 触发会话列表刷新:后端会根据第一条消息生成标题,需要回流到侧边栏
+        onSessionChanged?.()
       }
     },
-    [agentId, hitl, process, running, sessionId],
+    [agentId, hitl, onSessionChanged, process, running, sessionId],
   )
 
   const answerClarification = useCallback(
@@ -706,9 +721,11 @@ export function useChat(
       } finally {
         setRunning(false)
         abortRef.current = null
+        // 触发会话列表刷新:后端会根据第一条消息生成标题,需要回流到侧边栏
+        onSessionChanged?.()
       }
     },
-    [agentId, hitl, process, running, sessionId],
+    [agentId, hitl, onSessionChanged, process, running, sessionId],
   )
 
   const cancel = useCallback(() => abortRef.current?.abort(), [])

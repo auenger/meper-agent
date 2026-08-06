@@ -150,3 +150,86 @@ async def test_tool_exception_becomes_tool_message(
     # 3. LLM 看到错误后用文本收尾（REACT 循环继续、没有被工具错误打断）
     assert result["messages"][-1].content == "登录失败，请检查凭证"
     assert result["messages"][-1].tool_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_generic_exception_becomes_tool_message(
+    agent_doc: dict, base_state, fake_llm_factory, make_run_config
+) -> None:
+    """工具抛出非 ToolException 的普通异常（如 openapi 工具的 httpx 连接错误、
+    code 工具执行错误）也必须转成 error ToolMessage 返回给 LLM，不能让图崩溃。
+
+    Regression: tool_wrapper 之前只 catch ToolException，普通异常会逃逸 →
+    ToolNode 默认 handle_tool_errors 只消化 ToolInvocationError → re-raise →
+    图崩溃 → 前端工具卡在「执行中」、agent 收不到错误无法继续。
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+
+    def _boom(**_kwargs):  # noqa: ANN202
+        # 模拟 httpx.ConnectError 等系统异常（不是 ToolException）
+        raise RuntimeError("connection refused")
+
+    boom = StructuredTool.from_function(_boom, name="boom", description="raises")
+
+    llm = fake_llm_factory([
+        AIMessage(content="", tool_calls=[{"name": "boom", "args": {}, "id": "c1"}]),
+        AIMessage(content="工具调用失败，已记录"),
+    ])
+    config = make_run_config(llm, tools=[boom])
+
+    graph = build_agent_graph(agent_doc, tools=[boom], middleware=[])
+    result = await graph.ainvoke(base_state, config=config)
+
+    tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].status == "error"
+    assert "connection refused" in tool_msgs[0].content
+    # LLM 收到错误后继续，没有被异常打断
+    assert result["messages"][-1].content == "工具调用失败，已记录"
+
+
+@pytest.mark.asyncio
+async def test_tool_pydantic_validation_error_becomes_tool_message(
+    agent_doc: dict, base_state, fake_llm_factory, make_run_config
+) -> None:
+    """agent 传了不符合 pydantic 模型的参数（类型错误/缺字段），触发 ValidationError，
+    必须转成 error ToolMessage 返回给 LLM，让模型据此修正参数重试，而不是卡死。
+
+    这是最常见的「工具一直执行中」现场：LLM 生成的 args 不合法。ToolNode 内部
+    会把 ValidationError 转成 ToolInvocationError，本测试确认整条链路能把它消化
+    成 error ToolMessage 回到 LLM。
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.tools import StructuredTool
+
+    def _need_int(count: int):  # noqa: ANN202
+        return f"got {count}"
+
+    need_int = StructuredTool.from_function(_need_int, name="need_int", description="needs int")
+
+    # agent 故意传了字符串而非 int，触发 ValidationError
+    llm = fake_llm_factory([
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "need_int", "args": {"count": "not-an-int"}, "id": "c1"}],
+        ),
+        # 第二轮修正参数重试
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "need_int", "args": {"count": 5}, "id": "c2"}],
+        ),
+        AIMessage(content="完成"),
+    ])
+    config = make_run_config(llm, tools=[need_int])
+
+    graph = build_agent_graph(agent_doc, tools=[need_int], middleware=[])
+    result = await graph.ainvoke(base_state, config=config)
+
+    tool_msgs = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+    # 第一轮：参数错误 → error ToolMessage；第二轮：参数正确 → 正常 ToolMessage
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0].status == "error"
+    assert tool_msgs[1].status in (None, "success")  # 正常结果默认无 status 或 success
+    # LLM 看到参数错误后能修正并完成，没有卡死
+    assert result["messages"][-1].content == "完成"

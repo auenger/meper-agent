@@ -33,9 +33,17 @@ interface ChatViewProps {
   sessionId: string | null
   onOpenNavigation: () => void
   onCreateSession: () => void
+  /** 会话内容变化(如发完消息后端生成标题)时回调,用于刷新侧边栏会话列表 */
+  onSessionChanged?: () => void
 }
 
-export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }: ChatViewProps) {
+export function ChatView({
+  agent,
+  sessionId,
+  onOpenNavigation,
+  onCreateSession,
+  onSessionChanged,
+}: ChatViewProps) {
   const { message } = App.useApp()
   const [input, setInput] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -56,8 +64,11 @@ export function ChatView({ agent, sessionId, onOpenNavigation, onCreateSession }
     send,
     cancel,
     answerClarification,
-  } = useChat(agent?.id ?? null, sessionId, () =>
-    setFilesRefreshKey((value) => value + 1),
+  } = useChat(
+    agent?.id ?? null,
+    sessionId,
+    () => setFilesRefreshKey((value) => value + 1),
+    onSessionChanged,
   )
 
   // ── 自动滚动跟随 ────────────────────────────────────────────────

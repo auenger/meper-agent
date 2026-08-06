@@ -126,12 +126,18 @@ def messages_to_sse_events(
                     })
 
         elif isinstance(msg, ToolMessage):
-            events.append({
+            entry: dict = {
                 "type": "tool_result",
                 "tool_name": msg.name or "",
                 "content": safe_str(msg.content),
                 "tool_call_id": msg.tool_call_id or "",
-            })
+            }
+            # 保留错误标记:ToolMessage.status == "error" 表示工具执行失败
+            # (ToolException / 校验错误 / 连接错误等)。前端据此在历史消息里显示
+            # 红叉而非绿勾;旧数据没有该字段,前端按 falsy 处理为正常完成。
+            if getattr(msg, "status", None) == "error":
+                entry["is_error"] = True
+            events.append(entry)
 
     return events
 

@@ -526,9 +526,19 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
       {charts.map((source, index) => (
         <ChartBlock key={`chart:${index}:${source.slice(0, 32)}`} source={source} />
       ))}
-      {/* 首 token 前的纯等待提示 */}
-      {message.role === 'assistant' && message.status === 'loading' && segments.length === 0 ? (
-        <Typography.Text type="secondary">正在响应...</Typography.Text>
+      {/* 执行中动效:三点跳动,放在消息末尾(不碰 markdown 内部,稳定不抖)。
+          首 token 前额外显示「正在响应」文字,内容开始后只剩三点。 */}
+      {message.role === 'assistant' && message.status === 'loading' ? (
+        <div className="streaming-loading">
+          {segments.length === 0 ? (
+            <Typography.Text type="secondary">正在响应</Typography.Text>
+          ) : null}
+          <span className="streaming-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+        </div>
       ) : null}
       {message.error ? (
         <Typography.Text type="danger">{message.error}</Typography.Text>

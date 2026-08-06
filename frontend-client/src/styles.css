@@ -399,6 +399,57 @@ textarea {
   max-width: 100%;
 }
 
+/* 执行中动效:三点跳动,放在消息末尾 */
+.streaming-loading {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.streaming-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.streaming-dots > span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background-color: var(--client-text-muted);
+  animation: streaming-dots-bounce 1.2s infinite ease-in-out both;
+}
+
+.streaming-dots > span:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.streaming-dots > span:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+@keyframes streaming-dots-bounce {
+  0%,
+  80%,
+  100% {
+    transform: scale(0.5);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-dots > span {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 .message-content p {
   margin: 0.65em 0;
 }

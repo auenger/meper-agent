@@ -89,6 +89,9 @@ export interface MessageRecord {
     id?: string
     /** tool_result entry 对应的 tool_call id(来自 ToolMessage.tool_call_id)。 */
     tool_call_id?: string
+    /** tool_result entry 是否为执行失败(来自 ToolMessage.status == "error")。
+     *  旧数据没有该字段,按 falsy 处理为正常完成。 */
+    is_error?: boolean
   }>
   files?: Array<{
     id?: string

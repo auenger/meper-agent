@@ -81,6 +81,18 @@ export function ClientApp() {
     [agents, selectedAgentId],
   )
 
+  // 刷新会话列表(保持当前 activeSessionId 不变)。
+  // 发完消息后端会根据首条消息生成标题,需重新拉取让标题回流侧边栏。
+  const refreshSessions = async () => {
+    if (!selectedAgentId) return
+    try {
+      const items = await listSessions(selectedAgentId)
+      setSessions(items)
+    } catch {
+      // 刷新失败不打扰用户(标题回流是次要体验,静默失败即可)
+    }
+  }
+
   const createNewSession = async () => {
     if (!selectedAgentId || creating) return
     setCreating(true)
@@ -156,6 +168,7 @@ export function ClientApp() {
         sessionId={activeSessionId}
         onOpenNavigation={() => setNavigationOpen(true)}
         onCreateSession={() => void createNewSession()}
+        onSessionChanged={() => void refreshSessions()}
       />
     </div>
   )
