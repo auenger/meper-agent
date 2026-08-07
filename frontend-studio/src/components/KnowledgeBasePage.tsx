@@ -10,6 +10,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
+import { getErrorMessage } from '../lib/api-client';
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -64,7 +65,7 @@ export function KnowledgeBasePage({
       setNewType('tree');
       onOpenKb({ id: created.id, name: created.name, type: created.type });
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '创建失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '创建失败')),
   });
 
   const deleteM = useMutation({
@@ -73,7 +74,7 @@ export function KnowledgeBasePage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.all });
       toast.success('知识库已删除');
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const handleDelete = async (id: string, name: string) => {

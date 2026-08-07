@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { getErrorMessage } from '../lib/api-client';
 import {
   Plus, Edit, Bot, Trash2, MessageSquare, Rocket, Archive, Loader2,
 } from 'lucide-react';
@@ -44,25 +45,25 @@ export function AgentSpace({
       // Jump straight into the editor to fill the full config.
       if (onOpenEdit) onOpenEdit(created.id);
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '创建失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '创建失败')),
   });
 
   const deleteM = useMutation({
     mutationFn: (id: string) => agentApi.remove(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '删除失败')),
   });
 
   const publishM = useMutation({
     mutationFn: (id: string) => agentApi.publish(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '发布失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '发布失败')),
   });
 
   const archiveM = useMutation({
     mutationFn: (id: string) => agentApi.archive(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '归档失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '归档失败')),
   });
 
   const handleCreateSave = (e: FormEvent) => {

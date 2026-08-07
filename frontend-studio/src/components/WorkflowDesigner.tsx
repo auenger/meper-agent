@@ -36,6 +36,7 @@ import { validateWorkflow } from '../features/workflow-editor/utils/workflow-val
 import type { VariableDefinition } from '../features/workflow-editor/utils/variable-types'
 import { Button, Tag, Input } from './ui'
 import { toast } from './ui/toast'
+import { getErrorMessage } from '../lib/api-client';
 
 /* ─── helpers ─── */
 
@@ -375,7 +376,7 @@ export function WorkflowDesigner({
         } catch (err) {
           stopPolling()
           setExecuting(false)
-          toast.error(err instanceof Error ? err.message : '轮询任务失败', { duration: 0 })
+          toast.error(getErrorMessage(err, '轮询任务失败'), { duration: 0 })
         }
       }, 2000)
     },
@@ -397,7 +398,7 @@ export function WorkflowDesigner({
         pollTask(task.id)
       } catch (err) {
         setExecuting(false)
-        toast.error(err instanceof Error ? err.message : '创建执行任务失败', { duration: 0 })
+        toast.error(getErrorMessage(err, '创建执行任务失败'), { duration: 0 })
       }
     },
     [selectedWorkflowId, pollTask],

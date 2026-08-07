@@ -23,6 +23,7 @@ import { toolsApi, toolKeys } from '../services/tools-api';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
+import { getErrorMessage } from '../lib/api-client';
 
 const STATUS_STYLES: Record<ConnectionStatus, { label: string; color: string; Icon: typeof CircleCheck }> = {
   connected: { label: '已连接', color: 'text-emerald-400', Icon: CircleCheck },
@@ -175,7 +176,7 @@ export function McpManagePage() {
       setError(null);
       setCreating(false);
     },
-    onError: (e) => setError(e instanceof Error ? e.message : '创建连接失败'),
+    onError: (e) => setError(getErrorMessage(e, '创建连接失败')),
   });
 
   const updateM = useMutation({
@@ -185,13 +186,13 @@ export function McpManagePage() {
       setError(null);
       setEditing(null);
     },
-    onError: (e) => setError(e instanceof Error ? e.message : '保存连接失败'),
+    onError: (e) => setError(getErrorMessage(e, '保存连接失败')),
   });
 
   const deleteM = useMutation({
     mutationFn: (id: string) => mcpApi.remove(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: mcpKeys.all }),
-    onError: (e) => setError(e instanceof Error ? e.message : '删除失败'),
+    onError: (e) => setError(getErrorMessage(e, '删除失败')),
   });
 
   const testM = useMutation({
@@ -241,7 +242,7 @@ export function McpManagePage() {
       if (editing) updateM.mutate({ id: editing.id, input: payload });
       else createM.mutate(payload);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '表单校验失败');
+      setError(getErrorMessage(err, '表单校验失败'));
     }
   };
 

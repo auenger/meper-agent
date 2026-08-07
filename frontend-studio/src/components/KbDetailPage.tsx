@@ -15,6 +15,7 @@ import {
 } from '../services/knowledge-api';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
+import { getErrorMessage } from '../lib/api-client';
 
 export function KbDetailPage({
   kbId,
@@ -70,7 +71,7 @@ function KbDirectoryEditor({ kbId }: { kbId: string }) {
         toast.success(`已上传 ${res.created.length} 个文件`);
       }
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '上传失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '上传失败')),
   });
 
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {
@@ -195,7 +196,7 @@ function KbFileEditor({ kbId, filePath }: { kbId: string; filePath: string }) {
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.detail(kbId) });
       toast.success('文件已删除');
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const handleDelete = async () => {

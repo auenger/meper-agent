@@ -17,6 +17,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { knowledgeApi, knowledgeKeys, type KbChunkItem, type KbChunkStrategy, type KbDocument, type KbSearchResultItem } from '../services/knowledge-api';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
+import { getErrorMessage } from '../lib/api-client';
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -72,7 +73,7 @@ export function KbVectorDetailPage({
         toast.success(`已上传 ${res.created.length} 个文件，正在后台索引…`);
       }
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '上传失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '上传失败')),
   });
 
   const deleteDocM = useMutation({
@@ -81,7 +82,7 @@ export function KbVectorDetailPage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
       toast.success('文档已删除');
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const reindexM = useMutation({
@@ -90,13 +91,13 @@ export function KbVectorDetailPage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
       toast.success('已重新派发索引任务');
     },
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '重试失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '重试失败')),
   });
 
   const searchM = useMutation({
     mutationFn: () => knowledgeApi.search(kbId, query, 5),
     onSuccess: (res) => setSearchResults(res.results),
-    onError: (e: unknown) => toast.error(e instanceof Error ? e.message : '检索失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '检索失败')),
   });
 
   // ── View chunks modal ──
@@ -362,7 +363,7 @@ export function KbVectorDetailPage({
               )}
               {chunksQ.isError && (
                 <p className="text-xs text-rose-400 text-center py-10">
-                  {chunksQ.error instanceof Error ? chunksQ.error.message : '加载切片失败'}
+                  {getErrorMessage(chunksQ.error, '加载切片失败')}
                 </p>
               )}
               {chunksQ.data?.length === 0 && (
