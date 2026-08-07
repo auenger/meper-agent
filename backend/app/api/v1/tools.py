@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import contextlib
+import pathlib
+import re
 from collections import defaultdict
 from typing import Any
 
@@ -9,6 +11,8 @@ from fastapi import APIRouter, Depends, File, Query, UploadFile
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
+from app.core.errors import NotFoundError, ValidationError
 from app.core.security import get_current_user, require_any_role
 from app.engine.tool.skill_fs import list_skill_files
 from app.schemas.tool import (
@@ -165,10 +169,63 @@ def _doc_to_response(doc: dict) -> ToolResponse:
         mcp_connection_id=doc.get("mcp_connection_id", ""),
         version=doc.get("version", 1),
         tags=doc.get("tags", []),
+        avatar=doc.get("avatar", ""),
         files=files,
         created_at=doc.get("created_at", ""),
         updated_at=doc.get("updated_at", ""),
     )
+
+
+# 头像上传：MIME/大小校验 + 落盘 + set_avatar（镜像 agents.py 的 upload_avatar）
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
+_TOOL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+@router.post("/{tool_id}/avatar", summary="Upload Skill/Tool avatar image")
+async def upload_tool_avatar(
+    tool_id: str,
+    file: UploadFile = File(...),
+    _: UserResponse = Depends(require_any_role("admin", "developer")),
+) -> dict:
+    # tool 存在性
+    if await ToolService.get_tool(tool_id) is None:
+        raise NotFoundError(code="TOOL_NOT_FOUND", message=f"Tool {tool_id} 不存在")
+    # tool_id 白名单（防路径穿越）
+    if not _TOOL_ID_RE.fullmatch(tool_id):
+        raise ValidationError(code="INVALID_TOOL_ID", message="非法 tool_id")
+    # MIME + 大小
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_ALLOWED_MIME:
+        raise ValidationError(code="AVATAR_TYPE", message="仅支持 PNG / JPEG / WEBP")
+    content = await file.read()
+    if not content:
+        raise ValidationError(code="AVATAR_EMPTY", message="图片内容为空")
+    if len(content) > _AVATAR_MAX_BYTES:
+        raise ValidationError(code="AVATAR_TOO_LARGE", message="图片不超过 2MB")
+    # 落盘（覆盖写，固定 {tool_id}.png；前端已裁剪为 PNG）
+    avatars_dir = pathlib.Path(settings.SKILL_AVATARS_CONTAINER_DIR)
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    target = (avatars_dir / f"{tool_id}.png").resolve()
+    if avatars_dir.resolve() not in target.parents:
+        raise ValidationError(code="AVATAR_PATH", message="文件路径越界")
+    target.write_bytes(content)
+    # 写回 tool.avatar（相对 URL，前端 <img src> 直接用）
+    avatar_url = f"/api/v1/skill-avatars/{tool_id}.png"
+    await ToolService.set_avatar(tool_id, avatar_url)
+    return {"avatar": avatar_url}
+
+
+@router.delete("/{tool_id}/avatar", summary="Remove Skill/Tool avatar (revert to default logo)")
+async def remove_tool_avatar(
+    tool_id: str,
+    _: UserResponse = Depends(require_any_role("admin", "developer")),
+) -> dict:
+    if await ToolService.get_tool(tool_id) is None:
+        raise NotFoundError(code="TOOL_NOT_FOUND", message=f"Tool {tool_id} 不存在")
+    # 置空 avatar 即回退默认 logo；磁盘文件留着（重传覆盖，删 Tool 时清理）。
+    await ToolService.set_avatar(tool_id, "")
+    return {"avatar": ""}
 
 
 class CustomToolCreate(BaseModel):

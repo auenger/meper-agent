@@ -192,7 +192,7 @@ export function AgentEditorPage({
           <input className={inputCls} value={form.name} onChange={(e) => set({ name: e.target.value })} />
         </Field>
         <Field label="头像">
-          <AvatarField value={form.avatar} agentId={agentId} onChange={(url) => set({ avatar: url })} />
+          <AvatarField value={form.avatar} entityId={agentId} onChange={(url) => set({ avatar: url })} />
         </Field>
         <Field label="职责描述">
           <input className={inputCls} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="这个 Agent 专门解决什么问题…" />

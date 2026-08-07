@@ -51,6 +51,7 @@ class ToolResponse(BaseModel):
     mcp_connection_id: str = ""
     version: int
     tags: list[str] = Field(default_factory=list)
+    avatar: str = ""
     files: list[SkillFileResponse] = Field(default_factory=list)
     created_at: str
     updated_at: str

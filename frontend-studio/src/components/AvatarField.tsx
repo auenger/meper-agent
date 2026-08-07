@@ -25,9 +25,12 @@ interface PixelCrop {
 
 interface AvatarFieldProps {
   value: string
-  agentId: string
+  /** 实体 ID（agent / tool 等）。未保存（空）时禁用上传。 */
+  entityId: string
   onChange: (avatar: string) => void
   disabled?: boolean
+  /** 上传回调，默认 agentApi.uploadAvatar；其他实体（如 Skill）传自己的。 */
+  upload?: (id: string, file: Blob) => Promise<string>
 }
 
 /** 读图片为 dataURL（喂给 Cropper）。 */
@@ -58,7 +61,8 @@ async function cropImageToBlob(imageSrc: string, pixelCrop: PixelCrop, size: num
   })
 }
 
-const AvatarField: FC<AvatarFieldProps> = ({ value, agentId, onChange, disabled }) => {
+const AvatarField: FC<AvatarFieldProps> = ({ value, entityId, onChange, disabled, upload }) => {
+  const doUpload = upload ?? ((id, file) => agentApi.uploadAvatar(id, file))
   const [imageSrc, setImageSrc] = useState<string | null>(null)
   const [crop, setCrop] = useState({ x: 0, y: 0 })
   const [zoom, setZoom] = useState(1)
@@ -87,7 +91,7 @@ const AvatarField: FC<AvatarFieldProps> = ({ value, agentId, onChange, disabled 
     try {
       setUploading(true)
       const blob = await cropImageToBlob(imageSrc, croppedAreaPixels, AVATAR_OUTPUT_SIZE)
-      const url = await agentApi.uploadAvatar(agentId, blob)
+      const url = await doUpload(entityId, blob)
       onChange(`${url}?t=${Date.now()}`) // 破缓存：同名文件重传后强制刷新
       setImageSrc(null)
       toast.success('头像已更新')
@@ -96,9 +100,9 @@ const AvatarField: FC<AvatarFieldProps> = ({ value, agentId, onChange, disabled 
     } finally {
       setUploading(false)
     }
-  }, [imageSrc, croppedAreaPixels, agentId, onChange])
+  }, [imageSrc, croppedAreaPixels, entityId, onChange, doUpload])
 
-  const canUpload = !!agentId && !disabled
+  const canUpload = !!entityId && !disabled
 
   return (
     <div className="flex items-center gap-3">
@@ -111,7 +115,7 @@ const AvatarField: FC<AvatarFieldProps> = ({ value, agentId, onChange, disabled 
           disabled={!canUpload || uploading}
           onClick={() => inputRef.current?.click()}
           className="px-2.5 py-1.5 rounded-md border border-[#27272a] bg-[#121214] text-xs text-[#a1a1aa] hover:text-white hover:border-[#3f3f46] transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
-          title={canUpload ? '上传图片' : '请先保存 Agent 后再上传头像'}
+          title={canUpload ? '上传图片' : '请先保存后再上传头像'}
         >
           {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
           上传图片
