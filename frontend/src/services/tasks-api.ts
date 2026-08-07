@@ -112,6 +112,8 @@ export interface Checkpoint {
     node_id?: string
     title?: string
     description?: string
+    /** 审批视图配置（原样透传，前端结合 variables 解析变量引用） */
+    view?: { sections?: unknown[] }
     options?: string[]
     timeout_ms?: number
     timeout_action?: string

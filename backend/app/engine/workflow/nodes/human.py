@@ -25,6 +25,14 @@ class HumanNodeExecutor(BaseNodeExecutor):
         {
             "title": "审批质检报告",
             "description": "请审核以下质检数据...",
+            "view": {                       # optional: 审批视图，声明给审批人看的内容
+                "sections": [
+                    {"type": "fields", "title": "关键指标", "items": [{"label": "合格率", "source": "{{agent_check.pass_rate}}"}]},
+                    {"type": "document", "title": "检测报告", "source": "{{agent_check.report}}"},
+                    {"type": "files", "title": "附件", "source": "{{agent_check.files}}"},
+                    {"type": "table", "title": "缺陷清单", "source": "{{agent_check.defects}}", "columns": ["项目", "等级"]}
+                ]
+            },
             "options": ["approve", "reject"],
             "timeout_ms": 300000,        # 5 minutes
             "timeout_action": "auto_skip", # auto_approve | auto_reject | auto_skip | fail
@@ -60,6 +68,11 @@ class HumanNodeExecutor(BaseNodeExecutor):
             timeout_ms=timeout_ms,
         )
 
+        # 审批视图配置（原样透传，由前端结合 task.variables 解析变量引用）。
+        # view 形如 {"sections": [{"type": "fields|document|files|table", ...}]}，
+        # 不配置时为 None，前端回退到纯 title+description 展示（向后兼容）。
+        view = self.node_config.get("view")
+
         # Return result indicating the task needs human intervention.
         # The WorkflowEngine will detect the waiting_human status and
         # pause execution until an intervention is received.
@@ -69,6 +82,7 @@ class HumanNodeExecutor(BaseNodeExecutor):
                 "status": "waiting_human",
                 "title": title,
                 "description": description,
+                "view": view,
                 "options": options,
                 "timeout_ms": timeout_ms,
                 "timeout_action": timeout_action,

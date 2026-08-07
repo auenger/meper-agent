@@ -41,6 +41,8 @@ import {
 import { TASK_STATUS_STYLES } from '../constants/task-status'
 import { TaskBoardColumn } from '../components/task-board-column'
 import { TaskOutputFiles } from '../components/task-result-card'
+import { ApprovalView } from '../components/approval-view/ApprovalView'
+import type { ApprovalViewConfig } from '../components/approval-view/types'
 import AgentTimeline from '../components/agent-timeline'
 import { parseBackendDate } from '../lib/format'
 import { WorkflowTriggerAPI } from '../services/workflow-trigger-api'
@@ -1053,16 +1055,26 @@ export default function TasksPage() {
                   审批信息
                 </h4>
                 <div className="space-y-2.5">
-                  {taskDetail.checkpoint.human_context?.title && (
-                    <InfoRow label="审批标题" value={taskDetail.checkpoint.human_context.title} />
-                  )}
-                  {taskDetail.checkpoint.human_context?.description && (
-                    <div>
-                      <div className="text-xs text-[#64748B] mb-1">审批描述</div>
-                      <div className="text-xs text-[#0F172A] bg-[#F8FAFC] rounded-lg p-3">
-                        {taskDetail.checkpoint.human_context.description}
-                      </div>
-                    </div>
+                  {taskDetail.checkpoint.human_context?.view?.sections?.length ? (
+                    <ApprovalView
+                      view={taskDetail.checkpoint.human_context.view as ApprovalViewConfig}
+                      variables={taskDetail.variables ?? {}}
+                      taskId={taskDetail.id}
+                    />
+                  ) : (
+                    <>
+                      {taskDetail.checkpoint.human_context?.title && (
+                        <InfoRow label="审批标题" value={taskDetail.checkpoint.human_context.title} />
+                      )}
+                      {taskDetail.checkpoint.human_context?.description && (
+                        <div>
+                          <div className="text-xs text-[#64748B] mb-1">审批描述</div>
+                          <div className="text-xs text-[#0F172A] bg-[#F8FAFC] rounded-lg p-3">
+                            {taskDetail.checkpoint.human_context.description}
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                   {taskDetail.checkpoint.timeout_deadline && (
                     <InfoRow

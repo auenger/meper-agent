@@ -51,7 +51,6 @@ class WorkflowEngine:
         self._out_edges: dict[str, list[dict[str, Any]]] = {}  # source -> edges
         self._in_edges: dict[str, list[dict[str, Any]]] = {}  # target -> edges
         self._completed_nodes: set[str] = set()
-        self._branch_scope: dict[str, dict[str, Any]] = {}  # branch_id -> isolated variables
         # 节点边界取消时记录当前将要执行（但尚未执行）的节点，供 except 保存 checkpoint
         self._pending_node_id: str = ""
 
@@ -809,6 +808,7 @@ class WorkflowEngine:
                         "node_id": node_id,
                         "title": result.output.get("title", ""),
                         "description": result.output.get("description", ""),
+                        "view": result.output.get("view"),
                         "options": result.output.get("options", []),
                         "timeout_ms": timeout_ms,
                         "timeout_action": timeout_action,
@@ -871,14 +871,17 @@ class WorkflowEngine:
 
                 coros = [self._execute_node(sn) for sn in start_nodes.values() if sn]
 
-                if join_strategy == "any":
+                # race 是 any 的别名（取最快结果 = 任一完成即可）
+                effective_strategy = "any" if join_strategy == "race" else join_strategy
+
+                if effective_strategy == "any":
                     # any: wait for first completion, cancel the rest
                     tasks = [asyncio.ensure_future(c) for c in coros]
                     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
                     for t in pending:
                         t.cancel()
                     list(done)  # consume results
-                elif join_strategy == "n-of-m" and join_count and join_count > 0:
+                elif effective_strategy == "n-of-m" and join_count and join_count > 0:
                     # n-of-m: wait until join_count branches complete
                     tasks = [asyncio.ensure_future(c) for c in coros]
                     done_tasks: set[asyncio.Task] = set()

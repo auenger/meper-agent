@@ -9,32 +9,41 @@ interface Props {
 }
 
 export default function ParallelNodeConfig({ config, onChange }: Props) {
+  const joinStrategy = (config.join_strategy as string) ?? 'all'
   return (
     <div className="space-y-3">
       <div>
         <label className="block text-xs text-slate-400 mb-1">合并策略</label>
         <Select
           className="w-full"
-          value={(config.join_strategy as string) ?? 'all'}
+          value={joinStrategy}
           onChange={(val) => onChange({ ...config, join_strategy: val ?? 'all' })}
           options={[
             { value: 'all', label: '等待所有分支完成' },
-            { value: 'any', label: '任一分支完成即可' },
-            { value: 'race', label: '竞速模式（取最快结果）' },
+            { value: 'any', label: '任一分支完成即可（竞速）' },
+            { value: 'n-of-m', label: 'N 个分支完成即可' },
           ]}
         />
       </div>
+      {joinStrategy === 'n-of-m' && (
+        <div>
+          <label className="block text-xs text-slate-400 mb-1">完成数量 N</label>
+          <Input
+            type="number"
+            value={String((config.join_count as number) ?? 1)}
+            onChange={(e) => onChange({ ...config, join_count: parseInt(e.target.value) || 1 })}
+          />
+        </div>
+      )}
       <div>
         <label className="block text-xs text-slate-400 mb-1">变量作用域</label>
         <Select
           className="w-full"
           value={(config.scope as string) ?? 'shared'}
           onChange={(val) => onChange({ ...config, scope: val ?? 'shared' })}
-          options={[
-            { value: 'shared', label: '共享作用域' },
-            { value: 'isolated', label: '隔离作用域' },
-          ]}
+          options={[{ value: 'shared', label: '共享作用域（所有分支共享变量池）' }]}
         />
+        <div className="text-[10px] text-[#71717a] mt-1">隔离作用域暂未实现，所有分支共享同一变量池</div>
       </div>
       <div>
         <label className="block text-xs text-slate-400 mb-1">分支配置 (JSON)</label>
@@ -46,7 +55,7 @@ export default function ParallelNodeConfig({ config, onChange }: Props) {
           }}
           rows={4}
           className="font-mono text-xs"
-          placeholder='[{"name": "branch_1", "nodes": []}]'
+          placeholder='[{"id": "branch_1", "start_node": "node_a"}]'
         />
       </div>
     </div>

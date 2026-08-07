@@ -365,9 +365,6 @@ class AgentNodeExecutor(BaseNodeExecutor):
         # ── Story 4-15: Set up task workspace context for Agent tools ──
         # Without this, builtin tools like write_to_output / read / write
         # / bash have no workspace to write to and fall back to PROJECT_ROOT.
-        from app.engine.agent.builtin_tools import (
-            reset_workspace_context,
-        )
         from app.engine.tool.workspace import WorkspaceManager
 
         task_workspace = WorkspaceManager.create_task_workspace(
@@ -375,7 +372,6 @@ class AgentNodeExecutor(BaseNodeExecutor):
         )
         # harness 路径:workspace 注入由 invoke 内部的 resolve_harness_context
         # 接管(传入 task_workspace),无需手动 set_workspace_context。
-        workspace_token = None
         node_start_ts = _time.time()
         logger.info(
             "agent_node_workspace_set",
@@ -506,10 +502,9 @@ class AgentNodeExecutor(BaseNodeExecutor):
                     logger.info("agent_retry", node_id=self.node_id, attempt=attempt + 1, max_retry=max_retry)
                     await asyncio.sleep(retry_delay_ms / 1000)
         finally:
-            # Always reset the contextvar so other coroutines in the same
-            # event loop don't accidentally inherit this task's workspace.
-            if workspace_token is not None:
-                reset_workspace_context(workspace_token)
+            # workspace context 注入已由 harness 的 resolve_harness_context 接管，
+            # 无需在此 reset（原 reset_workspace_context 调用已移除）。
+            pass
 
         return NodeResult(
             success=False,
@@ -1080,16 +1075,26 @@ class SubflowNodeExecutor(BaseNodeExecutor):
                     error_message=f"Workflow {workflow_id} 不存在",
                 )
 
-            # Build child task document (in-memory)
+            # Build child task document.
+            # Inherit task_id / user_id / call_chain from the parent's system
+            # variables (Story 4-15: system vars live under variables['system']).
+            sys_vars = variables.get("system", {}) or {}
+            parent_task_id = sys_vars.get("task_id", "")
+            parent_call_chain = sys_vars.get("call_chain", []) or []
             child_task = Task(
                 workflow_id=workflow_id,
                 input=resolved_input,
-                created_by="system",
+                created_by=sys_vars.get("user_id", "system"),
                 created_by_type="system",
-                parent_task_id=variables.get("_task_id"),
-                call_chain=variables.get("call_chain", []) + [self.node_id],
+                parent_task_id=parent_task_id,
+                call_chain=parent_call_chain + [self.node_id],
             )
             child_doc = child_task.model_dump(by_alias=True)
+
+            # Persist the child task so it is visible in the task list, can be
+            # queried/cancelled, and so execute_task's internal transition_task
+            # calls (which update DB by task_id) have a document to update.
+            await db["tasks"].insert_one(child_doc)
 
             # Execute child workflow with timeout
             timeout_ms = self.node_config.get("timeout_ms", 600000)
@@ -1100,6 +1105,21 @@ class SubflowNodeExecutor(BaseNodeExecutor):
                     timeout=timeout_ms / 1000,
                 )
             except TimeoutError:
+                # Mark the persisted child task as failed on timeout
+                from app.models.task import TaskError, TaskStatus
+
+                await db["tasks"].update_one(
+                    {"_id": child_doc["_id"]},
+                    {
+                        "$set": {
+                            "status": TaskStatus.FAILED.value,
+                            "error": TaskError(
+                                error_message=f"Subflow 执行超时 ({timeout_ms}ms)",
+                                error_code="SUBFLOW_TIMEOUT",
+                            ).model_dump(),
+                        },
+                    },
+                )
                 return NodeResult(
                     success=False,
                     output={},

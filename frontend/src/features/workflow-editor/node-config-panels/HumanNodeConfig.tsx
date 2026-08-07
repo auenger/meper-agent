@@ -15,7 +15,9 @@
  */
 import { Input, Select, Tag } from 'antd'
 import VariableSelector from '../VariableSelector'
+import ApprovalViewEditor from './ApprovalViewEditor'
 import type { WorkflowNode } from '../../../services/workflows-api'
+import type { ViewSection } from '../../../components/approval-view/types'
 
 interface Props {
   config: Record<string, unknown>
@@ -58,6 +60,24 @@ export default function HumanNodeConfig({ config, onChange, currentNodeId, allNo
           allNodes={allNodes}
           rows={3}
           placeholder="描述需要人工审批的内容，可插入上游节点变量，如：请审核 {{node_id.field}}"
+        />
+      </div>
+
+      {/* ── 审批视图（给审批人看什么内容、怎么展示） ── */}
+      <div>
+        <label className="block text-xs text-[#64748B] mb-1">审批视图</label>
+        <div className="text-[10px] text-[#94A3B8] mb-1.5">
+          配置审批人看到的材料（字段卡片、文档预览、文件、表格）。不配置则仅展示标题和描述。
+        </div>
+        <ApprovalViewEditor
+          sections={
+            Array.isArray((config?.view as { sections?: ViewSection[] })?.sections)
+              ? (config!.view as { sections: ViewSection[] }).sections
+              : []
+          }
+          onChange={(sections) => onChange({ ...(config ?? {}), view: { sections } })}
+          currentNodeId={currentNodeId}
+          allNodes={allNodes}
         />
       </div>
 

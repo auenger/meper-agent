@@ -438,10 +438,34 @@ class WorkflowService:
 
 
 def _extract_input_schema(nodes: list[dict]) -> dict:
-    """Extract input schema from all start nodes in the workflow."""
+    """Extract input schema from the start node's output_variables.
+
+    The start node config stores variable definitions in ``output_variables``
+    (each item: ``{name, type, constraints: {required, default_value}}``),
+    which is what ``StartNodeExecutor`` reads at runtime. We build a JSON-schema-
+    like dict from these so the workflow registry knows what inputs the workflow
+    expects. Falls back to legacy ``config.input_schema`` if present.
+    """
     for node in nodes:
-        if isinstance(node, dict) and node.get("type") == "start":
-            return node.get("config", {}).get("input_schema", {})
+        if not (isinstance(node, dict) and node.get("type") == "start"):
+            continue
+        config = node.get("config", {})
+        output_vars = config.get("output_variables", [])
+        if output_vars:
+            properties: dict[str, dict] = {}
+            required: list[str] = []
+            for var in output_vars:
+                if not isinstance(var, dict):
+                    continue
+                name = var.get("name")
+                if not name:
+                    continue
+                properties[name] = {"type": var.get("type", "text")}
+                if var.get("constraints", {}).get("required"):
+                    required.append(name)
+            return {"type": "object", "properties": properties, "required": required}
+        # Legacy fallback: older configs may store a raw input_schema dict.
+        return config.get("input_schema", {})
     return {}
 
 
