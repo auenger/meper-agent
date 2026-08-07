@@ -5,9 +5,9 @@
  * Backend contract reference: backend/app/schemas/*.py
  * Studio view model: src/types.ts
  *
- * NOTE (gap): backend Tools have no store metadata (rating / category /
- * isAdded / isPaid / includedSkills / datasets). Those fields stay
- * client-side (local state in SkillsStore) and are documented as gaps in
+ * NOTE (gap): backend Tools have no store metadata (rating / isAdded /
+ * isPaid / includedSkills / datasets). Those fields stay client-side
+ * (local state in SkillsStore) and are documented as gaps in
  * features/active-feat-studio-core-crud/spec.md.
  */
 import type { Agent as BackendAgent } from './agent-api'
@@ -150,43 +150,22 @@ export function fromStudioAgent(a: Agent): {
 
 /* ──────────────────────── Skill (Tool) ──────────────────────── */
 
-const SKILL_CATEGORY_FALLBACK: Skill['category'] = 'others'
-
 /**
  * Backend Tool (source=markdown/mcp/builtin) → studio Skill view model.
- * Store-only metadata (rating/category/isAdded/isPaid/includedSkills/
- * datasets) is seeded with neutral defaults and managed client-side — see
- * spec gap note.
+ * Store-only metadata (rating/isAdded/isPaid/includedSkills/datasets) is
+ * seeded with neutral defaults and managed client-side — see spec gap note.
  */
 export function toStudioSkill(t: Tool): Skill {
   return {
     id: t.id,
     name: t.name,
     description: t.description ?? t.instructions ?? '',
-    // backend has no category; bucket by source, fallback to 'others'
-    category: sourceToCategory(t.source),
     tags: t.tags?.length ? t.tags : sourceToTags(t.source),
+    avatar: t.avatar ?? '',
     author: t.source === 'mcp' ? `mcp:${t.mcp_connection_id ?? ''}` : (t.source ?? 'system'),
-    icon: t.source === 'mcp' ? '🔌' : t.source === 'builtin' ? '⚙️' : '📘',
-    iconColor: t.source === 'mcp'
-      ? 'from-amber-600 to-indigo-600'
-      : 'from-indigo-600 to-purple-600',
     rating: 0,
     usersCount: 0,
     isAdded: true, // a persisted Tool is by definition "added"
-  }
-}
-
-function sourceToCategory(source: string): Skill['category'] {
-  switch (source) {
-    case 'mcp':
-      return 'tech'
-    case 'builtin':
-      return 'common'
-    case 'markdown':
-      return 'tech'
-    default:
-      return SKILL_CATEGORY_FALLBACK
   }
 }
 
@@ -207,11 +186,9 @@ export function mcpConnectionToSkill(c: McpConnection): Skill {
     id: c.id,
     name: c.name,
     description: c.description ?? c.status_message ?? '',
-    category: 'tech',
     tags: ['MCP 拓展', '开发工具'],
+    avatar: '',
     author: c.url,
-    icon: '🔌',
-    iconColor: 'from-amber-600 to-indigo-600',
     rating: 0,
     usersCount: c.tool_count ?? 0,
     isAdded: c.status === 'connected',

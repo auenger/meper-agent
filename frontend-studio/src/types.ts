@@ -35,11 +35,9 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
-  category: 'all' | 'media' | 'finance' | 'legal' | 'tech' | 'edu' | 'health' | 'life' | 'common' | 'others';
   tags: string[];
+  avatar: string;
   author: string;
-  icon: string;
-  iconColor: string;
   rating: number;
   usersCount: number;
   isAdded: boolean;

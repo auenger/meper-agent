@@ -1,24 +1,26 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react';
 import { getErrorMessage } from '../lib/api-client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Search, Compass, FolderUp } from 'lucide-react';
+import { Search, Compass, FolderUp, Trash2 } from 'lucide-react';
 import { toolsApi, toolKeys } from '../services/tools-api';
 import { toStudioSkill } from '../services/adapters';
+import { confirmDialog } from './ui/confirm';
+import { toast } from './ui/toast';
+import AvatarRender from './AvatarRender';
 import type { Skill } from '../types';
 
 /**
  * Studio Skill store — backed by real Tools + MCP connections.
  *
  * GAP (documented in features/active-feat-studio-core-crud/spec.md):
- * the backend Tools have no store metadata (rating / category / isAdded /
- * isPaid / includedSkills / datasets). Those fields are kept as a
- * client-side local map keyed by tool id so the existing store UI keeps
- * working; they never round-trip to the backend.
+ * the backend Tools have no store metadata (rating / isAdded / isPaid /
+ * includedSkills / datasets). Those fields are kept as a client-side local
+ * map keyed by tool id so the existing store UI keeps working; they never
+ * round-trip to the backend.
  */
 
 interface ClientMeta {
   rating: number;
-  category: Skill['category'];
   isAdded: boolean;
   isPaid?: boolean;
   includedSkills?: string[];
@@ -27,7 +29,6 @@ interface ClientMeta {
 
 export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => void } = {}) {
   const queryClient = useQueryClient();
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -77,20 +78,33 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
 
   const handleToggleAdded = (id: string, current: boolean) => setMeta(id, { isAdded: !current });
 
-  const categories = [
-    { id: 'all', label: '全部' },
-    { id: 'media', label: '自媒体' },
-    { id: 'finance', label: '金融' },
-    { id: 'legal', label: '法律' },
-    { id: 'tech', label: '互联网' },
-    { id: 'common', label: '通用工具' },
-  ];
+  const deleteM = useMutation({
+    mutationFn: (id: string) => toolsApi.remove(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: toolKeys.all });
+      toast.success('Skill 已删除');
+    },
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
+  });
+
+  const handleDelete = async (id: string, name: string) => {
+    const ok = await confirmDialog({
+      title: `删除 Skill「${name}」？`,
+      description: '该 Skill 的文件将被清除。若被 Agent 引用将拒绝删除。',
+      okText: '删除',
+      danger: true,
+    });
+    if (ok) deleteM.mutate(id);
+  };
 
   const filteredSkills = skills.filter((skill) => {
-    const matchesCategory = selectedCategory === 'all' || skill.category === selectedCategory;
-    const matchesSearch = skill.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          skill.description.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesCategory && matchesSearch;
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      skill.name.toLowerCase().includes(q) ||
+      skill.description.toLowerCase().includes(q) ||
+      skill.tags.join(' ').toLowerCase().includes(q)
+    );
   });
 
   const packages = filteredSkills.filter((s) => s.tags.includes('技能包'));
@@ -136,24 +150,6 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
       )}
 
       <div className="space-y-8">
-        <div className="space-y-4">
-          <div className="flex items-center gap-2 border-b border-[#27272a] pb-3 flex-wrap">
-              {categories.map((cat) => (
-                <button
-                  key={cat.id}
-                  onClick={() => setSelectedCategory(cat.id)}
-                  className={`px-3 py-1 text-xs rounded-lg transition font-medium cursor-pointer ${
-                    selectedCategory === cat.id
-                      ? 'bg-indigo-600 text-white shadow-sm font-bold'
-                      : 'text-[#a1a1aa] hover:text-[#fafafa]'
-                  }`}
-                >
-                  {cat.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {isLoading ? (
             <p className="text-xs text-[#71717a]">加载中…</p>
           ) : filteredSkills.length === 0 ? (
@@ -174,8 +170,8 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
                         <div className="space-y-4">
                           <div className="flex items-start justify-between">
                             <div className="flex items-center gap-3.5">
-                              <div className={`w-14 h-14 rounded-xl bg-gradient-to-tr ${skill.iconColor} flex items-center justify-center text-3xl shadow-md shrink-0`}>
-                                {skill.icon}
+                              <div className="w-14 h-14 rounded-xl bg-[#121214] border border-[#27272a] overflow-hidden flex items-center justify-center shrink-0">
+                                <AvatarRender value={skill.avatar} className="w-full h-full" />
                               </div>
                               <div className="space-y-1">
                                 <h4 className="text-normal font-bold text-[#fafafa] tracking-snug font-sans truncate">{skill.name}</h4>
@@ -204,14 +200,23 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
                             {skill.description}
                           </p>
 
-                          {onOpenSkill && (
+                          <div className="flex items-center justify-between pt-1">
+                            {onOpenSkill && (
+                              <button
+                                onClick={() => onOpenSkill(skill)}
+                                className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
+                              >
+                                查看详情 / 编辑文件 →
+                              </button>
+                            )}
                             <button
-                              onClick={() => onOpenSkill(skill)}
-                              className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
+                              onClick={() => handleDelete(skill.id, skill.name)}
+                              title="删除"
+                              className={`flex items-center gap-1 text-[11px] text-[#71717a] hover:text-rose-400 transition cursor-pointer ${onOpenSkill ? '' : 'ml-auto'}`}
                             >
-                              查看详情 / 编辑文件 →
+                              <Trash2 className="w-3 h-3" /> 删除
                             </button>
-                          )}
+                          </div>
                         </div>
                       </div>
                     ))}
@@ -225,8 +230,30 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {datasets.map((skill) => (
                       <div key={skill.id} className="bg-[#18181b] border border-[#27272a] rounded-xl p-5">
-                        <h4 className="text-normal font-bold text-[#fafafa] truncate">{skill.name}</h4>
+                        <div className="flex items-center gap-2">
+                          <div className="w-8 h-8 rounded-lg bg-[#121214] border border-[#27272a] overflow-hidden flex items-center justify-center shrink-0">
+                            <AvatarRender value={skill.avatar} className="w-full h-full" />
+                          </div>
+                          <h4 className="text-normal font-bold text-[#fafafa] truncate">{skill.name}</h4>
+                        </div>
                         <p className="text-xs text-[#a1a1aa] line-clamp-2 mt-2">{skill.description}</p>
+                        <div className="flex items-center justify-between mt-3">
+                          {onOpenSkill && (
+                            <button
+                              onClick={() => onOpenSkill(skill)}
+                              className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
+                            >
+                              查看详情 →
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleDelete(skill.id, skill.name)}
+                            title="删除"
+                            className={`flex items-center gap-1 text-[11px] text-[#71717a] hover:text-rose-400 transition cursor-pointer ${onOpenSkill ? '' : 'ml-auto'}`}
+                          >
+                            <Trash2 className="w-3 h-3" /> 删除
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -240,7 +267,12 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
                   {filteredSkills.map((skill) => (
                     <div key={skill.id} className="bg-[#18181b] border border-[#27272a] rounded-xl p-4">
                       <div className="flex items-center justify-between">
-                        <h4 className="text-xs font-bold text-[#fafafa] truncate">{skill.icon} {skill.name}</h4>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <div className="w-7 h-7 rounded-lg bg-[#121214] border border-[#27272a] overflow-hidden flex items-center justify-center shrink-0">
+                            <AvatarRender value={skill.avatar} className="w-full h-full" />
+                          </div>
+                          <h4 className="text-xs font-bold text-[#fafafa] truncate">{skill.name}</h4>
+                        </div>
                         <button
                           onClick={() => handleToggleAdded(skill.id, skill.isAdded)}
                           className={`text-[10px] font-semibold cursor-pointer ${skill.isAdded ? 'text-emerald-400' : 'text-indigo-400'}`}
@@ -249,13 +281,30 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
                         </button>
                       </div>
                       <p className="text-[11px] text-[#a1a1aa] mt-2 line-clamp-2">{skill.description}</p>
+                      <div className="flex items-center justify-between mt-3">
+                        {onOpenSkill && (
+                          <button
+                            onClick={() => onOpenSkill(skill)}
+                            className="text-[11px] text-indigo-400 hover:text-indigo-300 font-semibold cursor-pointer"
+                          >
+                            查看详情 →
+                          </button>
+                        )}
+                        <button
+                          onClick={() => handleDelete(skill.id, skill.name)}
+                          title="删除"
+                          className={`flex items-center gap-1 text-[11px] text-[#71717a] hover:text-rose-400 transition cursor-pointer ${onOpenSkill ? '' : 'ml-auto'}`}
+                        >
+                          <Trash2 className="w-3 h-3" /> 删除
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               )}
             </>
           )}
-        </div>
+      </div>
     </div>
   );
 }
