@@ -5,30 +5,39 @@ import {
 } from 'lucide-react';
 import { userApi } from '../services/user-api';
 import { roleApi } from '../services/role-api';
-import {
-  toStudioUser,
-  permissionsToCoarse,
-  defaultCoarseForRole,
-  type CoarsePermKey,
-} from '../services/adapters';
+import { toStudioUser } from '../services/adapters';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
-import type { NormalizedApiError } from '../lib/api-client';
+import { toast } from './ui/toast';
+import { PermissionTree } from './ui/PermissionTree';
+import { getErrorMessage, type NormalizedApiError } from '../lib/api-client';
 import type { User } from '../types';
 import type { Role } from '../services/types';
 
-const TOGGLE_PERMS: { key: CoarsePermKey; label: string; color: string }[] = [
-  { key: 'agent:write', label: 'Agent管理', color: 'border-indigo-500/30 text-indigo-400' },
-  { key: 'workflow:write', label: '设计工作流', color: 'border-purple-500/30 text-purple-400' },
-  { key: 'apikey:manage', label: '管理秘钥', color: 'border-rose-500/30 text-rose-400' },
+/** 首字母圆牌配色（纯色 hex + 白字，亮/暗双主题下都清晰）。按用户名 hash 确定性取色。 */
+const MONOGRAM_COLORS = [
+  '#4f46e5', '#059669', '#d97706', '#e11d48',
+  '#0891b2', '#7c3aed', '#db2777', '#2563eb',
 ];
+
+function hashIndex(s: string, mod: number): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % mod;
+}
+
+/** 取用户名首字母（1-2 个 token 的首字母），大写。 */
+function initialsOf(name: string): string {
+  const parts = name.trim().split(/[\s_.-]+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
 
 export function UserManagement() {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedUserForRole, setSelectedUserForRole] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
 
   // New user form state
   const [isAdding, setIsAdding] = useState(false);
@@ -83,10 +92,9 @@ export function UserManagement() {
       userApi.create(input).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
-      setError(null);
     },
-    onError: (e: unknown) =>
-      setError(e instanceof Error ? e.message : '创建用户失败'),
+    // 错误由 handleCreateUser 的 try/catch 捕获并写入 createFormError（弹窗内
+    // 字段级展示），故此处不重复 toast。
   });
 
   const updateM = useMutation({
@@ -94,15 +102,14 @@ export function UserManagement() {
       userApi.update(id, body).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
-      setError(null);
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '更新用户失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '更新用户失败')),
   });
 
   const deleteM = useMutation({
     mutationFn: (id: string) => userApi.delete(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const createRoleM = useMutation({
@@ -110,20 +117,18 @@ export function UserManagement() {
       roleApi.create(input).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
-      setNotice('角色已创建');
-      setError(null);
+      toast.success('角色已创建');
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '创建角色失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '创建角色失败')),
   });
 
   const deleteRoleM = useMutation({
     mutationFn: (id: string) => roleApi.delete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
-      setNotice('角色已删除');
-      setError(null);
+      toast.success('角色已删除');
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '删除角色失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除角色失败')),
   });
 
   const handleDeleteRole = async (role: Role) => {
@@ -162,22 +167,6 @@ export function UserManagement() {
       const normalized = err as NormalizedApiError;
       setCreateFormError(normalized);
     }
-  };
-
-  const handleTogglePermission = (userId: string, permKey: CoarsePermKey) => {
-    const backendUser = usersData?.items.find((u) => u.id === userId);
-    if (!backendUser) return;
-    const coarse = permissionsToCoarse(backendUser.permissions);
-    const next = { ...coarse, [permKey]: !coarse[permKey] };
-    // Expanding a bucket grants its fine keys; but the backend PATCH on /users
-    // only accepts role/status. Permission changes must be applied to the user's
-    // role — so we re-resolve: if the toggled state differs from the role
-    // default, we surface a notice. For a clean MVP we update via role change
-    // (see handleChangeRole) and treat per-bucket toggles as advisory.
-    if (next[permKey] !== defaultCoarseForRole(backendUser.role || 'viewer')[permKey]) {
-      setNotice('提示：后端用户权限由角色继承。如需更改权限位，请新建/编辑角色并分配。');
-    }
-    void userId;
   };
 
   const handleChangeRole = (userId: string, roleKey: string) => {
@@ -243,13 +232,6 @@ export function UserManagement() {
         </div>
       </div>
 
-      {error && (
-        <div className="px-3 py-2 rounded-lg bg-rose-950/30 border border-rose-700/40 text-rose-300 text-xs">{error}</div>
-      )}
-      {notice && (
-        <div className="px-3 py-2 rounded-lg bg-amber-950/30 border border-amber-700/40 text-amber-300 text-xs">{notice}</div>
-      )}
-
       {/* RENDER MEMBERS TABLE */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 p-5 bg-[#18181b] border border-[#27272a] rounded-xl space-y-4 shadow-lg">
@@ -264,26 +246,28 @@ export function UserManagement() {
                 <tr className="border-b border-[#27272a] text-[#71717a] font-semibold">
                   <th className="py-2.5 px-3">基本信息</th>
                   <th className="py-2.5 px-3">系统角色</th>
-                  <th className="py-2.5 px-3">原子权限状态</th>
                   <th className="py-2.5 px-3">账号状态</th>
                   <th className="py-2.5 px-3 text-right">操作</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#27272a]/60">
                 {isLoading ? (
-                  <tr><td colSpan={5} className="py-4 px-3 text-[#71717a]">加载中…</td></tr>
+                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a]">加载中…</td></tr>
                 ) : filteredUsers.map((user) => {
-                  const backendUser = usersData?.items.find((u) => u.id === user.id);
-                  const coarse = backendUser ? permissionsToCoarse(backendUser.permissions) : user.permissions;
                   return (
                     <tr key={user.id} className="hover:bg-[#121214]/60 transition-colors">
-                      <td className="py-3.5 px-3 flex items-center gap-3">
-                        <div className="w-9 h-9 rounded-xl bg-[#121214] border border-[#27272a] text-lg flex items-center justify-center">
-                          {user.avatar}
-                        </div>
-                        <div className="min-w-0">
-                          <span className="font-semibold text-white truncate block font-sans">{user.name}</span>
-                          <span className="text-[10px] text-slate-500 font-mono block">{user.email}</span>
+                      <td className="py-3.5 px-3">
+                        <div className="flex items-center gap-3">
+                          <div
+                            className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold uppercase shrink-0 text-white"
+                            style={{ backgroundColor: MONOGRAM_COLORS[hashIndex(user.name, MONOGRAM_COLORS.length)] }}
+                          >
+                            {initialsOf(user.name)}
+                          </div>
+                          <div className="min-w-0">
+                            <span className="font-semibold text-white truncate block font-sans">{user.name}</span>
+                            <span className="text-[10px] text-slate-500 font-mono block">{user.email}</span>
+                          </div>
                         </div>
                       </td>
 
@@ -312,28 +296,6 @@ export function UserManagement() {
                             {roleDisplayName(user.role)} ✎
                           </span>
                         )}
-                      </td>
-
-                      <td className="py-3.5 px-3 space-y-1">
-                        <div className="flex gap-2 flex-wrap">
-                          {TOGGLE_PERMS.map((perm) => {
-                            const hasIt = coarse[perm.key];
-                            return (
-                              <button
-                                key={perm.key}
-                                onClick={() => handleTogglePermission(user.id, perm.key)}
-                                title="权限由角色继承，详见角色管理"
-                                className={`px-1.5 py-0.5 rounded border text-[9px] font-sans font-semibold transition cursor-pointer ${
-                                  hasIt
-                                    ? `bg-[#121214] ${perm.color}`
-                                    : 'border-[#27272a] bg-[#121214] text-[#71717a] line-through'
-                                }`}
-                              >
-                                {perm.label}
-                              </button>
-                            );
-                          })}
-                        </div>
                       </td>
 
                       <td className="py-3.5 px-3">
@@ -540,23 +502,8 @@ export function UserManagement() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-slate-400 font-medium font-sans">权限点 ({allPerms.length})</label>
-                <div className="max-h-48 overflow-y-auto p-2 bg-[#121214] border border-[#27272a] rounded-lg grid grid-cols-2 gap-1">
-                  {allPerms.map((p) => (
-                    <label key={p} className="flex items-center gap-1.5 text-[11px] text-slate-300 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rolePerms.has(p)}
-                        onChange={() => setRolePerms((prev) => {
-                          const next = new Set(prev);
-                          next.has(p) ? next.delete(p) : next.add(p);
-                          return next;
-                        })}
-                      />
-                      <span className="font-mono">{p}</span>
-                    </label>
-                  ))}
-                </div>
+                <label className="text-slate-400 font-medium font-sans">权限点 ({rolePerms.size}/{allPerms.length})</label>
+                <PermissionTree selected={rolePerms} onChange={setRolePerms} />
               </div>
 
               <div className="p-4 border-t border-[#27272a] bg-[#121214] flex justify-end gap-3 pt-4">

@@ -7,6 +7,7 @@
  * existed but was previously uncalled). Mirrors the AgentSpace card layout.
  */
 import { useState, useMemo, type FC } from 'react';
+import { getErrorMessage } from '../lib/api-client';
 import {
   Layers, Search, Plus, Pencil, Trash2, Loader2, X,
 } from 'lucide-react';
@@ -84,7 +85,7 @@ export function WorkflowSpace({
       setError(null);
       onOpen(wf.id); // jump straight into the editor for the new workflow
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '创建失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '创建失败')),
   });
 
   const deleteM = useMutation({
@@ -94,7 +95,7 @@ export function WorkflowSpace({
       setConfirmDelete(null);
       setError(null);
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '删除失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '删除失败')),
   });
 
   return (

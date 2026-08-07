@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type ChangeEvent } from 'react';
+import { getErrorMessage } from '../lib/api-client';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Search, Compass, FolderUp } from 'lucide-react';
 import { toolsApi, toolKeys } from '../services/tools-api';
@@ -65,7 +66,7 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
       setNotice(`已上传 ${res.created.length} 个 Skill${res.errors.length ? `（${res.errors.length} 项跳过/失败）` : ''}`);
       setError(null);
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '上传失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '上传失败')),
   });
 
   const handleUpload = (e: ChangeEvent<HTMLInputElement>) => {

@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo, type FC, type ReactNode } from 'react';
 import {
   ArrowLeft, Bot, Save, Loader2, Rocket, Archive, RefreshCw, Cpu, Wrench,
-  ChevronDown, ChevronRight, AlertTriangle, Sparkles, Plus, Trash2,
+  ChevronDown, ChevronRight, Sparkles, Plus, Trash2,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys, type AgentUpdateInput } from '../services/agent-api';
@@ -21,6 +21,7 @@ import { mcpApi, mcpKeys } from '../services/mcp-api';
 import { workflowsApi, workflowKeys } from '../services/workflows-api';
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api';
 import { toStudioAgent, fromStudioAgent } from '../services/adapters';
+import { getErrorMessage } from '../lib/api-client';
 import { Select, type SelectOptionGroup } from './ui';
 import { toast } from './ui/toast';
 import type { Agent } from '../types';
@@ -41,7 +42,6 @@ export function AgentEditorPage({
 }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<Agent | null>(null);
-  const [error, setError] = useState<string | null>(null);
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: agentKeys.detail(agentId),
@@ -106,34 +106,32 @@ export function AgentEditorPage({
     mutationFn: (input: AgentUpdateInput) => agentApi.update(agentId, input),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: agentKeys.all });
-      setError(null);
       refetch();
       // 统一 Toast 反馈（替代旧的 savedMsg 临时横幅），然后交回父级跳转。
       toast.success('配置已保存');
       if (onSaved) onSaved(agentId);
     },
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '保存失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '保存失败')),
   });
 
   const publishM = useMutation({
     mutationFn: () => agentApi.publish(agentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '发布失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '发布失败')),
   });
 
   const archiveM = useMutation({
     mutationFn: () => agentApi.archive(agentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => setError(e instanceof Error ? e.message : '归档失败'),
+    onError: (e: unknown) => toast.error(getErrorMessage(e, '归档失败')),
   });
 
   const handleSave = () => {
     if (!form) return;
     if (!form.rolePrompt?.trim() || !form.taskPrompt?.trim()) {
-      setError('「角色定义」和「任务描述」为必填项（对话执行校验）');
+      toast.error('「角色定义」和「任务描述」为必填项（对话执行校验）');
       return;
     }
-    setError(null);
     updateM.mutate(fromStudioAgent(form));
   };
 
@@ -187,13 +185,6 @@ export function AgentEditorPage({
           )}
         </div>
       </div>
-
-      {error && (
-        <div className="flex items-start gap-2 p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 text-rose-300 text-xs">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          <span>{error}</span>
-        </div>
-      )}
 
       {/* ── Section: 基本信息 ── */}
       <Section title="基本信息" icon={<Bot className="w-3.5 h-3.5" />} defaultOpen>

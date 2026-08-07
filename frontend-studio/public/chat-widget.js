@@ -2,7 +2,7 @@
  * AgentFlowChat embed loader —— 把 frontend-client 以 iframe 形态嵌入第三方站点。
  * 纯原生 JS（不进 React 构建、不引框架），放 public/ 由静态服务原样托管。
  *
- * 形态：右下角浮动启动器（AFLogo.png）→ 点击从右侧滑出 drawer（iframe 加载 frontend-client）。
+ * 形态：右下角浮动启动器（client.png）→ 点击从右侧滑出 drawer（iframe 加载 frontend-client）。
  *
  * 鉴权（运行时注入，client 自身不内置 key）：握手时 client 发 agentflow:request_config，
  * 本脚本回 agentflow:config{apiKey, userToken?} 把以下凭据注入 iframe。
@@ -87,9 +87,9 @@
 
   function resolveLogoUrl() {
     try {
-      return new URL('/AFLogo.png', resolveOrigin()).href;
+      return new URL('/client.png', resolveOrigin()).href;
     } catch (e) {
-      return '/AFLogo.png';
+      return '/client.png';
     }
   }
 

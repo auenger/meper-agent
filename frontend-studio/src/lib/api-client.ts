@@ -244,4 +244,25 @@ function normalizeError(
   return source as { code: string; message: string }
 }
 
+/**
+ * Extract a human-readable message from any thrown value.
+ *
+ * The response interceptor rejects with `NormalizedApiError` objects — plain
+ * objects, NOT Error instances — so a naive `e instanceof Error ? e.message :
+ * '...'` is ALWAYS false and silently swallows the backend's message (field
+ * validation issues, envelope messages, etc.). This helper reads `.message`
+ * off any object so callers surface the real server error instead of a generic
+ * fallback. Used by mutation `onError` handlers passed to toast.error().
+ */
+export function getErrorMessage(e: unknown, fallback = '请求失败'): string {
+  if (!e) return fallback
+  if (typeof e === 'string') return e
+  if (typeof e === 'object' && 'message' in e) {
+    const msg = (e as { message?: unknown }).message
+    if (typeof msg === 'string' && msg.trim()) return msg
+  }
+  if (e instanceof Error && e.message) return e.message
+  return fallback
+}
+
 export { apiClient }
