@@ -3,7 +3,7 @@ import {
   Bot, BookOpen, LayoutDashboard, Layers, Key, Server,
   Sun, Moon, MessageSquare, ListTodo, Sparkles, Shield,
   Wrench, Plug, UserCog, LogOut, ChevronDown,
-  PanelLeftClose, PanelLeftOpen, Clock,
+  PanelLeftClose, PanelLeftOpen, Clock, Mic, SlidersHorizontal,
 } from 'lucide-react';
 import { useAuthStore, REFRESH_TOKEN_KEY } from './stores/auth-store';
 import { useQuery, useQueries } from '@tanstack/react-query';
@@ -18,6 +18,8 @@ import { Toaster } from './components/ui/toast';
 import { Tooltip } from './components/ui';
 import { ConfirmHost } from './components/ui/confirm';
 import { ChatHomepage } from './components/ChatHomepage';
+import { VoiceHomepage } from './components/voice/VoiceHomepage';
+import { VoiceConfigPage } from './components/voice/VoiceConfigPage';
 import { TaskBoard } from './components/TaskBoard';
 import { TaskDetailDrawer } from './components/task/TaskDetailDrawer';
 import { Dashboard } from './components/Dashboard';
@@ -61,6 +63,8 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { id: 'chat', label: '会话记录', icon: MessageSquare, badge: 'HP' },
+  { id: 'voice', label: '语音对话', icon: Mic },
+  { id: 'voice-settings', label: '语音设置', icon: SlidersHorizontal, permission: 'settings:manage' },
   // 任务协作看板 badge 由下方 activeTaskCount 实时注入（执行中 + 等待人工）。
   { id: 'board', label: '任务协作看板', icon: ListTodo },
   { id: 'dashboard', label: '仪表盘', icon: LayoutDashboard, permission: 'execution:read:own' },
@@ -459,11 +463,20 @@ export default function App() {
 
         <div id="content_stage" className={`flex-1 ${
           activeTab === 'chat' ? 'h-full flex flex-col p-0 overflow-hidden' :
+          activeTab === 'voice' ? 'h-full flex flex-col p-0 overflow-hidden' :
           activeTab === 'board' ? 'h-full flex flex-col p-6 overflow-hidden' :
           'overflow-y-auto p-6'
         }`}>
           {activeTab === 'chat' && (
             <ChatHomepage agents={studioAgents} theme={theme} />
+          )}
+
+          {activeTab === 'voice' && (
+            <VoiceHomepage agents={studioAgents} theme={theme} />
+          )}
+
+          {activeTab === 'voice-settings' && (
+            <VoiceConfigPage theme={theme} />
           )}
 
           {activeTab === 'board' && (
