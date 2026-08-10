@@ -12,31 +12,25 @@
  * 三栏编辑器由 features/workflow-editor 提供（@xyflow/react 画布）。
  * 无 props — 自管理状态，与 App 的 mock workflows 解耦。
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Play, Save, Upload, Loader2, X, Clock, Pencil, ChevronsLeft, ChevronsRight } from 'lucide-react'
+import { Play, Save, Upload, Loader2, X, Pencil, ChevronsLeft, ChevronsRight } from 'lucide-react'
 import {
   workflowsApi,
   workflowKeys,
   type WorkflowDetail,
   type WorkflowSummary,
 } from '../services/workflows-api'
-import {
-  tasksApi,
-  type TaskDetail,
-  type TimelineEvent,
-  type TaskStatusValue,
-} from '../services/tasks-api'
 import type { WorkflowNode } from '../services/types'
+import { useWorkflowExecution } from '../hooks/useWorkflowExecution'
 import WorkflowNodePalette from '../features/workflow-editor/WorkflowNodePalette'
 import WorkflowCanvas from '../features/workflow-editor/WorkflowCanvas'
 import WorkflowNodeConfigPanel from '../features/workflow-editor/WorkflowNodeConfigPanel'
 import ExecuteInputDialog from '../features/workflow-editor/ExecuteInputDialog'
+import { TaskTraceModal } from '../features/workflow-editor/TaskTraceModal'
 import { validateWorkflow } from '../features/workflow-editor/utils/workflow-validator'
-import type { VariableDefinition } from '../features/workflow-editor/utils/variable-types'
 import { Button, Tag, Input } from './ui'
 import { toast } from './ui/toast'
-import { getErrorMessage } from '../lib/api-client';
 
 /* ─── helpers ─── */
 
@@ -49,112 +43,6 @@ const STATUS_LABEL: Record<string, { text: string; color: string }> = {
   draft: { text: '草稿', color: '#64748B' },
   published: { text: '已发布', color: '#10B981' },
   archived: { text: '已归档', color: '#94A3B8' },
-}
-
-const TASK_STATUS_META: Record<string, { text: string; color: string }> = {
-  pending: { text: '排队中', color: '#64748B' },
-  running: { text: '运行中', color: '#3B82F6' },
-  waiting_human: { text: '等待人工', color: '#F97316' },
-  completed: { text: '已完成', color: '#10B981' },
-  failed: { text: '失败', color: '#EF4444' },
-  cancelled: { text: '已取消', color: '#94A3B8' },
-}
-
-/** 终态任务状态（轮询在这些状态停止） */
-const TERMINAL_TASK_STATUSES: TaskStatusValue[] = ['completed', 'failed', 'cancelled']
-
-function formatTime(ts: string): string {
-  if (!ts) return ''
-  try {
-    return new Date(ts).toLocaleString('zh-CN', { hour12: false })
-  } catch {
-    return ts
-  }
-}
-
-/* ─── Timeline 追踪弹窗 ─── */
-
-function TaskTraceModal({ task, onClose }: { task: TaskDetail | null; onClose: () => void }) {
-  if (!task) return null
-  const meta = TASK_STATUS_META[task.status] ?? { text: task.status, color: '#64748B' }
-  const timeline: TimelineEvent[] = task.timeline ?? []
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="bg-[#18181b] rounded-xl shadow-2xl w-[640px] max-h-[80vh] flex flex-col border border-[#27272a]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-3.5 border-b border-[#27272a]">
-          <div className="flex items-center gap-2">
-            <Clock size={14} className="text-[#1E5EFF]" />
-            <span className="text-sm font-medium text-[#fafafa]">执行追踪</span>
-            <Tag color={meta.color}>{meta.text}</Tag>
-          </div>
-          <X size={16} className="text-[#71717a] cursor-pointer hover:text-[#fafafa]" onClick={onClose} />
-        </div>
-
-        <div className="px-5 py-3 border-b border-[#27272a] grid grid-cols-3 gap-3 text-[11px]">
-          <div>
-            <div className="text-[#71717a]">任务 ID</div>
-            <div className="text-[#fafafa] font-mono truncate">{task.id}</div>
-          </div>
-          <div>
-            <div className="text-[#71717a]">版本</div>
-            <div className="text-[#fafafa] font-mono">{task.workflow_version}</div>
-          </div>
-          <div>
-            <div className="text-[#71717a]">创建时间</div>
-            <div className="text-[#fafafa]">{formatTime(task.created_at)}</div>
-          </div>
-        </div>
-
-        {task.error && (
-          <div className="mx-5 mt-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-[11px]">
-            <div className="text-red-400 font-medium mb-1">执行失败：{task.error.error_code}</div>
-            <div className="text-red-400 font-mono break-all">{task.error.error_message}</div>
-            {task.error.node_id && <div className="text-red-400/70 mt-1">失败节点：{task.error.node_id}</div>}
-          </div>
-        )}
-
-        <div className="flex-1 overflow-y-auto px-5 py-4">
-          {timeline.length === 0 ? (
-            <p className="text-xs text-[#71717a] text-center py-6">暂无执行事件</p>
-          ) : (
-            <div className="space-y-2">
-              {timeline.map((evt, idx) => (
-                <div key={idx} className="flex gap-3 text-[11px] leading-relaxed">
-                  <span className="text-[#71717a] font-mono shrink-0 w-32">
-                    {formatTime(evt.timestamp)}
-                  </span>
-                  <span
-                    className={`shrink-0 w-2 h-2 rounded-full mt-1.5 ${
-                      evt.event_type === 'node_failed' || evt.event_type === 'error'
-                        ? 'bg-red-500'
-                        : evt.event_type === 'node_complete' || evt.event_type === 'workflow_completed'
-                          ? 'bg-green-500'
-                          : evt.event_type === 'node_start'
-                            ? 'bg-blue-500'
-                            : 'bg-[#52525b]'
-                    }`}
-                  />
-                  <div className="flex-1 min-w-0">
-                    <span className="text-[#1E5EFF] font-mono">{evt.event_type}</span>
-                    {evt.actor && <span className="text-[#71717a]"> · {evt.actor}</span>}
-                    {evt.data && Object.keys(evt.data).length > 0 && (
-                      <pre className="text-[10px] text-slate-400 mt-0.5 whitespace-pre-wrap break-all font-mono">
-                        {JSON.stringify(evt.data)}
-                      </pre>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
 }
 
 /* ─── Main Component ─── */
@@ -191,14 +79,8 @@ export function WorkflowDesigner({
   const [paletteCollapsed, setPaletteCollapsed] = useState(true)
   const [dirtySinceLoad, setDirtySinceLoad] = useState(false)
 
-  // 执行任务追踪弹窗 + 轮询
-  const [trackingTask, setTrackingTask] = useState<TaskDetail | null>(null)
-  const [traceOpen, setTraceOpen] = useState(false)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // 执行参数输入弹窗（开始节点声明了 output_variables 时先收集输入）
-  const [execInputOpen, setExecInputOpen] = useState(false)
-  const [execInputVariables, setExecInputVariables] = useState<VariableDefinition[]>([])
+  // 工作流执行（建任务 + 轮询 + 追踪弹窗 + 输入参数弹窗）—— 详情页与卡片列表页共用
+  const exec = useWorkflowExecution()
 
   /* ─── 工作流列表 ─── */
   const { data: listData, isLoading: listLoading } = useQuery({
@@ -345,100 +227,14 @@ export function WorkflowDesigner({
     })
   }, [createMutation])
 
-  /* ─── 执行：POST /tasks + 轮询 GET /tasks/{id} ─── */
-  // 清理轮询定时器
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
-
-  const [executing, setExecuting] = useState(false)
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
-    }
-  }, [])
-
-  const pollTask = useCallback(
-    (taskId: string) => {
-      stopPolling()
-      pollRef.current = setInterval(async () => {
-        try {
-          const detail = await tasksApi.get(taskId)
-          setTrackingTask(detail)
-          if (TERMINAL_TASK_STATUSES.includes(detail.status)) {
-            stopPolling()
-            setExecuting(false)
-          }
-        } catch (err) {
-          stopPolling()
-          setExecuting(false)
-          toast.error(getErrorMessage(err, '轮询任务失败'), { duration: 0 })
-        }
-      }, 2000)
-    },
-    [stopPolling],
-  )
-
-  /** 真正发起执行：创建任务 + 轮询 + 打开追踪弹窗 */
-  const runWorkflow = useCallback(
-    async (input: Record<string, unknown>) => {
-      if (!selectedWorkflowId) return
-      setExecuting(true)
-      setTraceOpen(true)
-      try {
-        const task = await tasksApi.create({
-          workflow_id: selectedWorkflowId,
-          input,
-        })
-        setTrackingTask(task)
-        pollTask(task.id)
-      } catch (err) {
-        setExecuting(false)
-        toast.error(getErrorMessage(err, '创建执行任务失败'), { duration: 0 })
-      }
-    },
-    [selectedWorkflowId, pollTask],
-  )
-
-  const handleExecute = useCallback(async () => {
-    if (!selectedWorkflowId || !workflowDetail) return
-    if (workflowDetail.status !== 'published') {
-      toast.error('只有已发布的工作流才能执行，请先发布', { duration: 0 })
-      return
-    }
-
-    // 开始节点是否声明了输入变量 —— 有则先弹窗收集，无则直接执行
-    const startNode = nodes.find((n) => n.type === 'start')
-    const outputVars = (startNode?.config?.output_variables as VariableDefinition[] | undefined) ?? []
-    const hasInput = Array.isArray(outputVars) && outputVars.length > 0
-    if (hasInput) {
-      setExecInputVariables(outputVars)
-      setExecInputOpen(true)
-      return
-    }
-    runWorkflow({})
-  }, [selectedWorkflowId, workflowDetail, nodes, runWorkflow])
-
-  /** 执行参数弹窗提交 */
-  const handleExecInputSubmit = useCallback(
-    (values: Record<string, unknown>) => {
-      setExecInputOpen(false)
-      runWorkflow(values)
-    },
-    [runWorkflow],
-  )
-
-  const closeTrace = useCallback(() => {
-    setTraceOpen(false)
-    stopPolling()
-  }, [stopPolling])
+  /* ─── 执行：委托 useWorkflowExecution（建任务 + 轮询 + 追踪弹窗）─── */
+  const handleExecute = useCallback(() => {
+    if (!selectedWorkflowId) return
+    exec.execute(selectedWorkflowId, workflowDetail ?? undefined)
+  }, [selectedWorkflowId, workflowDetail, exec])
 
   const currentStatus = workflowDetail?.status
-  const canExecute = currentStatus === 'published' && !executing
+  const canExecute = currentStatus === 'published' && !exec.executing
 
   /* ─── render ─── */
   return (
@@ -522,8 +318,8 @@ export function WorkflowDesigner({
                 <Button size="small" type="primary" icon={<Upload size={13} />} onClick={handlePublish} loading={publishMutation.isPending} disabled={hasUnsavedChanges || !isDraftOrPublished(currentStatus ?? '')}>
                   发布
                 </Button>
-                <Button size="small" type="primary" icon={executing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} onClick={handleExecute} disabled={!canExecute}>
-                  {executing ? '执行中' : '执行'}
+                <Button size="small" type="primary" icon={exec.executing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} onClick={handleExecute} disabled={!canExecute}>
+                  {exec.executing ? '执行中' : '执行'}
                 </Button>
               </div>
               <WorkflowCanvas
@@ -551,16 +347,16 @@ export function WorkflowDesigner({
       )}
 
       {/* 执行追踪弹窗 */}
-      {traceOpen && (
-        <TaskTraceModal task={trackingTask} onClose={closeTrace} />
+      {exec.traceOpen && (
+        <TaskTraceModal task={exec.trackingTask} onClose={exec.closeTrace} />
       )}
 
       {/* 执行参数输入弹窗 */}
       <ExecuteInputDialog
-        open={execInputOpen}
-        variables={execInputVariables}
-        onCancel={() => setExecInputOpen(false)}
-        onSubmit={handleExecInputSubmit}
+        open={exec.execInputOpen}
+        variables={exec.execInputVariables}
+        onCancel={exec.cancelInput}
+        onSubmit={exec.submitInput}
       />
     </div>
   )
