@@ -58,6 +58,7 @@ class TestUpdateAgent:
         doc = await AgentService.update_agent(
             agent_id="agent_01HTEST",
             name="Updated Name",
+            voice_enabled=True,
         )
 
         assert doc is not None
@@ -66,6 +67,7 @@ class TestUpdateAgent:
         args, _kwargs = mock_col.update_one.call_args
         assert "$inc" not in args[1]
         assert "$set" in args[1]
+        assert args[1]["$set"]["voice_enabled"] is True
 
     @pytest.mark.asyncio
     async def test_update_published_agent_raises_conflict(self, mock_database):

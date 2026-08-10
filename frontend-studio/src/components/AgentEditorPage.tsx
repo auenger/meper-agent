@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo, type FC, type ReactNode } from 'react';
 import {
   ArrowLeft, Bot, Save, Loader2, Rocket, Archive, RefreshCw, Cpu, Wrench,
-  ChevronDown, ChevronRight, Sparkles, Plus, Trash2,
+  ChevronDown, ChevronRight, Sparkles, Plus, Trash2, Mic,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys, type AgentUpdateInput } from '../services/agent-api';
@@ -197,6 +197,37 @@ export function AgentEditorPage({
         <Field label="职责描述">
           <input className={inputCls} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="这个 Agent 专门解决什么问题…" />
         </Field>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={form.voiceEnabled}
+          onClick={() => set({ voiceEnabled: !form.voiceEnabled })}
+          className="flex min-h-11 w-full items-center justify-between gap-4 rounded-lg border border-[#27272a] bg-[#121214] px-3 py-2 text-left transition-colors duration-200 hover:border-[#3f3f46] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
+        >
+          <span className="flex min-w-0 items-center gap-2.5">
+            <Mic className={`h-4 w-4 shrink-0 ${form.voiceEnabled ? 'text-sky-400' : 'text-[#71717a]'}`} />
+            <span>
+              <span className="block text-xs font-semibold text-[#f4f4f5]">允许语音对话</span>
+              <span className="mt-0.5 block text-[11px] leading-relaxed text-[#71717a]">
+                还需配置全局火山语音凭证，两个条件满足后才显示麦克风入口。
+              </span>
+            </span>
+          </span>
+          <span
+            className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors duration-200 ${
+              form.voiceEnabled
+                ? 'border-sky-400 bg-sky-500'
+                : 'border-[#52525b] bg-[#27272a]'
+            }`}
+            aria-hidden="true"
+          >
+            <span
+              className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                form.voiceEnabled ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </span>
+        </button>
       </Section>
 
       {/* ── Section: Prompt 配置 ── */}

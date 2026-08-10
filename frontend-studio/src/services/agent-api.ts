@@ -31,6 +31,8 @@ export interface Agent {
   workflow_ids: string[]
   knowledge_base_ids: string[]
   default_model: string
+  /** Whether this Agent can be used by the realtime voice entry. */
+  voice_enabled: boolean
   max_retry: number
   /** Session token budget (0 = use global DEFAULT_SESSION_MAX_TOKENS). */
   max_tokens: number
@@ -66,6 +68,8 @@ export interface AgentUpdateInput {
   workflow_ids?: string[]
   knowledge_base_ids?: string[]
   default_model?: string
+  /** Enable realtime voice conversations for this Agent. */
+  voice_enabled?: boolean
   max_retry?: number
   /** Session token budget (0 = use global default). */
   max_tokens?: number

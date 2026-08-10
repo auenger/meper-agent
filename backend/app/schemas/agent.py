@@ -162,6 +162,10 @@ class AgentUpdate(BaseModel):
         default="",
         description="绑定的 Model ID（model_xxx ULID 或纯模型名）",
     )
+    voice_enabled: bool = Field(
+        default=False,
+        description="是否允许通过实时语音入口与该 Agent 对话",
+    )
     max_retry: int = Field(
         default=3,
         ge=0,
@@ -217,6 +221,7 @@ class AgentResponse(BaseModel):
     )
     knowledge_base_ids: list[str]
     default_model: str = Field(default="", description="Model reference ID")
+    voice_enabled: bool = Field(default=False, description="Realtime voice capability switch")
     max_retry: int = Field(default=3, description="Max LLM call retries")
     max_tokens: int = Field(default=0, description="Session token budget (0 = global default)")
     status: AgentStatus

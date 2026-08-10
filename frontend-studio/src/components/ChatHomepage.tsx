@@ -3,7 +3,7 @@ import { Agent, Message, type ChatAttachment, type TimelineEntry } from '../type
 import {
   Send, Plus, ChevronDown, Sparkles, Trash2, FileCode, CheckCircle,
   Bot, Terminal, Loader2, Paperclip, Brain, X,
-  Wrench, AlertTriangle, ChevronRight, User, Download, FileText, Image as ImageIcon,
+  Wrench, AlertTriangle, ChevronRight, User, Download, FileText, Image as ImageIcon, Mic,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -22,6 +22,8 @@ import { FilePreviewModal } from './FilePreviewModal';
 import { WorkflowTaskCard, parseTaskCreated } from './WorkflowTaskCard';
 import WorkflowProposalCard from './workflow-proposal-card';
 import { ClarificationFormCard, type ClarificationField } from './clarification-form-card';
+import { ChatVoiceComposer } from './voice/ChatVoiceComposer';
+import { voiceConfigApi, voiceConfigKeys } from '../services/voice-config-api';
 
 interface ChatHomepageProps {
   /** Studio agents already adapted to the view model; if absent we fetch. */
@@ -462,6 +464,14 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   );
   const modelLabel = (id?: string) => (id ? (modelNameById.get(id) ?? id) : 'Auto');
 
+  const { data: voiceStatus } = useQuery({
+    queryKey: voiceConfigKeys.status,
+    queryFn: voiceConfigApi.status,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const voiceConfigured = voiceStatus?.configured === true;
+
   // ── Sessions list ──
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
     queryKey: sessionKeys.lists(),
@@ -474,6 +484,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const [showDropdown, setShowDropdown] = useState(false);
   const [showAgentSelectModal, setShowAgentSelectModal] = useState(false);
   const [inputText, setInputText] = useState('');
+  const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
   const [isStreaming, setIsStreaming] = useState(false);
   // Live messages for the active session (history + in-flight stream deltas).
   const [liveMessages, setLiveMessages] = useState<Message[]>([]);
@@ -493,6 +504,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const filesPanelRef = useRef<SessionFilesPanelHandle>(null);
+  const voiceAgentMsgIdRef = useRef<string | null>(null);
   // ask_clarification / confirm_workflow 中断态：SSE 收到 interrupt 或历史回填时
   // 记录对应的消息 id，使下一次发送走 /resume 而非 /stream（避免 agent 重复提问）。
   const pendingInterruptRef = useRef<{ toolMsgId: string } | null>(null);
@@ -558,6 +570,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const activeSession = sessions.find((s) => s._id === activeSessionId) ?? null;
   const activeAgent =
     agents.find((a) => a.id === activeSession?.agent_id) ?? agents[0] ?? null;
+  const voiceAvailable = voiceConfigured && activeAgent?.voiceEnabled === true;
+
+  useEffect(() => {
+    if (inputMode === 'voice' && !voiceAvailable) setInputMode('text');
+  }, [inputMode, voiceAvailable]);
 
   // Auto-select first session once loaded.
   useEffect(() => {
@@ -628,7 +645,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
     qc.invalidateQueries({ queryKey: sessionKeys.lists() });
   }, [qc]);
 
-  const handleSelectSession = (id: string) => setActiveSessionId(id);
+  const handleSelectSession = (id: string) => {
+    setInputMode('text');
+    setActiveSessionId(id);
+  };
 
   const handleDeleteSession = async (e: MouseEvent, id: string) => {
     e.stopPropagation();
@@ -638,6 +658,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
       // 置空进入空状态引导。不依赖自动选中 effect——它可能从尚未刷新的
       // 列表缓存里挑回刚删的那个会话，触发 getDetail 404 报错。
       if (activeSessionId === id) {
+        setInputMode('text');
         const idx = sessions.findIndex((s) => s._id === id);
         const remaining = sessions.filter((s) => s._id !== id);
         const next = remaining[idx] ?? remaining[idx - 1] ?? null;
@@ -654,6 +675,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
       // Pass empty title — backend sets it from the first user message
       // (truncated to 30 chars + ellipsis). See session_service.add_message.
       const sess = await sessionApi.create(agent.id, '');
+      setInputMode('text');
       setShowAgentSelectModal(false);
       setShowDropdown(false);
       refreshSessions();
@@ -1116,6 +1138,104 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
     setIsStreaming(false);
   };
 
+  const handleVoiceTranscriptFinal = (text: string) => {
+    const transcript = text.trim();
+    if (!transcript) return;
+    setLiveMessages((prev) => [
+      ...prev,
+      {
+        id: `msg_voice_user_${Date.now()}`,
+        senderName: '我',
+        avatar: '',
+        role: 'user',
+        content: transcript,
+        timestamp: '刚刚',
+      },
+    ]);
+  };
+
+  const handleVoiceTurnStarted = (message: { request_id?: string }) => {
+    const agent = activeAgent;
+    if (!agent) return;
+    const agentMsgId = `msg_voice_agent_${message.request_id || Date.now()}`;
+    voiceAgentMsgIdRef.current = agentMsgId;
+    textEntryIdRef.current = null;
+    textStartedRef.current = false;
+    deltaBufferRef.current = null;
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    setLiveMessages((prev) => [
+      ...prev,
+      {
+        id: agentMsgId,
+        senderName: agent.name,
+        avatar: agent.avatar,
+        role: 'agent',
+        agentId: agent.id,
+        content: '',
+        timestamp: '刚刚',
+        status: 'thinking',
+        timeline: [],
+      },
+    ]);
+  };
+
+  const handleVoiceAgentDelta = (delta: string) => {
+    const agentMsgId = voiceAgentMsgIdRef.current;
+    if (agentMsgId && delta) appendDelta(agentMsgId, delta);
+  };
+
+  const handleVoiceTurnEnd = (message: { session_id?: string }) => {
+    if (rafIdRef.current) {
+      cancelAnimationFrame(rafIdRef.current);
+      rafIdRef.current = null;
+    }
+    if (deltaBufferRef.current) flushDelta();
+
+    const agentMsgId = voiceAgentMsgIdRef.current;
+    if (agentMsgId) {
+      setLiveMessages((prev) =>
+        prev.map((item) =>
+          item.id === agentMsgId ? { ...item, status: undefined } : item,
+        ),
+      );
+    }
+    voiceAgentMsgIdRef.current = null;
+    refreshSessions();
+    filesPanelRef.current?.refresh();
+
+    // Voice persistence is complete before turn.end. Reload the same session so
+    // Markdown, tools, attachments and clarification cards use the established
+    // chat renderer instead of a separate voice-only transcript view.
+    const sessionId = message.session_id || activeSessionId;
+    if (!sessionId || sessionId !== activeSessionId) return;
+    void sessionApi.getDetail(sessionId).then((detail) => {
+      const mapped: Message[] = [];
+      for (const record of detail.messages) {
+        if (record.role === 'user') mapped.push(userMessageToDisplay(record));
+        else {
+          const agent = agentsRef.current.find((item) => item.id === detail.session.agent_id);
+          mapped.push(
+            agentMessageToDisplay(record, agent?.name ?? 'Agent', agent?.avatar ?? ''),
+          );
+        }
+      }
+      setLiveMessages(mapped);
+      const pending = [...mapped].reverse().find((item) => item.isInterrupted);
+      pendingInterruptRef.current = pending ? { toolMsgId: pending.id } : null;
+    }).catch((error: Error) => {
+      setStreamError(`刷新语音对话失败：${error.message}`);
+    });
+  };
+
+  const handleVoiceInterruptRequest = (question: string) => {
+    // The voice protocol carries clarification separately from text deltas;
+    // append it optimistically, then turn.end history refresh restores the card.
+    handleVoiceAgentDelta(question);
+  };
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 bg-[#121214] border-0 overflow-hidden relative w-full h-full min-h-0 flex-1">
       {/* 1. SIDEBAR: Conversations List */}
@@ -1443,6 +1563,20 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         {/* Input box (chat tab only) */}
         {rightTab === 'chat' && (
         <div className="p-4 border-t border-[#27272a]">
+          {inputMode === 'voice' && voiceAvailable ? (
+            <ChatVoiceComposer
+              agentId={activeAgent?.id}
+              sessionId={activeSessionId ?? undefined}
+              theme={theme}
+              onExit={() => setInputMode('text')}
+              onTranscriptFinal={handleVoiceTranscriptFinal}
+              onTurnStarted={handleVoiceTurnStarted}
+              onAgentDelta={handleVoiceAgentDelta}
+              onTurnEnd={handleVoiceTurnEnd}
+              onInterruptRequest={handleVoiceInterruptRequest}
+              onError={setStreamError}
+            />
+          ) : (
           <form onSubmit={handleSendMessage} className="relative bg-[#18181b] border border-[#27272a] rounded-xl p-3 flex flex-col justify-between">
             {pendingFiles.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1517,6 +1651,18 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                 </span>
               </div>
               <div className="flex items-center gap-3">
+                {voiceAvailable && (
+                  <button
+                    type="button"
+                    onClick={() => setInputMode('voice')}
+                    disabled={!activeSession || isStreaming || uploading}
+                    className="w-7 h-7 rounded-full flex items-center justify-center text-[#a1a1aa] hover:bg-sky-500/10 hover:text-sky-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer transition-colors duration-200"
+                    title="切换到语音对话"
+                    aria-label="切换到语音对话"
+                  >
+                    <Mic className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 <div className="flex items-center gap-1 bg-[#121214] border border-[#27272a] rounded px-2 py-0.5 text-[10px] font-mono text-[#a1a1aa] select-none">
                   <span>{modelLabel(activeAgent?.model)}</span>
                 </div>
@@ -1545,6 +1691,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
               </div>
             </div>
           </form>
+          )}
         </div>
         )}
       </div>

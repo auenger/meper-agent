@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MEPER Agent 语音对话系统架构与双工技术设计说明">
+  <title>MEPER Agent 语音对话架构设计</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #eef2f7;
+      --surface-3: #e6ebf3;
+      --text: #172033;
+      --muted: #5d6980;
+      --faint: #8490a3;
+      --border: #d9e0ea;
+      --shadow: 0 18px 55px rgba(38, 51, 77, .09);
+      --blue: #2563eb;
+      --blue-soft: #e9f0ff;
+      --green: #059669;
+      --green-soft: #e7f8f1;
+      --violet: #7c3aed;
+      --violet-soft: #f1eafe;
+      --orange: #d75b13;
+      --orange-soft: #fff1e7;
+      --red: #dc2626;
+      --code: #eef2f7;
+      --grid: rgba(63, 84, 120, .07);
+    }
+
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg: #090b10;
+      --surface: #12151c;
+      --surface-2: #181d27;
+      --surface-3: #202735;
+      --text: #edf2fb;
+      --muted: #a5b0c2;
+      --faint: #738098;
+      --border: #293244;
+      --shadow: 0 22px 70px rgba(0, 0, 0, .32);
+      --blue: #6ea0ff;
+      --blue-soft: rgba(37, 99, 235, .16);
+      --green: #43d3a0;
+      --green-soft: rgba(5, 150, 105, .16);
+      --violet: #ad8aff;
+      --violet-soft: rgba(124, 58, 237, .17);
+      --orange: #ff9a5c;
+      --orange-soft: rgba(215, 91, 19, .17);
+      --red: #ff7777;
+      --code: #0b0e14;
+      --grid: rgba(140, 161, 199, .06);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 12% -10%, color-mix(in srgb, var(--blue) 13%, transparent), transparent 33rem),
+        radial-gradient(circle at 90% 2%, color-mix(in srgb, var(--violet) 10%, transparent), transparent 28rem),
+        linear-gradient(var(--grid) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid) 1px, transparent 1px),
+        var(--bg);
+      background-size: auto, auto, 28px 28px, 28px 28px, auto;
+      color: var(--text);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+      line-height: 1.65;
+      transition: background-color .2s ease, color .2s ease;
+    }
+
+    button, a { -webkit-tap-highlight-color: transparent; }
+    a { color: var(--blue); }
+    code {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--code);
+      padding: .12rem .38rem;
+      color: var(--text);
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: .88em;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+      background: color-mix(in srgb, var(--bg) 82%, transparent);
+      backdrop-filter: blur(18px);
+    }
+    .topbar-inner {
+      width: min(1180px, calc(100% - 32px));
+      min-height: 64px;
+      margin: auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+    .brand { display: flex; align-items: center; gap: 11px; font-weight: 750; letter-spacing: -.02em; }
+    .brand-mark {
+      width: 32px; height: 32px; border-radius: 10px;
+      display: grid; place-items: center;
+      background: linear-gradient(135deg, var(--blue), var(--violet));
+      color: white; box-shadow: 0 8px 25px color-mix(in srgb, var(--blue) 28%, transparent);
+      font: 800 12px/1 system-ui;
+    }
+    .theme-switch {
+      display: inline-flex; padding: 3px; gap: 2px;
+      border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2);
+    }
+    .theme-switch button {
+      min-height: 38px; min-width: 58px; border: 0; border-radius: 7px;
+      background: transparent; color: var(--muted); cursor: pointer;
+      font: 650 12px/1 system-ui; transition: .18s ease;
+    }
+    .theme-switch button[aria-pressed="true"] {
+      background: var(--surface); color: var(--text); box-shadow: 0 3px 10px rgba(0,0,0,.1);
+    }
+    .theme-switch button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+    main { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 72px 0 96px; }
+    .hero { padding: 12px 0 48px; }
+    .eyebrow { color: var(--blue); font: 750 12px/1.2 system-ui; letter-spacing: .13em; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: 16px 0 18px; font-size: clamp(34px, 5vw, 64px); line-height: 1.06; letter-spacing: -.045em; }
+    .lead { max-width: 850px; margin: 0; color: var(--muted); font-size: clamp(16px, 2vw, 20px); }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 26px; }
+    .chip { border: 1px solid var(--border); border-radius: 999px; background: var(--surface); padding: 7px 11px; color: var(--muted); font-size: 12px; }
+
+    section { scroll-margin-top: 88px; margin-top: 54px; }
+    .section-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 18px; }
+    h2 { margin: 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.18; letter-spacing: -.03em; }
+    .section-note { max-width: 600px; margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+    h3 { margin: 0 0 8px; font-size: 17px; letter-spacing: -.01em; }
+
+    .grid { display: grid; gap: 16px; }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      border: 1px solid var(--border); border-radius: 16px; background: var(--surface);
+      box-shadow: var(--shadow); padding: 22px;
+    }
+    .card p { margin: 0; color: var(--muted); font-size: 14px; }
+    .verdict {
+      position: relative; overflow: hidden; display: grid; grid-template-columns: 1.2fr .8fr; gap: 24px;
+      border: 1px solid color-mix(in srgb, var(--green) 40%, var(--border));
+      background: linear-gradient(135deg, var(--green-soft), var(--surface) 58%);
+    }
+    .verdict::after { content: "FULL DUPLEX"; position: absolute; right: -14px; bottom: -24px; color: color-mix(in srgb, var(--green) 9%, transparent); font: 900 64px/1 system-ui; white-space: nowrap; }
+    .verdict-label { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--green); font-size: 13px; font-weight: 750; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 5px color-mix(in srgb, currentColor 14%, transparent); }
+    .verdict strong { display: block; margin-bottom: 8px; font-size: 23px; line-height: 1.3; }
+    .verdict-side { position: relative; z-index: 1; display: grid; gap: 9px; align-content: center; }
+    .fact { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-radius: 9px; background: color-mix(in srgb, var(--surface) 75%, transparent); font-size: 12px; }
+    .fact span { color: var(--muted); }
+    .fact b { color: var(--text); }
+
+    .diagram-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); box-shadow: var(--shadow); padding: 18px; }
+    .diagram { display: block; min-width: 1040px; width: 100%; height: auto; }
+    .diagram text { font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; fill: var(--text); }
+    .diagram .muted { fill: var(--muted); }
+    .diagram .group { fill: color-mix(in srgb, var(--surface-2) 75%, transparent); stroke: var(--border); }
+    .diagram .node { fill: var(--surface); stroke: var(--border); }
+    .diagram .node-blue { fill: var(--blue-soft); stroke: color-mix(in srgb, var(--blue) 55%, var(--border)); }
+    .diagram .node-violet { fill: var(--violet-soft); stroke: color-mix(in srgb, var(--violet) 55%, var(--border)); }
+    .diagram .node-orange { fill: var(--orange-soft); stroke: color-mix(in srgb, var(--orange) 55%, var(--border)); }
+    .diagram .flow-up { stroke: var(--blue); }
+    .diagram .flow-down { stroke: var(--violet); }
+    .diagram .flow-control { stroke: var(--orange); }
+    .diagram .flow-data { stroke: var(--green); }
+    .diagram .arrow-blue { fill: var(--blue); }
+    .diagram .arrow-violet { fill: var(--violet); }
+    .diagram .arrow-orange { fill: var(--orange); }
+    .diagram .arrow-green { fill: var(--green); }
+
+    .duplex-table { width: 100%; border-collapse: separate; border-spacing: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .duplex-table th, .duplex-table td { padding: 14px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }
+    .duplex-table th { background: var(--surface-2); color: var(--muted); font-size: 11px; letter-spacing: .05em; text-transform: uppercase; }
+    .duplex-table tr:last-child td { border-bottom: 0; }
+    .status { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-weight: 750; }
+    .status.yes { color: var(--green); }
+    .status.partial { color: var(--orange); }
+
+    .sequence { overflow-x: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); }
+    .sequence-inner { min-width: 900px; padding: 20px; }
+    .actors { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px; }
+    .actor { border: 1px solid var(--border); border-radius: 9px; background: var(--surface-2); padding: 10px 8px; text-align: center; font-size: 12px; font-weight: 700; }
+    .seq-step { display: grid; grid-template-columns: 38px 150px 1fr 150px; gap: 10px; align-items: center; min-height: 58px; border-top: 1px dashed var(--border); }
+    .seq-step:first-of-type { border-top: 0; }
+    .seq-num { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 8px; background: var(--surface-3); color: var(--muted); font: 700 11px/1 system-ui; }
+    .seq-from, .seq-to { color: var(--muted); font-size: 12px; }
+    .seq-to { text-align: right; }
+    .message { position: relative; height: 2px; background: var(--blue); }
+    .message::after { content: ""; position: absolute; right: -1px; top: -4px; border-left: 8px solid var(--blue); border-top: 5px solid transparent; border-bottom: 5px solid transparent; }
+    .message span { position: absolute; left: 50%; bottom: 7px; transform: translateX(-50%); color: var(--text); font-size: 11px; font-weight: 650; white-space: nowrap; }
+    .message.return { background: var(--violet); transform: scaleX(-1); }
+    .message.return::after { border-left-color: var(--violet); }
+    .message.return span { transform: translateX(50%) scaleX(-1); }
+    .message.control { background: var(--orange); }
+    .message.control::after { border-left-color: var(--orange); }
+
+    .states { display: grid; grid-template-columns: repeat(4, 1fr); align-items: center; gap: 36px; padding: 28px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); }
+    .state { position: relative; border: 1px solid var(--border); border-radius: 14px; padding: 18px; text-align: center; background: var(--surface-2); }
+    .state:not(:last-child)::after { content: "→"; position: absolute; right: -27px; top: 50%; transform: translateY(-50%); color: var(--faint); font-size: 20px; }
+    .state b { display: block; font-size: 14px; }
+    .state small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; }
+    .state.listen { box-shadow: inset 0 3px 0 var(--blue); }
+    .state.think { box-shadow: inset 0 3px 0 var(--violet); }
+    .state.speak { box-shadow: inset 0 3px 0 var(--green); }
+    .interrupt-path { margin-top: 12px; padding: 11px 14px; border-left: 3px solid var(--orange); border-radius: 7px; background: var(--orange-soft); color: var(--muted); font-size: 13px; }
+
+    .metric { padding: 20px; border-top: 3px solid var(--blue); }
+    .metric:nth-child(2) { border-top-color: var(--green); }
+    .metric:nth-child(3) { border-top-color: var(--violet); }
+    .metric b { display: block; margin-bottom: 5px; font-size: 23px; letter-spacing: -.03em; }
+    .metric span { color: var(--muted); font-size: 12px; }
+    .list { margin: 0; padding-left: 20px; color: var(--muted); font-size: 14px; }
+    .list li + li { margin-top: 8px; }
+
+    .source-map { display: grid; grid-template-columns: 190px 1fr; gap: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); }
+    .source-map div { padding: 12px 15px; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .source-map div:nth-last-child(-n+2) { border-bottom: 0; }
+    .source-map .key { background: var(--surface-2); color: var(--muted); font-weight: 700; }
+    footer { margin-top: 70px; padding-top: 22px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
+
+    @media (max-width: 760px) {
+      main { padding-top: 48px; }
+      .grid-2, .grid-3, .verdict { grid-template-columns: 1fr; }
+      .states { grid-template-columns: 1fr; gap: 22px; }
+      .state:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -24px; transform: translateX(-50%); }
+      .section-head { display: block; }
+      .source-map { grid-template-columns: 1fr; }
+      .source-map .key { border-bottom: 0; padding-bottom: 4px; }
+      .source-map div:nth-last-child(-n+2) { border-bottom: 1px solid var(--border); }
+      .source-map div:last-child { border-bottom: 0; }
+      footer { display: block; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { transition-duration: .01ms !important; animation-duration: .01ms !important; }
+    }
+    @media print {
+      :root, html[data-theme="dark"] { color-scheme: light; --bg:#fff; --surface:#fff; --surface-2:#f4f6f8; --surface-3:#eef1f5; --text:#172033; --muted:#5d6980; --faint:#8490a3; --border:#d9e0ea; --shadow:none; --blue:#2563eb; --blue-soft:#e9f0ff; --green:#059669; --green-soft:#e7f8f1; --violet:#7c3aed; --violet-soft:#f1eafe; --orange:#d75b13; --orange-soft:#fff1e7; --code:#eef2f7; }
+      .topbar { position: static; } .theme-switch { display: none; } main { width: 100%; padding: 24px; } section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand"><span class="brand-mark">AF</span><span>Agent Flow · Voice Architecture</span></div>
+      <div class="theme-switch" role="group" aria-label="主题选择">
+        <button type="button" data-theme-value="light" aria-pressed="false">亮色</button>
+        <button type="button" data-theme-value="dark" aria-pressed="true">暗色</button>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div class="hero">
+      <div class="eyebrow">Architecture Note · 2026</div>
+      <h1>MEPER Agent<br>实时语音对话架构</h1>
+      <p class="lead">从浏览器 PCM 采集、火山 Seed ASR 2.0、Agent 流式执行，到 Seed TTS 2.0 播放与自然打断的一体化设计说明。</p>
+      <div class="chips">
+        <span class="chip">React 19 + Web Audio</span><span class="chip">FastAPI WebSocket</span>
+        <span class="chip">PCM16 · 16kHz / 24kHz</span><span class="chip">Seed ASR / TTS 2.0</span>
+        <span class="chip">Local VAD + Barge-in</span><span class="chip">LangGraph Agent Harness</span>
+      </div>
+    </div>
+
+    <section id="verdict">
+      <div class="section-head"><div><h2>是否借鉴了双工技术架构？</h2><p class="section-note">结论需要区分传输层、应用层与模型层，不能只看接口名称。</p></div></div>
+      <div class="card verdict">
+        <div>
+          <div class="verdict-label"><span class="dot"></span>明确结论</div>
+          <strong>是。当前实现属于“级联式应用层全双工语音架构”。</strong>
+          <p>浏览器到后端使用同一条 WebSocket 同时承载麦克风 PCM 上行、TTS PCM 下行和 JSON 控制事件；浏览器在播放 Agent 回复时仍持续采集语音，本地 VAD 检测到用户开口后会立即清空播放并取消当前 Agent/TTS 任务。</p>
+        </div>
+        <div class="verdict-side">
+          <div class="fact"><span>传输层</span><b>全双工 WebSocket</b></div>
+          <div class="fact"><span>交互层</span><b>可边听边说 / Barge-in</b></div>
+          <div class="fact"><span>模型层</span><b>ASR → Agent → TTS 级联</b></div>
+          <div class="fact"><span>不属于</span><b>端到端 Audio-to-Audio</b></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="architecture">
+      <div class="section-head"><div><h2>系统总览</h2><p class="section-note">三段实时连接由 VoiceSession 统一编排；主聊天与语音共用 Agent、session_id 和消息 timeline。</p></div></div>
+      <div class="diagram-wrap">
+        <svg class="diagram" viewBox="0 0 1120 610" role="img" aria-labelledby="arch-title arch-desc">
+          <title id="arch-title">MEPER Agent 语音对话系统架构图</title>
+          <desc id="arch-desc">浏览器经全双工 WebSocket 连接 FastAPI，后端分别连接火山 ASR 与 TTS，并调用 Agent Harness 和会话存储。</desc>
+          <defs>
+            <marker id="ib" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="arrow-blue" points="0 0,10 3.5,0 7"/></marker>
+            <marker id="iv" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="arrow-violet" points="0 0,10 3.5,0 7"/></marker>
+            <marker id="io" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="arrow-orange" points="0 0,10 3.5,0 7"/></marker>
+            <marker id="ig" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon class="arrow-green" points="0 0,10 3.5,0 7"/></marker>
+          </defs>
+          <rect class="group" x="20" y="44" width="250" height="500" rx="14" stroke-dasharray="7 5"/><text x="38" y="72" font-size="12" font-weight="750">BROWSER · REACT</text>
+          <rect class="group" x="310" y="44" width="490" height="500" rx="14" stroke-dasharray="7 5"/><text x="328" y="72" font-size="12" font-weight="750">FASTAPI · VOICE ORCHESTRATION</text>
+          <rect class="group" x="840" y="44" width="260" height="500" rx="14" stroke-dasharray="7 5"/><text x="858" y="72" font-size="12" font-weight="750">VOLCENGINE AGENT PLAN</text>
+
+          <rect class="node-blue" x="48" y="102" width="194" height="72" rx="10"/><text x="145" y="132" text-anchor="middle" font-size="14" font-weight="700">Chat Voice UI</text><text class="muted" x="145" y="154" text-anchor="middle" font-size="11">模式切换 · 状态 Logo</text>
+          <rect class="node" x="48" y="224" width="194" height="86" rx="10"/><text x="145" y="255" text-anchor="middle" font-size="14" font-weight="700">Mic Recorder</text><text class="muted" x="145" y="277" text-anchor="middle" font-size="11">48k → 16k · PCM16</text><text class="muted" x="145" y="295" text-anchor="middle" font-size="11">20ms frame</text>
+          <rect class="node-violet" x="48" y="410" width="194" height="86" rx="10"/><text x="145" y="441" text-anchor="middle" font-size="14" font-weight="700">PCM Player</text><text class="muted" x="145" y="463" text-anchor="middle" font-size="11">24kHz · Gapless queue</text><text class="muted" x="145" y="481" text-anchor="middle" font-size="11">playback.clear</text>
+
+          <rect class="node-blue" x="342" y="105" width="174" height="78" rx="10"/><text x="429" y="137" text-anchor="middle" font-size="14" font-weight="700">Realtime WS</text><text class="muted" x="429" y="159" text-anchor="middle" font-size="11">JSON + Binary PCM</text>
+          <rect class="node-violet" x="566" y="98" width="200" height="112" rx="10" stroke-width="2"/><text x="666" y="128" text-anchor="middle" font-size="14" font-weight="750">VoiceSession</text><text class="muted" x="666" y="151" text-anchor="middle" font-size="11">State · VAD · Turn Lock</text><text class="muted" x="666" y="172" text-anchor="middle" font-size="11">Cancel · Partial idle commit</text><text class="muted" x="666" y="191" text-anchor="middle" font-size="11">ASR / TTS lifecycle</text>
+          <rect class="node-violet" x="350" y="294" width="188" height="88" rx="10"/><text x="444" y="326" text-anchor="middle" font-size="14" font-weight="700">Agent Harness</text><text class="muted" x="444" y="348" text-anchor="middle" font-size="11">LangGraph · text_delta</text><text class="muted" x="444" y="366" text-anchor="middle" font-size="11">tools · interrupt</text>
+          <rect class="node" x="592" y="294" width="174" height="88" rx="10"/><text x="679" y="326" text-anchor="middle" font-size="14" font-weight="700">Persistence</text><text class="muted" x="679" y="348" text-anchor="middle" font-size="11">MongoDB session</text><text class="muted" x="679" y="366" text-anchor="middle" font-size="11">timeline · usage</text>
+          <rect class="node-orange" x="350" y="430" width="188" height="72" rx="10"/><text x="444" y="460" text-anchor="middle" font-size="14" font-weight="700">TTS Queue</text><text class="muted" x="444" y="481" text-anchor="middle" font-size="11">Markdown clean · sentence</text>
+
+          <rect class="node-orange" x="868" y="110" width="204" height="96" rx="10"/><text x="970" y="143" text-anchor="middle" font-size="14" font-weight="700">Seed ASR 2.0</text><text class="muted" x="970" y="165" text-anchor="middle" font-size="11">bigmodel_async</text><text class="muted" x="970" y="184" text-anchor="middle" font-size="11">200ms ⇄ partial / final</text>
+          <rect class="node-orange" x="868" y="420" width="204" height="96" rx="10"/><text x="970" y="453" text-anchor="middle" font-size="14" font-weight="700">Seed TTS 2.0</text><text class="muted" x="970" y="475" text-anchor="middle" font-size="11">bidirection</text><text class="muted" x="970" y="494" text-anchor="middle" font-size="11">text event ⇄ PCM chunk</text>
+
+          <path class="flow-up" d="M242 267 H298 V144 H342" fill="none" stroke-width="2.4" marker-end="url(#ib)"/><text x="266" y="252" font-size="10" font-weight="650">PCM ↑</text>
+          <path class="flow-up" d="M516 144 H566" fill="none" stroke-width="2.4" marker-end="url(#ib)"/>
+          <path class="flow-up" d="M766 135 H868" fill="none" stroke-width="2.4" marker-end="url(#ib)"/><text x="793" y="124" font-size="10">200ms</text>
+          <path class="flow-data" d="M868 190 H812 V192 H766" fill="none" stroke-width="2" marker-end="url(#ig)"/><text x="795" y="207" font-size="10">text</text>
+          <path class="flow-control" d="M635 210 V255 H444 V294" fill="none" stroke-width="1.8" marker-end="url(#io)"/><text x="477" y="246" font-size="10">final transcript</text>
+          <path class="flow-data" d="M538 338 H592" fill="none" stroke-width="1.7" stroke-dasharray="5 4" marker-end="url(#ig)"/>
+          <path class="flow-down" d="M444 382 V430" fill="none" stroke-width="2" marker-end="url(#iv)"/><text x="456" y="410" font-size="10">delta</text>
+          <path class="flow-down" d="M538 466 H868" fill="none" stroke-width="2.3" marker-end="url(#iv)"/><text x="678" y="454" font-size="10">TTS event</text>
+          <path class="flow-down" d="M868 505 H817 V568 H288 V453 H242" fill="none" stroke-width="2.4" marker-end="url(#iv)"/><text x="525" y="586" font-size="10">PCM ↓（与上行并发）</text>
+          <path class="flow-control" d="M566 183 H550 V404 H288 V430 H242" fill="none" stroke-width="1.7" stroke-dasharray="5 4" marker-end="url(#io)"/><text x="300" y="394" font-size="10">clear / state</text>
+        </svg>
+      </div>
+    </section>
+
+    <section id="duplex-detail">
+      <div class="section-head"><div><h2>双工边界拆解</h2><p class="section-note">“双工”在不同连接上的强度不同，实际体验由这些能力组合而成。</p></div></div>
+      <div style="overflow-x:auto">
+        <table class="duplex-table">
+          <thead><tr><th>链路</th><th>技术形态</th><th>判断</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>浏览器 ⇄ FastAPI</td><td>单条 WebSocket：JSON + Binary</td><td><span class="status yes"><span class="dot"></span>全双工</span></td><td>麦克风 PCM 上行与 TTS PCM 下行可同时发生；控制消息可随时穿插。</td></tr>
+            <tr><td>FastAPI ⇄ Seed ASR</td><td>bigmodel_async WebSocket</td><td><span class="status yes"><span class="dot"></span>双向流式</span></td><td>后端持续发送 200ms 音频块，同时接收 partial / final 识别事件。</td></tr>
+            <tr><td>FastAPI ⇄ Seed TTS</td><td>bidirection WebSocket</td><td><span class="status partial"><span class="dot"></span>协议双向</span></td><td>使用双向会话事件；当前业务按句发送文本、流式接收 PCM，并非逐字符持续输入。</td></tr>
+            <tr><td>Agent ⇄ TTS Pump</td><td>异步 sentence queue</td><td><span class="status yes"><span class="dot"></span>并行流水线</span></td><td>Agent 继续生成后文时，前面完整句已经进入 TTS，降低首包等待。</td></tr>
+            <tr><td>用户说话 ⇄ Agent 播放</td><td>持续采集 + Local VAD</td><td><span class="status yes"><span class="dot"></span>对话全双工</span></td><td>播放期间不关闭麦克风；Speech.START 触发 barge-in，立即停止浏览器音频和服务端任务。</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section id="sequence">
+      <div class="section-head"><div><h2>一次完整语音轮次</h2><p class="section-note">同一 session_id 贯穿文字与语音模式，因此消息持久化和 UI 渲染完全复用。</p></div></div>
+      <div class="sequence"><div class="sequence-inner">
+        <div class="actors"><div class="actor">Browser</div><div class="actor">VoiceSession</div><div class="actor">Seed ASR</div><div class="actor">Agent Harness</div><div class="actor">Seed TTS</div></div>
+        <div class="seq-step"><span class="seq-num">01</span><span class="seq-from">Browser</span><div class="message"><span>voice.start + agent_id + session_id</span></div><span class="seq-to">VoiceSession</span></div>
+        <div class="seq-step"><span class="seq-num">02</span><span class="seq-from">Mic Recorder</span><div class="message"><span>PCM16 @ 16kHz / 20ms</span></div><span class="seq-to">ASR buffer</span></div>
+        <div class="seq-step"><span class="seq-num">03</span><span class="seq-from">VoiceSession</span><div class="message"><span>聚合 200ms 音频块</span></div><span class="seq-to">Seed ASR</span></div>
+        <div class="seq-step"><span class="seq-num">04</span><span class="seq-from">Seed ASR</span><div class="message return"><span>transcript.delta / final</span></div><span class="seq-to">Browser + Session</span></div>
+        <div class="seq-step"><span class="seq-num">05</span><span class="seq-from">VoiceSession</span><div class="message"><span>final transcript</span></div><span class="seq-to">Agent Harness</span></div>
+        <div class="seq-step"><span class="seq-num">06</span><span class="seq-from">Agent Harness</span><div class="message return"><span>agent_text_delta</span></div><span class="seq-to">UI + TTS queue</span></div>
+        <div class="seq-step"><span class="seq-num">07</span><span class="seq-from">TTS Queue</span><div class="message"><span>清洗后的完整句</span></div><span class="seq-to">Seed TTS</span></div>
+        <div class="seq-step"><span class="seq-num">08</span><span class="seq-from">Seed TTS</span><div class="message return"><span>PCM16 @ 24kHz chunks</span></div><span class="seq-to">Browser Player</span></div>
+        <div class="seq-step"><span class="seq-num">09</span><span class="seq-from">Local VAD</span><div class="message control"><span>Speech.START → playback.clear + cancel</span></div><span class="seq-to">全链路打断</span></div>
+      </div></div>
+    </section>
+
+    <section id="state-machine">
+      <div class="section-head"><div><h2>会话状态机</h2><p class="section-note">状态用于驱动视频 Logo、控制按钮和服务端资源生命周期。</p></div></div>
+      <div class="states">
+        <div class="state"><b>idle</b><small>未采集 / 已暂停</small></div>
+        <div class="state listen"><b>listening</b><small>ASR + VAD 持续运行</small></div>
+        <div class="state think"><b>thinking</b><small>Agent 正在生成</small></div>
+        <div class="state speak"><b>speaking</b><small>TTS 音频播放中</small></div>
+      </div>
+      <div class="interrupt-path"><b>打断路径：</b> listening 期间始终保持音频采集；当 speaking / thinking 状态检测到 Speech.START，发送 <code>playback.clear</code>，取消 LLM task、TTS task 和当前 TTS Session，随后回到 listening。</div>
+    </section>
+
+    <section id="engineering">
+      <div class="section-head"><div><h2>低延迟与稳定性设计</h2><p class="section-note">这里的性能不是单点优化，而是跨浏览器、协议和任务编排的组合。</p></div></div>
+      <div class="grid grid-3">
+        <div class="card metric"><b>20 ms</b><span>浏览器 PCM16 上行帧；采集率统一重采样到 16kHz。</span></div>
+        <div class="card metric"><b>200 ms</b><span>ASR 客户端聚合块；平衡网络开销与实时识别延迟。</span></div>
+        <div class="card metric"><b>1.0 s</b><span>partial idle commit 兜底；噪声导致 VAD 不结束时仍能提交文本。</span></div>
+      </div>
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card"><h3>音频与播放</h3><ul class="list"><li>Web Audio 将原生采样率重采样到 PCM16 mono 16kHz。</li><li>下行 PCM16 24kHz 使用时间游标无缝排程，避免片段间爆音和空隙。</li><li>打断会停止所有已排程 AudioBufferSourceNode，并重置未来播放游标。</li><li>浏览器启用回声消除、降噪和自动增益，降低播放回灌。</li></ul></div>
+        <div class="card"><h3>任务与连接</h3><ul class="list"><li>Agent 流与 TTS pump 分为独立异步任务，句子一完成即可合成。</li><li>Turn lock 保证同一连接内轮次串行，barge-in 通过任务句柄主动取消。</li><li>被取消的火山 TTS WebSocket 直接废弃，下一轮重连，避免残留 SessionCanceled 污染。</li><li>ASR 每次本地提交后重建上游流，避免累积转写污染下一句话。</li></ul></div>
+      </div>
+    </section>
+
+    <section id="protocols">
+      <div class="section-head"><div><h2>协议与配置</h2><p class="section-note">语音模型固定使用 Agent Plan 指定 Resource-Id，不参与 Auto 调度。</p></div></div>
+      <div class="grid grid-2">
+        <div class="card"><h3>浏览器 ⇄ Backend</h3><ul class="list"><li><code>WS /api/v1/voice/realtime?token=JWT</code></li><li>上行二进制：PCM16 LE · mono · 16kHz。</li><li>下行二进制：PCM16 LE · mono · 24kHz。</li><li>控制：<code>voice.start</code>、<code>voice.stop</code>、<code>interrupt</code>、<code>audio.info</code>。</li><li>事件：<code>voice.state</code>、<code>transcript.*</code>、<code>agent_text_delta</code>、<code>playback.clear</code>。</li></ul></div>
+        <div class="card"><h3>Volcengine Agent Plan</h3><ul class="list"><li>ASR Resource-Id：<code>volc.seedasr.sauc.duration</code></li><li>ASR：<code>/api/v3/plan/sauc/bigmodel_async</code></li><li>TTS Resource-Id：<code>seed-tts-2.0</code></li><li>TTS：<code>/api/v3/plan/tts/bidirection</code></li><li>鉴权：专属 <code>X-Api-Key</code>；后端加密存储，不下发浏览器。</li></ul></div>
+      </div>
+    </section>
+
+    <section id="not-native">
+      <div class="section-head"><div><h2>当前架构刻意没有做什么</h2><p class="section-note">这些边界决定了系统应被称为“级联式全双工”，而不是“原生端到端双工”。</p></div></div>
+      <div class="grid grid-3">
+        <div class="card"><h3>不是 WebRTC 媒体栈</h3><p>当前传输基于 WebSocket + 原始 PCM，没有 RTP、DTLS、抖动缓冲、带宽自适应或 Opus 编码。局域网和常规 Web 对话足够直接，但弱网能力不等同于实时通信平台。</p></div>
+        <div class="card"><h3>不是 Audio-to-Audio 模型</h3><p>语音先转文字，再进入 Agent，最后将文本转回音频。它保留了工具调用、Markdown、会话记录与传统 Agent 能力，但不直接建模语气和声学上下文。</p></div>
+        <div class="card"><h3>TTS 不是逐字符输入</h3><p>虽然接入的是 bidirection 协议，当前通过 sentence queue 按完整句发起 TaskRequest。这样更稳定、便于 Markdown 清洗，但极限首音延迟仍可继续优化。</p></div>
+      </div>
+    </section>
+
+    <section id="source-map">
+      <div class="section-head"><div><h2>实现映射</h2><p class="section-note">架构结论对应当前仓库中的真实实现，而非目标态设想。</p></div></div>
+      <div class="source-map">
+        <div class="key">浏览器录音</div><div><code>frontend-studio/src/hooks/voice/useVoiceRecorder.ts</code></div>
+        <div class="key">浏览器播放</div><div><code>frontend-studio/src/hooks/voice/useVoicePlayer.ts</code></div>
+        <div class="key">语音 WS 生命周期</div><div><code>frontend-studio/src/hooks/voice/useVoiceConversation.ts</code>、<code>voice-ws-client.ts</code></div>
+        <div class="key">聊天输入集成</div><div><code>frontend-studio/src/components/voice/ChatVoiceComposer.tsx</code>、<code>ChatHomepage.tsx</code></div>
+        <div class="key">服务端状态机</div><div><code>backend/app/voice/session.py</code>、<code>vad.py</code>、<code>protocol.py</code></div>
+        <div class="key">火山协议适配</div><div><code>backend/app/voice/providers/volcano.py</code>、<code>volcano_protocol.py</code></div>
+        <div class="key">Agent 执行</div><div><code>backend/app/engine/harness_integration.py</code>、<code>agent_execution_service.py</code></div>
+      </div>
+    </section>
+
+    <footer><span>MEPER Agent · Agent Flow Voice Architecture</span><span>自包含 HTML · 支持亮色 / 暗色主题 · 可直接打印为 PDF</span></footer>
+  </main>
+
+  <script>
+    (() => {
+      const root = document.documentElement;
+      const buttons = [...document.querySelectorAll('[data-theme-value]')];
+      const saved = localStorage.getItem('agent-flow-voice-architecture-theme');
+      const initial = saved === 'light' || saved === 'dark'
+        ? saved
+        : (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+
+      function applyTheme(theme) {
+        root.dataset.theme = theme;
+        buttons.forEach((button) => {
+          button.setAttribute('aria-pressed', String(button.dataset.themeValue === theme));
+        });
+        localStorage.setItem('agent-flow-voice-architecture-theme', theme);
+      }
+
+      buttons.forEach((button) => button.addEventListener('click', () => applyTheme(button.dataset.themeValue)));
+      applyTheme(initial);
+    })();
+  </script>
+</body>
+</html>
