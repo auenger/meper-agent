@@ -1,29 +1,20 @@
 """Voice config request/response schemas.
 
-Request: ``access_token`` may be null/empty → "don't change" (keep existing
-encrypted value). Response: tokens are masked, never plaintext.
+Request: ``api_key`` may be null/empty → "don't change" (keep existing
+encrypted value). Response: the key is masked, never plaintext.
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-_TTS_URL = "wss://openspeech.bytedance.com/api/v3/plan/tts/bidirection"
-_ASR_URL = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
-
 
 class ASRConfigUpdate(BaseModel):
-    appid: str = ""
-    access_token: str | None = Field(default=None, description="留空=不修改")
-    resource_id: str = "volc.seedasr.sauc.duration"
-    url: str = _ASR_URL
+    pass
 
 
 class TTSConfigUpdate(BaseModel):
-    appid: str = ""
-    access_token: str | None = Field(default=None, description="留空=不修改")
-    resource_id: str = "seed-tts-2.0"
-    url: str = _TTS_URL
-    voice_type: str = "zh_female_wanwanxiaohe_moon_bigtts"
+    voice_type: str = "zh_female_vv_uranus_bigtts"
 
 
 class AudioConfigUpdate(BaseModel):
@@ -38,23 +29,27 @@ class VADConfigUpdate(BaseModel):
 
 
 class VoiceConfigUpdate(BaseModel):
+    api_key: str | None = Field(default=None, description="留空=不修改")
     asr: ASRConfigUpdate = Field(default_factory=ASRConfigUpdate)
     tts: TTSConfigUpdate = Field(default_factory=TTSConfigUpdate)
     audio: AudioConfigUpdate = Field(default_factory=AudioConfigUpdate)
     vad: VADConfigUpdate = Field(default_factory=VADConfigUpdate)
 
 
+class VoicePreviewRequest(BaseModel):
+    """One-off TTS preview without changing the saved voice config."""
+
+    voice_type: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=120)
+
+
 # ── Response (masked tokens) ──────────────────────────────────────────
 class ASRConfigResponse(BaseModel):
-    appid: str
-    access_token_masked: str
     resource_id: str
     url: str
 
 
 class TTSConfigResponse(BaseModel):
-    appid: str
-    access_token_masked: str
     resource_id: str
     url: str
     voice_type: str
@@ -72,6 +67,7 @@ class VADConfigResponse(BaseModel):
 
 
 class VoiceConfigResponse(BaseModel):
+    api_key_masked: str
     asr: ASRConfigResponse
     tts: TTSConfigResponse
     audio: AudioConfigResponse

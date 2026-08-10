@@ -71,6 +71,7 @@ export function toStudioAgent(a: BackendAgent): Agent {
       prompt: it.prompt ?? '',
     })),
     model: a.default_model || 'gemini-3.5-flash',
+    voiceEnabled: a.voice_enabled ?? false,
     temperature: DEFAULT_AGENT_TEMPERATURE,
     // role/task map to backend prompt_slots.role/.task (both required by slot_renderer).
     // systemPrompt kept as a legacy fallback (prompt_slots.system) for old agents.
@@ -97,6 +98,7 @@ export function fromStudioAgent(a: Agent): {
   recommended_items?: { label: string; prompt: string }[]
   prompt_slots?: Record<string, string>
   default_model?: string
+  voice_enabled?: boolean
   skill_ids?: string[]
   mcp_connection_ids?: string[]
   builtin_config?: string[]
@@ -138,6 +140,7 @@ export function fromStudioAgent(a: Agent): {
       ...(a.systemPrompt ? { system: a.systemPrompt } : {}),
     },
     default_model: a.model,
+    voice_enabled: a.voiceEnabled ?? false,
     skill_ids,
     mcp_connection_ids,
     builtin_config,
@@ -289,4 +292,3 @@ export function toStudioUser(u: BackendUser): User {
  * 1:1 onto the 6 backend statuses directly (see constants/task-status.ts and
  * components/TaskBoard.tsx), so these helpers are no longer referenced and have
  * been removed. */
-

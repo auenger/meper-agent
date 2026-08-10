@@ -1,12 +1,6 @@
-/** StateOrb — animated orb reflecting the voice session state. Pure CSS. */
+/** StateOrb — local looping energy video reflecting the voice session state. */
 
-const STATE_STYLE: Record<string, string> = {
-  idle: 'bg-zinc-500',
-  listening: 'bg-emerald-500 scale-105 animate-pulse',
-  thinking: 'bg-amber-500 animate-pulse',
-  speaking: 'bg-indigo-500 scale-110 animate-pulse',
-  error: 'bg-rose-500',
-}
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 const STATE_LABEL: Record<string, string> = {
   idle: '待命',
@@ -16,23 +10,62 @@ const STATE_LABEL: Record<string, string> = {
   error: '出错',
 }
 
-export function StateOrb({ state }: { state: string }) {
-  const style = STATE_STYLE[state] || 'bg-zinc-500'
-  const label = STATE_LABEL[state] || state
-  // Outer halo rings during active states for a "live" feel.
+export function StateOrb({ state, compact = false }: { state: string; compact?: boolean }) {
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const [videoFailed, setVideoFailed] = useState(false)
   const active = state === 'listening' || state === 'thinking' || state === 'speaking'
+
+  const syncPlayback = useCallback(() => {
+    const video = videoRef.current
+    if (!video) return
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (active && !reduceMotion) {
+      video.play().catch(() => { /* poster remains visible if autoplay is blocked */ })
+    } else {
+      video.pause()
+    }
+  }, [active])
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    syncPlayback()
+    media.addEventListener('change', syncPlayback)
+    return () => media.removeEventListener('change', syncPlayback)
+  }, [syncPlayback])
+
   return (
-    <div className="relative flex flex-col items-center gap-3">
-      <div className="relative w-32 h-32 flex items-center justify-center">
-        {active && (
-          <>
-            <span className="absolute inline-flex h-full w-full rounded-full bg-current opacity-10 animate-ping" />
-            <span className="absolute inline-flex h-[80%] w-[80%] rounded-full bg-current opacity-20 animate-ping" style={{ animationDelay: '0.4s' }} />
-          </>
-        )}
-        <div className={`relative w-28 h-28 rounded-full ${style} transition-all duration-300 shadow-2xl ${active ? 'text-current' : ''}`} />
+    <div className={`relative flex flex-col items-center ${compact ? 'gap-1.5' : 'gap-3'}`} aria-live="polite">
+      <div
+        className={`voice-video-orb ${compact ? 'voice-video-orb--compact' : ''}`}
+        data-state={state}
+        role="img"
+        aria-label={`语音状态：${STATE_LABEL[state] || state}`}
+      >
+        <span className="voice-video-orb__halo" />
+        <div className="voice-video-orb__viewport">
+          {!videoFailed ? (
+            <video
+              ref={videoRef}
+              className="voice-video-orb__media"
+              src="/voice/voice-presence.mp4"
+              poster="/voice/voice-presence-poster.jpg"
+              preload="auto"
+              muted
+              loop
+              playsInline
+              onCanPlay={syncPlayback}
+              onError={() => setVideoFailed(true)}
+              aria-hidden="true"
+            />
+          ) : (
+            <span className="voice-video-orb__fallback" aria-hidden="true" />
+          )}
+          <span className="voice-video-orb__tint" aria-hidden="true" />
+        </div>
       </div>
-      <span className="text-xs font-medium opacity-70 tracking-wide">{label}</span>
+      <span className="text-xs font-medium opacity-70 tracking-wide">
+        {STATE_LABEL[state] || state}
+      </span>
     </div>
   )
 }

@@ -1,33 +1,57 @@
 /**
- * AudioWorklet processor: captures mic input as Float32 @16kHz, encodes to
- * PCM16 little-endian, accumulates into 20ms frames (320 samples), and posts
- * each frame out as a transferable ArrayBuffer.
+ * AudioWorklet processor: captures mic input as Float32, resamples it to
+ * 16kHz, encodes to PCM16 little-endian, accumulates into 20ms frames
+ * (320 samples), and posts each frame out as a transferable ArrayBuffer.
  *
  * Runs off the main thread. Registered as 'pcm-capture-processor'.
- * The AudioContext is created at sampleRate 16000 so input is already at the
- * target rate (modern browsers honor an explicit context sampleRate; the
- * encoder is rate-agnostic anyway).
+ * Browsers usually honor AudioContext({sampleRate: 16000}), but this isn't
+ * guaranteed. The explicit resampler also handles a 44.1kHz/48kHz context.
  *
  * Note: AudioWorklet scope cannot import ES modules, so the PCM16 encoder is
  * inlined here (mirrors src/lib/voice/audio-codec.ts).
  */
 class PcmCaptureProcessor extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super()
-    this._frameSamples = Math.round(16000 * 0.02) // 20ms = 320 samples
-    this._buffer = []
+    this._targetSampleRate = options?.processorOptions?.targetSampleRate || 16000
+    this._frameSamples = Math.round(this._targetSampleRate * 0.02)
+    this._ratio = sampleRate / this._targetSampleRate
+    this._sourceBuffer = []
+    this._sourceOffset = 0
+    this._targetBuffer = []
   }
 
-  process(inputs) {
+  process(inputs, outputs) {
     const input = inputs[0]
     if (!input || input.length === 0) return true
     const channel = input[0]
     if (!channel) return true
 
-    for (let i = 0; i < channel.length; i++) this._buffer.push(channel[i])
+    // Explicit pass-through keeps Chromium from treating a side-effect-only
+    // worklet as a permanently silent node. The downstream gain is zero, so
+    // microphone audio still never reaches the speakers.
+    const output = outputs[0]
+    if (output && output[0]) output[0].set(channel)
 
-    while (this._buffer.length >= this._frameSamples) {
-      const frame = this._buffer.splice(0, this._frameSamples)
+    for (let i = 0; i < channel.length; i++) this._sourceBuffer.push(channel[i])
+
+    while (this._sourceOffset + 1 < this._sourceBuffer.length) {
+      const left = Math.floor(this._sourceOffset)
+      const fraction = this._sourceOffset - left
+      const sample = this._sourceBuffer[left] * (1 - fraction)
+        + this._sourceBuffer[left + 1] * fraction
+      this._targetBuffer.push(sample)
+      this._sourceOffset += this._ratio
+    }
+
+    const consumed = Math.floor(this._sourceOffset)
+    if (consumed > 0) {
+      this._sourceBuffer.splice(0, consumed)
+      this._sourceOffset -= consumed
+    }
+
+    while (this._targetBuffer.length >= this._frameSamples) {
+      const frame = this._targetBuffer.splice(0, this._frameSamples)
       const pcm = float32ToPcm16(frame)
       // Transfer the underlying buffer (zero-copy) — frame won't be reused.
       this.port.postMessage(pcm.buffer, [pcm.buffer])

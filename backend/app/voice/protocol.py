@@ -15,6 +15,7 @@ CLIENT_VOICE_START = "voice.start"   # {agent_id, session_id?}
 CLIENT_VOICE_STOP = "voice.stop"     # close mic, leave voice mode
 CLIENT_INTERRUPT = "interrupt"       # manual barge-in button
 CLIENT_PONG = "pong"                 # heartbeat reply
+CLIENT_AUDIO_INFO = "audio.info"     # browser capture sample-rate diagnostics
 
 # ── Server → Client (text frames) ─────────────────────────────────────
 SERVER_VOICE_STATE = "voice.state"           # {state}

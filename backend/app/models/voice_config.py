@@ -1,9 +1,10 @@
 """Voice configuration — global singleton document (one per deployment).
 
 Stored as a single doc with ``_id="voice_config"`` in the ``voice_config``
-collection. Access tokens are AES-256-GCM encrypted via :mod:`app.core.crypto`
+collection. The Agent Plan API key is AES-256-GCM encrypted via :mod:`app.core.crypto`
 and masked in API responses (mirrors the Model / credential pattern).
 """
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -15,18 +16,14 @@ COLLECTION = "voice_config"
 
 
 class ASRConfig(BaseModel):
-    appid: str = ""
-    access_token_enc: str = ""  # AES-256-GCM ciphertext; "" = not set
     resource_id: str = "volc.seedasr.sauc.duration"
-    url: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+    url: str = "wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async"
 
 
 class TTSConfig(BaseModel):
-    appid: str = ""
-    access_token_enc: str = ""
     resource_id: str = "seed-tts-2.0"
     url: str = "wss://openspeech.bytedance.com/api/v3/plan/tts/bidirection"
-    voice_type: str = "zh_female_wanwanxiaohe_moon_bigtts"
+    voice_type: str = "zh_female_vv_uranus_bigtts"
 
 
 class AudioConfig(BaseModel):
@@ -44,6 +41,7 @@ class VoiceConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str = Field(default=CONFIG_DOC_ID, alias="_id")
+    api_key_enc: str = ""  # Agent Plan dedicated API Key, AES-256-GCM encrypted
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)

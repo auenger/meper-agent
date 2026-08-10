@@ -1,17 +1,17 @@
 /**
  * VoiceConfigPage — admin page for the火山 ASR/TTS config (DB singleton).
  *
- * Loads the singleton config, edits fields inline; access_token fields show
- * the masked value as placeholder and are blank = "don't change". Save +
+ * Loads the singleton config, edits fields inline; the Agent Plan API Key shows
+ * the masked value as placeholder; blank means "don't change". Save +
  * connectivity-test buttons. Matches ModelsPage's form + tanstack-query style.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   voiceConfigApi,
   voiceConfigKeys,
-  type VoiceConfig,
 } from '../../services/voice-config-api'
+import { VoicePicker } from './VoicePicker'
 
 function errMsg(e: unknown): string {
   return (e as { message?: string })?.message ?? '操作失败'
@@ -24,15 +24,8 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
     queryFn: voiceConfigApi.get,
   })
 
-  const [asrAppid, setAsrAppid] = useState('')
-  const [asrRid, setAsrRid] = useState('volc.seedasr.sauc.duration')
-  const [asrUrl, setAsrUrl] = useState('wss://openspeech.bytedance.com/api/v3/sauc/bigmodel')
-  const [asrToken, setAsrToken] = useState('')
-  const [ttsAppid, setTtsAppid] = useState('')
-  const [ttsRid, setTtsRid] = useState('seed-tts-2.0')
-  const [ttsUrl, setTtsUrl] = useState('wss://openspeech.bytedance.com/api/v3/plan/tts/bidirection')
-  const [ttsVoice, setTtsVoice] = useState('zh_female_wanwanxiaohe_moon_bigtts')
-  const [ttsToken, setTtsToken] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [ttsVoice, setTtsVoice] = useState('zh_female_vv_uranus_bigtts')
   const [inputRate, setInputRate] = useState(16000)
   const [outputRate, setOutputRate] = useState(24000)
   const [vadMode, setVadMode] = useState('energy')
@@ -40,26 +33,84 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
   const [vadSilence, setVadSilence] = useState(600)
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'info'; msg: string } | null>(null)
   const [saving, setSaving] = useState(false)
+  const [previewText, setPreviewText] = useState('你好，我是你的智能语音助手，很高兴和你对话。')
+  const [preview, setPreview] = useState<{ voiceType: string; phase: 'loading' | 'playing' } | null>(null)
+  const [previewError, setPreviewError] = useState('')
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audioUrlRef = useRef('')
+  const previewRequestRef = useRef(0)
 
   useEffect(() => {
     if (!cfg) return
-    setAsrAppid(cfg.asr.appid); setAsrRid(cfg.asr.resource_id); setAsrUrl(cfg.asr.url)
-    setTtsAppid(cfg.tts.appid); setTtsRid(cfg.tts.resource_id); setTtsUrl(cfg.tts.url); setTtsVoice(cfg.tts.voice_type)
+    setTtsVoice(cfg.tts.voice_type)
     setInputRate(cfg.audio.input_rate); setOutputRate(cfg.audio.output_rate)
     setVadMode(cfg.vad.mode); setVadThreshold(cfg.vad.threshold); setVadSilence(cfg.vad.silence_ms)
   }, [cfg])
+
+  const stopPreview = () => {
+    previewRequestRef.current += 1
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+      audioUrlRef.current = ''
+    }
+    setPreview(null)
+  }
+
+  useEffect(() => () => {
+    audioRef.current?.pause()
+    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current)
+  }, [])
+
+  const playPreview = async (voiceType: string) => {
+    if (!voiceType.trim() || !previewText.trim()) return
+    if (preview?.voiceType === voiceType) {
+      if (preview.phase === 'playing') stopPreview()
+      return
+    }
+
+    stopPreview()
+    const requestId = previewRequestRef.current
+    setPreviewError('')
+    setPreview({ voiceType, phase: 'loading' })
+    try {
+      const audioBlob = await voiceConfigApi.preview(voiceType, previewText.trim())
+      if (requestId !== previewRequestRef.current) return
+      const objectUrl = URL.createObjectURL(audioBlob)
+      const audio = new Audio(objectUrl)
+      audioRef.current = audio
+      audioUrlRef.current = objectUrl
+      audio.onended = stopPreview
+      audio.onerror = () => {
+        stopPreview()
+        setPreviewError('试听音频播放失败')
+      }
+      await audio.play()
+      if (requestId !== previewRequestRef.current) return
+      setPreview({ voiceType, phase: 'playing' })
+    } catch (error) {
+      if (requestId !== previewRequestRef.current) return
+      stopPreview()
+      setPreviewError(errMsg(error))
+    }
+  }
 
   const save = async () => {
     setSaving(true); setStatus(null)
     try {
       await voiceConfigApi.save({
-        asr: { appid: asrAppid, access_token: asrToken || null, resource_id: asrRid, url: asrUrl },
-        tts: { appid: ttsAppid, access_token: ttsToken || null, resource_id: ttsRid, url: ttsUrl, voice_type: ttsVoice },
+        api_key: apiKey || null,
+        asr: {},
+        tts: { voice_type: ttsVoice },
         audio: { input_rate: inputRate, output_rate: outputRate },
         vad: { mode: vadMode, threshold: vadThreshold, silence_ms: vadSilence },
       })
-      setAsrToken(''); setTtsToken('')
+      setApiKey('')
       qc.invalidateQueries({ queryKey: voiceConfigKeys.detail })
+      qc.invalidateQueries({ queryKey: voiceConfigKeys.status })
       setStatus({ type: 'success', msg: '已保存' })
     } catch (e) {
       setStatus({ type: 'error', msg: errMsg(e) })
@@ -93,6 +144,15 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
     </label>
   )
 
+  const FixedValue = ({ label, value }: { label: string; value: string }) => (
+    <div className="flex flex-col gap-1 text-xs">
+      <span className={dark ? 'text-[#a1a1aa]' : 'text-slate-500'}>{label}</span>
+      <code className={`px-2 py-1.5 rounded border break-all ${
+        dark ? 'bg-[#09090b] border-[#27272a] text-[#d4d4d8]' : 'bg-slate-50 border-slate-200 text-slate-600'
+      }`}>{value}</code>
+    </div>
+  )
+
   if (isLoading) return <div className="p-6 text-sm opacity-60">加载语音配置…</div>
 
   return (
@@ -101,7 +161,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
         <div>
           <h2 className="text-base font-semibold">语音设置</h2>
           <p className={`text-xs mt-1 ${dark ? 'text-[#71717a]' : 'text-slate-400'}`}>
-            火山引擎豆包 2.0（方舟 v3）流式 ASR/TTS 配置。Resource-Id 指定模型，凭证加密存储。
+            方舟 Agent Plan 豆包语音 2.0。使用专属 API Key，凭证加密存储。
           </p>
         </div>
         {cfg?.last_test_at && (
@@ -111,23 +171,74 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
         )}
       </div>
 
+      <section className={`rounded-lg border p-4 space-y-3 ${card}`}>
+        <div>
+          <h3 className="text-sm font-medium">Agent Plan 凭证</h3>
+          <p className={`text-xs mt-1 ${dark ? 'text-[#71717a]' : 'text-slate-400'}`}>
+            无需 App ID 或 Access Token；ASR 与 TTS 共用一个专属 API Key。
+          </p>
+        </div>
+        <Field
+          label="专属 API Key"
+          value={apiKey}
+          onChange={setApiKey}
+          placeholder={cfg?.api_key_masked ? `已配置：${cfg.api_key_masked}（留空不改）` : 'Agent Plan 专属 API Key'}
+          type="password"
+        />
+        <a
+          href="https://console.volcengine.com/ark/region:cn-beijing/openManagement?LLM=%7B%7D&OpenModelVisible=false&advancedActiveKey=agentPlan"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-block text-xs text-indigo-500 hover:text-indigo-400"
+        >
+          前往火山方舟获取专属 API Key
+        </a>
+      </section>
+
       {/* ASR */}
       <section className={`rounded-lg border p-4 space-y-3 ${card}`}>
         <h3 className="text-sm font-medium">语音识别 ASR</h3>
-        <Field label="App ID" value={asrAppid} onChange={setAsrAppid} placeholder="火山方舟 AppID" />
-        <Field label="Access Token" value={asrToken} onChange={setAsrToken} placeholder={cfg ? `已配置：${cfg.asr.access_token_masked}（留空不改）` : 'Access Token'} type="password" />
-        <Field label="Resource-Id" value={asrRid} onChange={setAsrRid} placeholder="volc.seedasr.sauc.duration" />
-        <Field label="WebSocket URL" value={asrUrl} onChange={setAsrUrl} placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" />
+        <FixedValue label="Resource-Id（固定）" value={cfg?.asr.resource_id ?? 'volc.seedasr.sauc.duration'} />
+        <FixedValue label="WebSocket URL（双流）" value={cfg?.asr.url ?? 'wss://openspeech.bytedance.com/api/v3/plan/sauc/bigmodel_async'} />
       </section>
 
       {/* TTS */}
       <section className={`rounded-lg border p-4 space-y-3 ${card}`}>
         <h3 className="text-sm font-medium">语音合成 TTS</h3>
-        <Field label="App ID" value={ttsAppid} onChange={setTtsAppid} placeholder="火山方舟 AppID" />
-        <Field label="Access Token" value={ttsToken} onChange={setTtsToken} placeholder={cfg ? `已配置：${cfg.tts.access_token_masked}（留空不改）` : 'Access Token'} type="password" />
-        <Field label="Resource-Id" value={ttsRid} onChange={setTtsRid} placeholder="seed-tts-2.0" />
-        <Field label="WebSocket URL" value={ttsUrl} onChange={setTtsUrl} placeholder="wss://openspeech.bytedance.com/api/v3/plan/tts/bidirection" />
-        <Field label="音色 voice_type" value={ttsVoice} onChange={setTtsVoice} placeholder="zh_female_wanwanxiaohe_moon_bigtts" />
+        <FixedValue label="Resource-Id（固定）" value={cfg?.tts.resource_id ?? 'seed-tts-2.0'} />
+        <FixedValue label="WebSocket URL（双向流式）" value={cfg?.tts.url ?? 'wss://openspeech.bytedance.com/api/v3/plan/tts/bidirection'} />
+        <label className="flex flex-col gap-1 text-xs">
+          <span className={dark ? 'text-[#a1a1aa]' : 'text-slate-500'}>试听文本</span>
+          <div className="relative">
+            <input
+              value={previewText}
+              onChange={(event) => setPreviewText(event.target.value.slice(0, 120))}
+              placeholder="输入一小段用于试听的文字"
+              className={`${inputCls} h-10 w-full pr-14`}
+            />
+            <span className={`absolute right-2 top-1/2 -translate-y-1/2 text-[10px] ${dark ? 'text-[#52525b]' : 'text-slate-400'}`}>
+              {previewText.length}/120
+            </span>
+          </div>
+        </label>
+        <VoicePicker
+          value={ttsVoice}
+          onChange={(voiceType) => {
+            stopPreview()
+            setPreviewError('')
+            setTtsVoice(voiceType)
+          }}
+          theme={theme}
+          preview={preview}
+          previewDisabled={!cfg?.api_key_masked || !previewText.trim()}
+          onPreview={playPreview}
+        />
+        {!cfg?.api_key_masked && (
+          <p className={`text-xs ${dark ? 'text-amber-400' : 'text-amber-700'}`}>
+            保存 Agent Plan 专属 API Key 后即可试听音色。
+          </p>
+        )}
+        {previewError && <p className="text-xs text-rose-500">{previewError}</p>}
       </section>
 
       {/* Audio + VAD */}
@@ -161,7 +272,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
         )}
       </div>
       <p className={`text-xs ${dark ? 'text-[#52525b]' : 'text-slate-400'}`}>
-        ⚠️ v3 协议字节细节基于公开资料推断，若连通失败请对照火山官方 protocols.py（文档 82379/2516286）校准 volcano.py。
+        Agent Plan 语音模型不参与 Auto 调度，也不能在控制台切换模型；此页固定使用文档指定的 Resource-Id。
       </p>
     </div>
   )

@@ -39,10 +39,10 @@ class EnergyVAD(VADDetector):
 
     Fires START on the rising edge (energy crosses threshold), END after
     ``silence_ms`` of consecutive quiet frames. Threshold is normalized RMS
-    (0..1 of full-scale PCM16); ~0.12 is a reasonable default for a close mic.
+    (0..1 of full-scale PCM16); ~0.02 works well with browser AGC microphones.
     """
 
-    def __init__(self, threshold: float = 0.12, silence_ms: int = 600, frame_ms: int = 20) -> None:
+    def __init__(self, threshold: float = 0.02, silence_ms: int = 600, frame_ms: int = 20) -> None:
         self.threshold = threshold
         self._silence_frames = max(1, silence_ms // frame_ms)
         self._is_speech = False
@@ -115,5 +115,5 @@ def create_vad(mode: str, threshold: float, silence_ms: int) -> VADDetector | No
             return SileroVAD(threshold=threshold, silence_ms=silence_ms)
         except Exception as e:
             logger.warning("silero_vad_unavailable_fallback_energy", error=str(e))
-            return EnergyVAD(threshold=0.12, silence_ms=silence_ms)
-    return EnergyVAD(threshold=0.12, silence_ms=silence_ms)
+            return EnergyVAD(threshold=0.02, silence_ms=silence_ms)
+    return EnergyVAD(threshold=0.02, silence_ms=silence_ms)

@@ -13,6 +13,17 @@ export function pcm16ToFloat32(data: ArrayBuffer): Float32Array {
   return out
 }
 
+/** Convert mono Float32 samples (-1..1) → PCM16 little-endian bytes. */
+export function float32ToPcm16(samples: Float32Array): ArrayBuffer {
+  const data = new ArrayBuffer(samples.length * 2)
+  const view = new DataView(data)
+  for (let i = 0; i < samples.length; i++) {
+    const sample = Math.max(-1, Math.min(1, samples[i]))
+    view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+  }
+  return data
+}
+
 /** Linear-interpolation resample Float32 to a target sample count. */
 export function resampleFloat32(samples: Float32Array, dstCount: number): Float32Array {
   if (samples.length === dstCount || dstCount <= 0) return samples

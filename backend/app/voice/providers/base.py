@@ -31,8 +31,9 @@ class STTProvider(Protocol):
         on_partial: Callable[[str], Awaitable[None]],
         on_final: Callable[[str], Awaitable[None]],
         on_utterance_end: Callable[[], Awaitable[None]] | None = None,
+        on_error: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
-        """Register async callbacks for ASR events (partial / final / end-of-utterance)."""
+        """Register callbacks for ASR results, utterance boundaries, and errors."""
         ...
 
 

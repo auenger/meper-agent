@@ -45,6 +45,8 @@ dependencies = [
     "rapidocr-onnxruntime>=1.4.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
     # Voice module: streaming WS client to Volcano ASR/TTS.
     "websockets>=13.0",
+    # websockets 15+ honors system SOCKS proxies; this provides its proxy transport.
+    "python-socks>=2.0.0",
     # Optional accurate VAD for barge-in (falls back to energy VAD if absent;
     # pulls torch, so excluded on Intel macOS like rapidocr).
     "silero-vad>=5.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",

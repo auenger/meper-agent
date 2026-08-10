@@ -30,6 +30,113 @@
   }
 }
 
+/* Voice presence: local energy-loop video with state tint and poster fallback. */
+.voice-video-orb {
+  position: relative;
+  width: 8rem;
+  height: 8rem;
+  isolation: isolate;
+}
+
+.voice-video-orb--compact {
+  width: 6.5rem;
+  height: 6.5rem;
+}
+
+.voice-video-orb__viewport,
+.voice-video-orb__halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+}
+
+.voice-video-orb__viewport {
+  overflow: hidden;
+  background: #02060b;
+  box-shadow:
+    inset 0 1px 1px rgb(255 255 255 / 0.35),
+    0 18px 50px rgb(8 47 73 / 0.35);
+  transition: transform 300ms ease, filter 300ms ease, opacity 300ms ease;
+}
+
+.voice-video-orb__media,
+.voice-video-orb__fallback,
+.voice-video-orb__tint {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.voice-video-orb__media {
+  object-fit: cover;
+  transform: translate(-2px, 2px) scale(1.12);
+}
+
+.voice-video-orb__halo {
+  background: #38bdf8;
+  filter: blur(22px);
+  opacity: 0.28;
+  transform: scale(0.86);
+  transition: background-color 300ms ease, opacity 300ms ease;
+}
+
+.voice-video-orb__tint {
+  background: transparent;
+  mix-blend-mode: color;
+  pointer-events: none;
+  transition: background-color 300ms ease;
+}
+
+.voice-video-orb__fallback {
+  background:
+    radial-gradient(circle at 50% 50%, transparent 40%, #38bdf8 43%, transparent 48%),
+    conic-gradient(from 30deg, #0ea5e9, #6366f1, #22d3ee, #0ea5e9);
+}
+
+.voice-video-orb[data-state="idle"] .voice-video-orb__viewport {
+  opacity: 0.52;
+  filter: saturate(0.45);
+}
+
+.voice-video-orb[data-state="listening"] .voice-video-orb__viewport {
+  transform: scale(1.03);
+}
+
+.voice-video-orb[data-state="thinking"] .voice-video-orb__tint {
+  background: rgb(139 92 246 / 0.42);
+}
+
+.voice-video-orb[data-state="thinking"] .voice-video-orb__halo {
+  background: #8b5cf6;
+}
+
+.voice-video-orb[data-state="speaking"] .voice-video-orb__viewport {
+  transform: scale(1.06);
+}
+
+.voice-video-orb[data-state="speaking"] .voice-video-orb__tint {
+  background: rgb(59 130 246 / 0.25);
+}
+
+.voice-video-orb[data-state="error"] .voice-video-orb__tint {
+  background: rgb(244 63 94 / 0.62);
+}
+
+.voice-video-orb[data-state="error"] .voice-video-orb__halo {
+  background: #f43f5e;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-video-orb__viewport,
+  .voice-video-orb__halo,
+  .voice-video-orb__tint {
+    transition-duration: 0.01ms;
+  }
+}
+
+
 @utility bg-grid-dots {
   background-image: radial-gradient(#27272a 1px, transparent 1px);
   background-size: 16px 16px;
@@ -616,4 +723,3 @@
 .theme-light .var-editor:empty::before {
   color: #94a3b8;
 }
-

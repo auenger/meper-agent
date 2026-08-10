@@ -1,8 +1,9 @@
 """Runtime voice config — decrypted, in-memory shape for a voice session.
 
-Loaded from VoiceConfigService (DB singleton) at WS handshake. Tokens are
+Loaded from VoiceConfigService (DB singleton) at WS handshake. The API key is
 decrypted once here; the VoiceSession holds this object for its lifetime.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,16 +11,14 @@ from dataclasses import dataclass
 
 @dataclass
 class ASRRuntime:
-    appid: str
-    access_token: str
+    api_key: str
     resource_id: str
     url: str
 
 
 @dataclass
 class TTSRuntime:
-    appid: str
-    access_token: str
+    api_key: str
     resource_id: str
     url: str
     voice_type: str
@@ -39,7 +38,6 @@ class VoiceRuntimeConfig:
 async def get_runtime_config() -> VoiceRuntimeConfig:
     """Load + decrypt the voice config from DB. Raises if not configured."""
     from app.core.crypto import decrypt_secret
-
     from app.services.voice_config_service import VoiceConfigService
 
     cfg = await VoiceConfigService.get_config()
@@ -51,14 +49,12 @@ async def get_runtime_config() -> VoiceRuntimeConfig:
 
     return VoiceRuntimeConfig(
         asr=ASRRuntime(
-            appid=cfg.asr.appid,
-            access_token=dec(cfg.asr.access_token_enc),
+            api_key=dec(cfg.api_key_enc),
             resource_id=cfg.asr.resource_id,
             url=cfg.asr.url,
         ),
         tts=TTSRuntime(
-            appid=cfg.tts.appid,
-            access_token=dec(cfg.tts.access_token_enc),
+            api_key=dec(cfg.api_key_enc),
             resource_id=cfg.tts.resource_id,
             url=cfg.tts.url,
             voice_type=cfg.tts.voice_type,

@@ -13,8 +13,10 @@ import { Mic, MicOff, Hand } from 'lucide-react'
 import { voiceWs } from '../../lib/voice/voice-ws-client'
 import { useVoiceRecorder } from '../../hooks/voice/useVoiceRecorder'
 import { useVoicePlayer } from '../../hooks/voice/useVoicePlayer'
+import { useAudioDevices } from '../../hooks/voice/useAudioDevices'
 import { useAuthStore } from '../../stores/auth-store'
 import { StateOrb } from './StateOrb'
+import { AudioDeviceMenu } from './AudioDeviceMenu'
 import type { Agent } from '../../types'
 
 interface TurnMsg {
@@ -30,8 +32,12 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
   const [turns, setTurns] = useState<TurnMsg[]>([])
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [agentId, setAgentId] = useState<string>('')
+  const audioDevices = useAudioDevices()
   const recorder = useVoiceRecorder()
-  const { enqueue, clear } = useVoicePlayer()
+  const { enqueue, clear, outputError } = useVoicePlayer(
+    audioDevices.outputDeviceId,
+    () => audioDevices.selectOutputDevice(''),
+  )
   const agentBufRef = useRef('')
   const turnSeq = useRef(0)
   const [, force] = useState(0)
@@ -39,7 +45,10 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
 
   // Default to the first agent once the list loads.
   useEffect(() => {
-    if (!agentId && agents.length) setAgentId(agents[0].id)
+    const selected = agents.find((agent) => agent.id === agentId)
+    if ((!selected || !selected.voiceEnabled) && agents.some((agent) => agent.voiceEnabled)) {
+      setAgentId(agents.find((agent) => agent.voiceEnabled)?.id ?? '')
+    }
   }, [agents, agentId])
 
   // Auto-scroll the transcript to the latest entry.
@@ -101,11 +110,17 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
         setErrorMsg('请先选择一个智能体')
         return
       }
+      if (!agents.find((agent) => agent.id === agentId)?.voiceEnabled) {
+        setErrorMsg('当前 Agent 未开启语音对话能力')
+        return
+      }
       setTurns([])
       setPartial('')
       agentBufRef.current = ''
       voiceWs.sendJson({ type: 'voice.start', agent_id: agentId })
-      await recorder.start()
+      const started = await recorder.start(audioDevices.inputDeviceId, audioDevices.fallbackInput)
+      if (started) await audioDevices.refreshAfterPermission()
+      else voiceWs.sendJson({ type: 'voice.stop' })
     }
   }
 
@@ -138,10 +153,26 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
         >
           {agents.length === 0 && <option value="">（暂无智能体）</option>}
           {agents.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
+            <option key={a.id} value={a.id} disabled={!a.voiceEnabled}>
+              {a.name}{a.voiceEnabled ? '' : '（未开启语音）'}
+            </option>
           ))}
         </select>
         <div className="flex-1" />
+        <AudioDeviceMenu
+          theme={theme}
+          inputDevices={audioDevices.inputDevices}
+          outputDevices={audioDevices.outputDevices}
+          inputDeviceId={audioDevices.inputDeviceId}
+          outputDeviceId={audioDevices.outputDeviceId}
+          onInputChange={audioDevices.selectInputDevice}
+          onOutputChange={audioDevices.selectOutputDevice}
+          loading={audioDevices.loading}
+          recording={recorder.recording}
+          outputSelectionSupported={audioDevices.outputSelectionSupported}
+          notice={audioDevices.notice}
+          error={audioDevices.error || outputError}
+        />
         <span className={`text-xs ${connected ? 'text-emerald-500' : 'text-amber-500'}`}>
           {connected ? '● 已连接' : '○ 连接中…'}
         </span>
@@ -154,7 +185,7 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
         <div className="flex items-center gap-4">
           <button
             onClick={toggleMic}
-            disabled={!!recorder.error || !agentId}
+            disabled={!connected || !agentId || !agents.find((agent) => agent.id === agentId)?.voiceEnabled}
             className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg cursor-pointer text-white disabled:opacity-40 disabled:cursor-not-allowed ${
               recorder.recording ? 'bg-rose-500 hover:bg-rose-600' : 'bg-indigo-500 hover:bg-indigo-600'
             }`}

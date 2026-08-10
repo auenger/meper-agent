@@ -30,7 +30,7 @@ export class VoiceWsClient {
 
   connect(): void {
     if (this.disposed) return
-    if (this.ws?.readyState === WebSocket.OPEN) return
+    if (this.ws && this.ws.readyState <= WebSocket.OPEN) return
     const token = useAuthStore.getState().accessToken
     if (!token) return
     this.openWithToken(token)
@@ -102,8 +102,11 @@ export class VoiceWsClient {
   }
 
   /** Single binary (audio) handler — last setter wins. */
-  onBinary(handler: BinaryHandler): void {
+  onBinary(handler: BinaryHandler): () => void {
     this.binaryHandler = handler
+    return () => {
+      if (this.binaryHandler === handler) this.binaryHandler = null
+    }
   }
 
   sendJson(obj: unknown): void {

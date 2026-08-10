@@ -1,9 +1,10 @@
-"""Voice config CRUD — single-doc upsert, encrypted tokens, masked responses.
+"""Voice config CRUD — single-doc upsert, encrypted API key, masked responses.
 
-Singleton stored at ``_id="voice_config"``. Tokens are AES-256-GCM encrypted
+Singleton stored at ``_id="voice_config"``. The API key is AES-256-GCM encrypted
 on write and decrypted only on demand (runtime config for the voice session);
-API responses always mask them.
+API responses always mask it.
 """
+
 from __future__ import annotations
 
 from loguru import logger
@@ -17,9 +18,9 @@ from app.core.crypto import (
 from app.db.mongodb import get_database
 from app.models.base import utc_now
 from app.models.voice_config import (
-    ASRConfig,
     COLLECTION,
     CONFIG_DOC_ID,
+    ASRConfig,
     TTSConfig,
     VoiceConfig,
 )
@@ -36,35 +37,28 @@ class VoiceConfigService:
 
     @staticmethod
     async def save_config(body) -> VoiceConfig:
-        """Upsert the singleton. A null/empty ``access_token`` keeps the existing value."""
+        """Upsert the singleton. A null/empty ``api_key`` keeps the existing value."""
         db = get_database()
         existing = await VoiceConfigService.get_config()
         master_key = get_encryption_key()
 
-        def resolve_token(new_token: str | None, old_enc: str) -> str:
-            if new_token:
-                return encrypt_secret(new_token, master_key)
+        def resolve_api_key(new_key: str | None, old_enc: str) -> str:
+            if new_key:
+                return encrypt_secret(new_key, master_key)
             return old_enc or ""
 
         cfg = VoiceConfig(
-            asr=ASRConfig(
-                appid=body.asr.appid,
-                access_token_enc=resolve_token(
-                    body.asr.access_token, existing.asr.access_token_enc if existing else ""
-                ),
-                resource_id=body.asr.resource_id,
-                url=body.asr.url,
+            api_key_enc=resolve_api_key(
+                body.api_key, existing.api_key_enc if existing else ""
             ),
+            asr=ASRConfig(),
             tts=TTSConfig(
-                appid=body.tts.appid,
-                access_token_enc=resolve_token(
-                    body.tts.access_token, existing.tts.access_token_enc if existing else ""
-                ),
-                resource_id=body.tts.resource_id,
-                url=body.tts.url,
                 voice_type=body.tts.voice_type,
             ),
-            audio={"input_rate": body.audio.input_rate, "output_rate": body.audio.output_rate},
+            audio={
+                "input_rate": body.audio.input_rate,
+                "output_rate": body.audio.output_rate,
+            },
             vad={
                 "mode": body.vad.mode,
                 "threshold": body.vad.threshold,
@@ -85,7 +79,12 @@ class VoiceConfigService:
         db = get_database()
         await db[COLLECTION].update_one(
             {"_id": CONFIG_DOC_ID},
-            {"$set": {"last_test_success": success, "last_test_at": utc_now().isoformat()}},
+            {
+                "$set": {
+                    "last_test_success": success,
+                    "last_test_at": utc_now().isoformat(),
+                }
+            },
             upsert=True,
         )
 
@@ -100,20 +99,20 @@ class VoiceConfigService:
                 return "****"
 
         return {
+            "api_key_masked": mask(cfg.api_key_enc),
             "asr": {
-                "appid": cfg.asr.appid,
-                "access_token_masked": mask(cfg.asr.access_token_enc),
                 "resource_id": cfg.asr.resource_id,
                 "url": cfg.asr.url,
             },
             "tts": {
-                "appid": cfg.tts.appid,
-                "access_token_masked": mask(cfg.tts.access_token_enc),
                 "resource_id": cfg.tts.resource_id,
                 "url": cfg.tts.url,
                 "voice_type": cfg.tts.voice_type,
             },
-            "audio": {"input_rate": cfg.audio.input_rate, "output_rate": cfg.audio.output_rate},
+            "audio": {
+                "input_rate": cfg.audio.input_rate,
+                "output_rate": cfg.audio.output_rate,
+            },
             "vad": {
                 "mode": cfg.vad.mode,
                 "threshold": cfg.vad.threshold,

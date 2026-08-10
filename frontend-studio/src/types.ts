@@ -8,6 +8,8 @@ export interface Agent {
   /** 终端用户首屏推荐问题/操作 — 后端 recommended_items */
   recommendedItems?: { label: string; prompt: string }[];
   model: string;
+  /** Agent-level capability switch; global voice credentials are checked separately. */
+  voiceEnabled: boolean;
   temperature: number;
   systemPrompt: string;
   /** 角色定义 — 后端 prompt_slots.role（必填） */

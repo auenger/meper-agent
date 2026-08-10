@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 720" width="1200" height="720">
+  <style>
+    text { font-family: "Helvetica Neue", Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif; }
+    .title { fill: #111827; font-size: 24px; font-weight: 700; }
+    .subtitle { fill: #6b7280; font-size: 13px; }
+    .group-title { fill: #475569; font-size: 12px; font-weight: 700; letter-spacing: .08em; }
+    .node-title { fill: #111827; font-size: 14px; font-weight: 700; }
+    .node-sub { fill: #64748b; font-size: 11px; }
+    .label { fill: #475569; font-size: 11px; font-weight: 600; }
+  </style>
+  <defs>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#2563eb"/></marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#059669"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ea580c"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#7c3aed"/></marker>
+  </defs>
+
+  <rect width="1200" height="720" fill="#ffffff"/>
+  <text x="48" y="48" class="title">MEPER Agent 语音对话架构</text>
+  <text x="48" y="72" class="subtitle">级联式实时语音管线 · 浏览器与后端全双工 WebSocket · ASR / Agent / TTS 并行流式编排</text>
+
+  <rect x="40" y="104" width="280" height="520" rx="14" fill="#eff6ff" fill-opacity=".56" stroke="#93c5fd" stroke-width="1.3" stroke-dasharray="7 5"/>
+  <text x="58" y="130" class="group-title">BROWSER · REACT 19</text>
+  <rect x="360" y="104" width="480" height="520" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.3" stroke-dasharray="7 5"/>
+  <text x="378" y="130" class="group-title">FASTAPI · VOICE ORCHESTRATION</text>
+  <rect x="880" y="104" width="280" height="520" rx="14" fill="#fff7ed" fill-opacity=".7" stroke="#fdba74" stroke-width="1.3" stroke-dasharray="7 5"/>
+  <text x="898" y="130" class="group-title">VOLCENGINE AGENT PLAN</text>
+
+  <g>
+    <rect x="70" y="162" width="220" height="82" rx="10" fill="#ffffff" stroke="#93c5fd" stroke-width="1.5"/>
+    <rect x="70" y="162" width="220" height="20" rx="10" fill="#dbeafe"/>
+    <circle cx="84" cy="172" r="3.5" fill="#ef4444"/><circle cx="96" cy="172" r="3.5" fill="#f59e0b"/><circle cx="108" cy="172" r="3.5" fill="#10b981"/>
+    <text x="180" y="207" text-anchor="middle" class="node-title">ChatVoiceComposer</text>
+    <text x="180" y="228" text-anchor="middle" class="node-sub">文字 / 语音切换 · 视频状态 Logo</text>
+  </g>
+  <g>
+    <rect x="70" y="280" width="220" height="92" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="180" y="309" text-anchor="middle" class="node-title">麦克风采集</text>
+    <text x="180" y="331" text-anchor="middle" class="node-sub">ScriptProcessor · 48k → 16k</text>
+    <text x="180" y="351" text-anchor="middle" class="node-sub">PCM16 mono · 20ms / 640 bytes</text>
+  </g>
+  <g>
+    <rect x="70" y="462" width="220" height="92" rx="10" fill="#ffffff" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="180" y="491" text-anchor="middle" class="node-title">流式播放器</text>
+    <text x="180" y="513" text-anchor="middle" class="node-sub">AudioContext · PCM16 @ 24kHz</text>
+    <text x="180" y="533" text-anchor="middle" class="node-sub">无缝排程 · playback.clear</text>
+  </g>
+
+  <g>
+    <rect x="394" y="162" width="178" height="82" rx="10" fill="#ffffff" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="483" y="198" text-anchor="middle" class="node-title">Realtime WS API</text>
+    <text x="483" y="220" text-anchor="middle" class="node-sub">JSON 控制 + 双向二进制音频</text>
+  </g>
+  <g>
+    <rect x="620" y="162" width="186" height="118" rx="10" fill="#eef2ff" stroke="#818cf8" stroke-width="2.2"/>
+    <rect x="624" y="166" width="178" height="110" rx="8" fill="none" stroke="#c7d2fe" stroke-width="1"/>
+    <text x="713" y="196" text-anchor="middle" class="node-title">VoiceSession</text>
+    <text x="713" y="219" text-anchor="middle" class="node-sub">状态机 · Turn Lock · 任务取消</text>
+    <text x="713" y="240" text-anchor="middle" class="node-sub">本地 VAD · 1s partial idle commit</text>
+    <text x="713" y="261" text-anchor="middle" class="node-sub">自动 / 手动 Barge-in</text>
+  </g>
+  <g>
+    <rect x="414" y="338" width="188" height="96" rx="10" fill="#faf5ff" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="508" y="370" text-anchor="middle" class="node-title">Agent Harness</text>
+    <text x="508" y="393" text-anchor="middle" class="node-sub">LangGraph / REACT 流式执行</text>
+    <text x="508" y="414" text-anchor="middle" class="node-sub">text_delta · tools · interrupt</text>
+  </g>
+  <g>
+    <rect x="650" y="350" width="156" height="72" rx="10" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+    <text x="728" y="379" text-anchor="middle" class="node-title">会话持久化</text>
+    <text x="728" y="401" text-anchor="middle" class="node-sub">MongoDB · timeline / usage</text>
+  </g>
+  <g>
+    <rect x="414" y="484" width="188" height="82" rx="10" fill="#fff7ed" stroke="#fdba74" stroke-width="1.5"/>
+    <text x="508" y="516" text-anchor="middle" class="node-title">TTS Sentence Queue</text>
+    <text x="508" y="538" text-anchor="middle" class="node-sub">Markdown 清洗 · 逐句并行泵送</text>
+  </g>
+
+  <g>
+    <rect x="914" y="174" width="212" height="106" rx="10" fill="#ffffff" stroke="#fb923c" stroke-width="1.5"/>
+    <text x="1020" y="207" text-anchor="middle" class="node-title">Seed ASR 2.0</text>
+    <text x="1020" y="230" text-anchor="middle" class="node-sub">bigmodel_async · WebSocket</text>
+    <text x="1020" y="252" text-anchor="middle" class="node-sub">200ms 音频块 ⇄ partial / final</text>
+  </g>
+  <g>
+    <rect x="914" y="466" width="212" height="106" rx="10" fill="#ffffff" stroke="#fb923c" stroke-width="1.5"/>
+    <text x="1020" y="499" text-anchor="middle" class="node-title">Seed TTS 2.0</text>
+    <text x="1020" y="522" text-anchor="middle" class="node-sub">bidirection · WebSocket</text>
+    <text x="1020" y="544" text-anchor="middle" class="node-sub">文本事件 ⇄ PCM 音频片段</text>
+  </g>
+
+  <path d="M290 326 H394 V220" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow-blue)"/>
+  <text x="330" y="315" class="label">PCM 上行</text>
+  <path d="M572 203 H620" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow-blue)"/>
+  <path d="M806 205 H914" fill="none" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow-blue)"/>
+  <text x="844" y="194" class="label">200ms chunks</text>
+  <path d="M914 257 H834 V264 H806" fill="none" stroke="#059669" stroke-width="2" marker-end="url(#arrow-green)"/>
+  <text x="838" y="278" class="label">转写事件</text>
+  <path d="M683 280 V310 H508 V338" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#arrow-orange)"/>
+  <text x="536" y="303" class="label">final transcript</text>
+  <path d="M602 386 H650" fill="none" stroke="#059669" stroke-width="1.7" stroke-dasharray="6 4" marker-end="url(#arrow-green)"/>
+  <text x="610" y="375" class="label">写入</text>
+  <path d="M508 434 V484" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow-purple)"/>
+  <text x="520" y="462" class="label">text_delta</text>
+  <path d="M602 525 H914" fill="none" stroke="#7c3aed" stroke-width="2.2" marker-end="url(#arrow-purple)"/>
+  <text x="722" y="514" class="label">双向 TTS 事件</text>
+  <path d="M914 554 H860 V594 H334 V508 H290" fill="none" stroke="#7c3aed" stroke-width="2.4" marker-end="url(#arrow-purple)"/>
+  <text x="620" y="612" class="label">PCM 下行（与麦克风上行可并发）</text>
+  <path d="M620 235 V450 H334 V475 H290" fill="none" stroke="#ea580c" stroke-width="1.7" stroke-dasharray="6 4" marker-end="url(#arrow-orange)"/>
+  <text x="346" y="440" class="label">playback.clear / state</text>
+
+  <g transform="translate(52 664)">
+    <line x1="0" y1="0" x2="30" y2="0" stroke="#2563eb" stroke-width="2.4" marker-end="url(#arrow-blue)"/><text x="40" y="4" class="node-sub">音频上行</text>
+    <line x1="150" y1="0" x2="180" y2="0" stroke="#059669" stroke-width="2" marker-end="url(#arrow-green)"/><text x="190" y="4" class="node-sub">转写 / 持久化</text>
+    <line x1="350" y1="0" x2="380" y2="0" stroke="#7c3aed" stroke-width="2" marker-end="url(#arrow-purple)"/><text x="390" y="4" class="node-sub">Agent / TTS / 音频下行</text>
+    <line x1="610" y1="0" x2="640" y2="0" stroke="#ea580c" stroke-width="1.7" stroke-dasharray="6 4" marker-end="url(#arrow-orange)"/><text x="650" y="4" class="node-sub">控制 / 打断</text>
+  </g>
+</svg>
