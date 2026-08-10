@@ -13,12 +13,8 @@ import { User, Shield, KeyRound, Loader2, CheckCircle2, AlertCircle } from 'luci
 import { useMutation } from '@tanstack/react-query'
 import { authApi } from '../services/auth-api'
 import { REFRESH_TOKEN_KEY, useAuthStore } from '../stores/auth-store'
-import type { NormalizedApiError } from '../lib/api-client'
+import { getErrorMessage } from '../lib/api-client'
 import { Input } from './ui'
-
-function isNormalizedError(err: unknown): err is NormalizedApiError {
-  return typeof err === 'object' && err !== null && 'message' in err
-}
 
 export function ProfilePage({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
   const authUser = useAuthStore((s) => s.user)
@@ -43,10 +39,7 @@ export function ProfilePage({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
         window.location.href = '/login'
       }, 3000)
     },
-    onError: (err: unknown) => {
-      const msg = isNormalizedError(err) ? err.message : '修改密码失败'
-      setFormError(msg)
-    },
+    onError: (err: unknown) => setFormError(getErrorMessage(err, '修改密码失败')),
   })
 
   const handleSubmit = (e: FormEvent) => {

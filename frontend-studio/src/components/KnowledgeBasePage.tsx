@@ -74,7 +74,6 @@ export function KnowledgeBasePage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.all });
       toast.success('知识库已删除');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const handleDelete = async (id: string, name: string) => {

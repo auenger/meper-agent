@@ -17,7 +17,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   modelApi,
   modelKeys,
-  isModelError,
   type Model,
   type ModelCreateInput,
   type CompatibilityType,
@@ -27,6 +26,7 @@ import {
 } from '../services/model-api';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
+import { getErrorMessage } from '../lib/api-client';
 
 const COMPATIBILITY_LABELS: Record<CompatibilityType, string> = {
   openai: 'OpenAI',
@@ -143,7 +143,7 @@ export function ModelsPage() {
       setError(null);
       setCreating(false);
     },
-    onError: (e: unknown) => setError(isModelError(e) ? e.message : '创建模型失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '创建模型失败')),
   });
 
   const updateM = useMutation({
@@ -153,13 +153,13 @@ export function ModelsPage() {
       setError(null);
       setEditing(null);
     },
-    onError: (e: unknown) => setError(isModelError(e) ? e.message : '保存模型失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '保存模型失败')),
   });
 
   const deleteM = useMutation({
     mutationFn: (id: string) => modelApi.remove(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: modelKeys.all }),
-    onError: (e: unknown) => setError(isModelError(e) ? e.message : '删除失败'),
+    onError: (e: unknown) => setError(getErrorMessage(e, '删除失败')),
   });
 
   const testM = useMutation({
@@ -635,7 +635,7 @@ export function ModelsPage() {
                 <div className="flex items-start gap-2 p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 text-rose-300">
                   <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
                   <span className="font-sans">
-                    {isModelError(testM.error) ? testM.error.message : '测试请求失败（网络或鉴权问题）'}
+                    {getErrorMessage(testM.error, '测试请求失败（网络或鉴权问题）')}
                   </span>
                 </div>
               )}

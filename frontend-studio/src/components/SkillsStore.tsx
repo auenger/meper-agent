@@ -84,7 +84,6 @@ export function SkillsStore({ onOpenSkill }: { onOpenSkill?: (skill: Skill) => v
       queryClient.invalidateQueries({ queryKey: toolKeys.all });
       toast.success('Skill 已删除');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const handleDelete = async (id: string, name: string) => {

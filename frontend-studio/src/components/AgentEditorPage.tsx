@@ -21,7 +21,6 @@ import { mcpApi, mcpKeys } from '../services/mcp-api';
 import { workflowsApi, workflowKeys } from '../services/workflows-api';
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api';
 import { toStudioAgent, fromStudioAgent } from '../services/adapters';
-import { getErrorMessage } from '../lib/api-client';
 import { Select, type SelectOptionGroup } from './ui';
 import { toast } from './ui/toast';
 import type { Agent } from '../types';
@@ -111,19 +110,16 @@ export function AgentEditorPage({
       toast.success('配置已保存');
       if (onSaved) onSaved(agentId);
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '保存失败')),
   });
 
   const publishM = useMutation({
     mutationFn: () => agentApi.publish(agentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '发布失败')),
   });
 
   const archiveM = useMutation({
     mutationFn: () => agentApi.archive(agentId),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '归档失败')),
   });
 
   const handleSave = () => {

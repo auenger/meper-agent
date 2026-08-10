@@ -12,10 +12,7 @@ import {
   voiceConfigKeys,
 } from '../../services/voice-config-api'
 import { VoicePicker } from './VoicePicker'
-
-function errMsg(e: unknown): string {
-  return (e as { message?: string })?.message ?? '操作失败'
-}
+import { getErrorMessage } from '../../lib/api-client'
 
 export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
   const qc = useQueryClient()
@@ -94,7 +91,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
     } catch (error) {
       if (requestId !== previewRequestRef.current) return
       stopPreview()
-      setPreviewError(errMsg(error))
+      setPreviewError(getErrorMessage(error, '操作失败'))
     }
   }
 
@@ -113,7 +110,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
       qc.invalidateQueries({ queryKey: voiceConfigKeys.status })
       setStatus({ type: 'success', msg: '已保存' })
     } catch (e) {
-      setStatus({ type: 'error', msg: errMsg(e) })
+      setStatus({ type: 'error', msg: getErrorMessage(e, '操作失败') })
     } finally {
       setSaving(false)
     }
@@ -125,7 +122,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
       const r = await voiceConfigApi.test()
       setStatus({ type: r.success ? 'success' : 'error', msg: r.message })
     } catch (e) {
-      setStatus({ type: 'error', msg: errMsg(e) })
+      setStatus({ type: 'error', msg: getErrorMessage(e, '操作失败') })
     }
   }
 
