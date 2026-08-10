@@ -508,6 +508,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   // ask_clarification / confirm_workflow 中断态：SSE 收到 interrupt 或历史回填时
   // 记录对应的消息 id，使下一次发送走 /resume 而非 /stream（避免 agent 重复提问）。
   const pendingInterruptRef = useRef<{ toolMsgId: string } | null>(null);
+  // 流式回答中被切换走的会话：后端后台任务仍会跑完并把完整回答一次性落库。
+  // 记录这些 sessionId，切回时轮询 getDetail 直到 agent 回复落库后整体显示。
+  const pendingBackgroundSessionsRef = useRef<Set<string>>(new Set());
 
   // ── Timeline 流式渲染 refs（对齐 frontend chat-panel 的 RAF 批处理）──
   // 每个 text_delta 只进 buffer，一帧最多 setState 一次，保证平滑且多轮
@@ -588,52 +591,85 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   // ref) on every render, so listing it as a dependency would re-fire this
   // effect mid-stream and wipe the optimistic first message. Read it via
   // agentsRef instead. Likewise guard against re-entry while a stream is live.
-  const isStreamingRef = useRef(false);
-  isStreamingRef.current = isStreaming;
+  // Load messages when the active session changes. NOTE: depends on `activeSessionId`
+  // only — `agents` is a fresh array every render, listing it would re-fire mid-stream
+  // and wipe the optimistic first message; read it via agentsRef instead. There is NO
+  // streaming guard here: switching sessions mid-stream is the legitimate trigger, and
+  // handleSelectSession aborts the in-flight stream first so this load takes over.
   useEffect(() => {
     let cancelled = false;
-    // While streaming, never reset/reload — would erase the live bubbles.
-    if (isStreamingRef.current) return;
-    if (!activeSessionId) {
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const sid = activeSessionId;
+    if (!sid) {
       setLiveMessages([]);
       return;
     }
     setLiveMessages([]);
     setStreamError(null);
-    sessionApi
-      .getDetail(activeSessionId)
-      .then((detail) => {
-        if (cancelled) return;
-        const mapped: Message[] = [];
-        for (const rec of detail.messages) {
-          if (rec.role === 'user') mapped.push(userMessageToDisplay(rec));
-          else {
-            const agent = agentsRef.current.find((a) => a.id === detail.session.agent_id);
-            mapped.push(
-              agentMessageToDisplay(rec, agent?.name ?? 'Agent', agent?.avatar ?? ''),
-            );
+
+    // Session switched away mid-stream: the backend asyncio task keeps running and
+    // persists the full reply once finished. Poll getDetail until the agent reply
+    // lands (messages end with role==='agent' — normal/interrupt/error turns all
+    // produce one) or the timeout elapses, then render in one shot.
+    const pollStartedAt = Date.now();
+    const POLL_INTERVAL = 1500;
+    const POLL_TIMEOUT = 90000;
+
+    const load = () => {
+      sessionApi
+        .getDetail(sid)
+        .then((detail) => {
+          if (cancelled) return;
+          const mapped: Message[] = [];
+          for (const rec of detail.messages) {
+            if (rec.role === 'user') mapped.push(userMessageToDisplay(rec));
+            else {
+              const agent = agentsRef.current.find((a) => a.id === detail.session.agent_id);
+              mapped.push(
+                agentMessageToDisplay(rec, agent?.name ?? 'Agent', agent?.avatar ?? ''),
+              );
+            }
           }
-        }
-        setLiveMessages(mapped);
-        // 检测未答的 interrupt（ask_clarification/confirm_workflow）：页面跳转后
-        // SSE 中断导致 pendingInterruptRef 丢失，从历史恢复，使下次发送走 /resume。
-        const pending = [...mapped].reverse().find((m) => m.isInterrupted);
-        if (pending) pendingInterruptRef.current = { toolMsgId: pending.id };
-      })
-      .catch((e) => {
-        if (cancelled) return;
-        // 会话已被删除（404 / “不存在”）：静默回到空状态，不弹报错横幅。
-        const status = (e as { response?: { status?: number } })?.response?.status;
-        const msg = (e as Error).message ?? '';
-        if (status === 404 || /不存在|not found/i.test(msg)) {
-          setActiveSessionId(null);
-          setLiveMessages([]);
-          return;
-        }
-        setStreamError(`加载会话失败：${msg}`);
-      });
+          setLiveMessages(mapped);
+          // 检测未答的 interrupt（ask_clarification/confirm_workflow）：页面跳转后
+          // SSE 中断导致 pendingInterruptRef 丢失，从历史恢复，使下次发送走 /resume。
+          const pending = [...mapped].reverse().find((m) => m.isInterrupted);
+          if (pending) pendingInterruptRef.current = { toolMsgId: pending.id };
+
+          if (pendingBackgroundSessionsRef.current.has(sid)) {
+            const lastIsAgent =
+              detail.messages.length > 0 &&
+              detail.messages[detail.messages.length - 1].role === 'agent';
+            if (lastIsAgent) {
+              // 后端已落库完整回答，停止轮询。
+              pendingBackgroundSessionsRef.current.delete(sid);
+            } else if (Date.now() - pollStartedAt < POLL_TIMEOUT) {
+              pollTimer = setTimeout(load, POLL_INTERVAL);
+            } else {
+              // 超时仍未落库（后端异常），放弃轮询。
+              pendingBackgroundSessionsRef.current.delete(sid);
+            }
+          }
+        })
+        .catch((e) => {
+          if (cancelled) return;
+          // 会话已被删除（404 / “不存在”）：静默回到空状态，不弹报错横幅。
+          const status = (e as { response?: { status?: number } })?.response?.status;
+          const msg = (e as Error).message ?? '';
+          if (status === 404 || /不存在|not found/i.test(msg)) {
+            setActiveSessionId(null);
+            setLiveMessages([]);
+            pendingBackgroundSessionsRef.current.delete(sid);
+            return;
+          }
+          setStreamError(`加载会话失败：${msg}`);
+        });
+    };
+    load();
+
     return () => {
       cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
     };
   }, [activeSessionId]);
 
@@ -647,6 +683,13 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
 
   const handleSelectSession = (id: string) => {
     setInputMode('text');
+    if (isStreaming && id !== activeSessionId) {
+      // 流式中切到别的会话：打断前端 SSE 渲染（后端后台任务不受影响，会继续跑完
+      // 落库）。标记原会话为"后台进行中"，以便切回时轮询 getDetail 拉取落库结果。
+      pendingBackgroundSessionsRef.current.add(activeSessionId);
+      abortRef.current?.abort();
+      setIsStreaming(false);
+    }
     setActiveSessionId(id);
   };
 
@@ -1116,16 +1159,20 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
       }
       if (deltaBufferRef.current) flushDelta();
     } catch (err) {
-      const msg = (err as Error).message || '流式请求失败';
-      setStreamError(msg);
-      setLiveMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== agentMsgId) return m;
-          const tl = [...(m.timeline ?? [])];
-          tl.push({ id: `${agentMsgId}-err-${Date.now()}`, type: 'error', content: `❌ ${msg}` });
-          return { ...m, status: 'error', timeline: tl };
-        }),
-      );
+      // 用户主动中止（切换会话 / 点停止生成）时 controller 已 abort：静默退出，
+      // 不弹"流式请求失败"横幅、不写 error entry。仅对真实异常报错。
+      if (!controller.signal.aborted) {
+        const msg = (err as Error).message || '流式请求失败';
+        setStreamError(msg);
+        setLiveMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== agentMsgId) return m;
+            const tl = [...(m.timeline ?? [])];
+            tl.push({ id: `${agentMsgId}-err-${Date.now()}`, type: 'error', content: `❌ ${msg}` });
+            return { ...m, status: 'error', timeline: tl };
+          }),
+        );
+      }
     } finally {
       setIsStreaming(false);
       abortRef.current = null;
