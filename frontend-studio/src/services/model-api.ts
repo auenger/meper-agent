@@ -4,7 +4,7 @@
  * Uses the shared apiClient instance (auto auth header + 401 refresh).
  * Response fields are snake_case per backend contract.
  */
-import { apiClient, type NormalizedApiError } from '../lib/api-client'
+import { apiClient } from '../lib/api-client'
 
 /* ─── Types (snake_case, matches backend schemas) ─── */
 
@@ -154,17 +154,4 @@ export const modelKeys = {
   list: (params: ModelListParams) => [...modelKeys.lists(), params] as const,
   details: () => [...modelKeys.all, 'detail'] as const,
   detail: (id: string) => [...modelKeys.details(), id] as const,
-}
-
-/* ─── Error helpers ─── */
-
-export function isModelError(
-  err: unknown,
-): err is NormalizedApiError {
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    'message' in err &&
-    typeof (err as { message: unknown }).message === 'string'
-  )
 }

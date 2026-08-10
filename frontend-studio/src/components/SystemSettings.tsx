@@ -12,6 +12,7 @@ import {
   type ApiKeyItem, type ApiKeyScope,
   type ApiKeyCreatePayload, type ApiKeyCreateResponse, type ApiKeyUpdatePayload,
 } from '../services/api-keys-api';
+import { getErrorMessage } from '../lib/api-client';
 
 type AccessMode = 'legacy' | 'callback';
 
@@ -27,16 +28,6 @@ type KeyDetailLike = {
   last_used_at?: string | null;
   updated_at?: string;
 };
-
-/** Pull a human message out of an axios-shaped error. */
-function errMsg(e: unknown, fallback: string): string {
-  if (e && typeof e === 'object' && 'response' in e) {
-    const detail = (e as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
-    if (typeof detail === 'string') return detail;
-  }
-  if (e instanceof Error) return e.message;
-  return fallback;
-}
 
 /** ISO timestamp → YYYY-MM-DD, or fallback when null/empty. */
 function fmtDate(iso: string | null | undefined, fallback = '—'): string {
@@ -115,7 +106,7 @@ export function SystemSettings() {
       setBoundWorkflows(new Set());
       setError('');
     },
-    onError: (e) => setError(errMsg(e, '创建失败，请重试')),
+    onError: (e) => setError(getErrorMessage(e, '创建失败，请重试')),
   });
 
   const revokeMutation = useMutation({
@@ -680,7 +671,7 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
       qc.invalidateQueries({ queryKey: apiKeyKeys.lists() });
       onClose();
     },
-    onError: (e) => setError(errMsg(e, '保存失败，请重试')),
+    onError: (e) => setError(getErrorMessage(e, '保存失败，请重试')),
   });
 
   const handleSave = (e: FormEvent) => {
