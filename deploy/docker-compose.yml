@@ -83,9 +83,14 @@ services:
       # Agent avatars
       - ${AVATARS_HOST_DIR:-${HOME}/.agent-flow/avatars}:${AVATARS_CONTAINER_DIR:-/data/avatars}
     depends_on:
-      - redis
-      - mongodb
-      - qdrant
+      backend:
+        condition: service_started
+      redis:
+        condition: service_started
+      mongodb:
+        condition: service_started
+      qdrant:
+        condition: service_started
     restart: unless-stopped
 
   celery-beat:
@@ -96,7 +101,10 @@ services:
     env_file:
       - .env
     depends_on:
-      - redis
+      backend:
+        condition: service_started
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   mongodb:
