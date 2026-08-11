@@ -13,6 +13,7 @@ from app.api.v1.files import router as files_router
 from app.api.v1.health import router as health_router
 from app.api.v1.knowledge_bases import router as knowledge_bases_router
 from app.api.v1.mcp import router as mcp_router
+from app.api.v1.mcp_tokens import router as mcp_tokens_router
 from app.api.v1.models import router as models_router
 from app.api.v1.notifications import router as notifications_router
 from app.api.v1.roles import router as roles_router
@@ -42,6 +43,7 @@ api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(tools_router)
 api_v1_router.include_router(triggers_router)
 api_v1_router.include_router(mcp_router)
+api_v1_router.include_router(mcp_tokens_router)
 api_v1_router.include_router(roles_router)
 api_v1_router.include_router(workflow_registry_router)
 api_v1_router.include_router(workflows_router)

@@ -11,6 +11,7 @@ import AgentDetailPage from '../pages/agent-detail-page'
 import ModelsPage from '../pages/models-page'
 import SkillsPage from '../pages/skills-page'
 import McpPage from '../pages/mcp-page'
+import McpTokensPage from '../pages/mcp-tokens-page'
 import TasksPage from '../pages/tasks-page'
 import WorkflowsPage from '../pages/workflows-page'
 import WorkflowDetailPage from '../pages/workflow-detail-page'
@@ -43,6 +44,7 @@ export const routes = [
           { path: '/models', element: <ModelsPage /> },
           { path: '/skills', element: <SkillsPage /> },
           { path: '/mcp', element: <McpPage /> },
+          { path: '/mcp-tokens', element: <McpTokensPage /> },
           { path: '/tasks', element: <TasksPage /> },
           { path: '/workflows', element: <WorkflowsPage /> },
           { path: '/workflows/:id', element: <WorkflowDetailPage /> },

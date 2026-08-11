@@ -11,6 +11,16 @@ import { apiClient } from './api-client'
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 export type McpAuthType = 'none' | 'api_key' | 'bearer_token' | 'basic'
 
+/** 账密型绑定的登录端点配置（仅当用户用 username/password 绑定时用到）。 */
+export interface McpLoginConfig {
+  login_url: string
+  method?: string
+  username_field?: string
+  password_field?: string
+  token_jsonpath?: string
+  session_ttl?: number
+}
+
 export interface McpConnection {
   id: string
   name: string
@@ -21,6 +31,7 @@ export interface McpConnection {
   auth_config: Record<string, string>
   timeout: number
   default_params: Record<string, unknown>
+  login_config: McpLoginConfig | Record<string, never>
   status: ConnectionStatus
   status_message: string
   last_connected_at: string
@@ -38,6 +49,7 @@ export interface McpConnectionCreateInput {
   auth_config?: Record<string, string>
   timeout?: number
   default_params?: Record<string, unknown>
+  login_config?: McpLoginConfig
 }
 
 export type McpConnectionUpdateInput = McpConnectionCreateInput

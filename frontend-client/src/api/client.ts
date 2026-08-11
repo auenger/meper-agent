@@ -32,6 +32,30 @@ export function getUserToken(): string | null {
   return userToken
 }
 
+/** apikey 模式下调 /ext/userinfo 获取终端用户名（供 sidebar 显示）。 */
+export async function fetchUserInfo(): Promise<string> {
+  if (AUTH_MODE !== 'apikey') return ''
+  const resp = await fetch(apiUrl('/v1/ext/userinfo'), {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${effectiveApiKey()}`,
+      'X-User-Token': getUserToken() || '',
+    },
+  })
+  if (!resp.ok) return ''
+  const data = await resp.json() as { name?: string }
+  return data.name || '用户'
+}
+
+/** apikey 模式退出：清 token + 通知 widget 清 cookie + 关闭。 */
+export function apikeyLogout(): void {
+  setUserToken(null)
+  // 通知 widget（父页）执行退出（清 cookie + 关闭面板）
+  if (inIframe()) {
+    window.parent.postMessage({ type: 'agentflow:logout' }, '*')
+  }
+}
+
 let refreshPromise: Promise<string | null> | null = null
 
 export class ApiError extends Error {
@@ -197,12 +221,13 @@ export function applyEmbedConfig(apiKey: string, userToken?: string | null): voi
 }
 
 export async function bootstrapAuth(): Promise<void> {
-  // iframe 嵌入：等父页注入 API Key（data-api-key），优先于 build 内置。
+  // iframe 嵌入：等父页注入 API Key + userToken（即使 build 时配了 API Key，
+  // userToken 也需要 widget 从 cookie 读取后注入）。
   if (inIframe()) {
     await new Promise<void>((resolve) => {
       resolveEmbedReady = resolve
       window.parent.postMessage({ type: 'agentflow:request_config' }, '*')
-      // 超时降级：未收到则按 build key / jwt 继续
+      // 超时降级：未收到则按 build key / 已有状态继续
       window.setTimeout(() => {
         if (resolveEmbedReady) {
           resolveEmbedReady = null

@@ -31,6 +31,7 @@ def classify_channel(user_id: str) -> str:
     """Classify a user_id into an access channel.
 
     Priority: ``channel:`` prefix → im; bare ``user_`` (no colon) → internal;
+    ``mcptok_`` prefix → api_key (外部终端用户通用 token);
     anything else with a colon → api_key.
     """
     if not user_id:
@@ -39,6 +40,8 @@ def classify_channel(user_id: str) -> str:
         return CHANNEL_IM
     if user_id.startswith("user_") and ":" not in user_id:
         return CHANNEL_INTERNAL
+    if user_id.startswith("mcptok_"):
+        return CHANNEL_API_KEY
     if ":" in user_id:
         return CHANNEL_API_KEY
     return CHANNEL_INTERNAL

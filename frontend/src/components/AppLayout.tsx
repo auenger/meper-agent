@@ -86,6 +86,14 @@ const GROUPS: NavGroup[] = [
     ],
   },
   {
+    key: 'ext-users',
+    label: '外部用户',
+    icon: <TeamOutlined />,
+    single: true,
+    path: '/mcp-tokens',
+    permission: 'apikey:manage',
+  },
+  {
     key: 'users',
     label: '用户管理',
     icon: <TeamOutlined />,
@@ -113,6 +121,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   '/tasks': 'workflow',
   '/tools': 'tools',
   '/mcp': 'tools',
+  '/mcp-tokens': 'ext-users',
   '/skills': 'tools',
   '/channels': 'tools',
   '/knowledge': 'knowledge',

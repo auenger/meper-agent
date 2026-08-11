@@ -288,6 +288,38 @@ function ClarificationAnsweredCard({ tool }: { tool: ToolRun }) {
   const question = String(args.question ?? '请补充信息后继续。')
   const answered = !!tool.result
 
+  // 解析 fields 拿到 name→label 映射
+  const rawFields = args.fields
+  let fieldLabels: Record<string, string> = {}
+  if (Array.isArray(rawFields)) {
+    for (const f of rawFields as Array<Record<string, unknown>>) {
+      if (f.name && f.label) fieldLabels[String(f.name)] = String(f.label)
+    }
+  } else if (typeof rawFields === 'string' && rawFields) {
+    try {
+      const parsed = JSON.parse(rawFields)
+      if (Array.isArray(parsed)) {
+        for (const f of parsed) {
+          if (f.name && f.label) fieldLabels[f.name] = f.label
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 解析回答结果（JSON 字符串 → 键值对）
+  let answerPairs: Array<[string, string]> | null = null
+  if (answered && tool.result) {
+    try {
+      const parsed = JSON.parse(tool.result)
+      if (typeof parsed === 'object' && parsed && !Array.isArray(parsed)) {
+        answerPairs = Object.entries(parsed).map(([k, v]) => [
+          fieldLabels[k] || k,
+          typeof v === 'boolean' ? (v ? '是' : '否') : String(v),
+        ])
+      }
+    } catch { /* not JSON, show raw */ }
+  }
+
   return (
     <div className="interactive-card interactive-card-clarification">
       <div className="interactive-card-header">
@@ -303,8 +335,18 @@ function ClarificationAnsweredCard({ tool }: { tool: ToolRun }) {
         <div className="interactive-card-question">{question}</div>
         {answered && tool.result ? (
           <div className="interactive-card-answer">
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>你的回答:</Typography.Text>
-            <span>{tool.result}</span>
+            {answerPairs ? (
+              <div className="clarification-form-answered">
+                {answerPairs.map(([label, val]) => (
+                  <div key={label} className="clarification-form-row">
+                    <span className="clarification-form-key">{label}</span>
+                    <span className="clarification-form-val">{val}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <span>{tool.result}</span>
+            )}
           </div>
         ) : null}
       </div>

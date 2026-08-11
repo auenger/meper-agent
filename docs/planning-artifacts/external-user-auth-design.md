@@ -1,9 +1,16 @@
 # 终端用户身份认证接入规范
 
+> ⚠️ **DEPRECATED（2026-08-07）**：本文档描述的"外部 introspection 回调（RFC 7662）"
+> 方案已被 [`mcp-credential-broker-design.md`](./mcp-credential-broker-design.md) 取代。
+> 新方案下，终端用户身份由 MEPER 统一托管（自主签发通用 token + 本地校验），
+> 不再回调接入方 introspection 端点。本文档保留仅作历史参考，实施新方案后相关代码
+> （`user_info_url` / `UserAuthService.introspect` / `introspection_cache` / `visitor_id`）
+> 将废弃。迁移说明见新方案文档第 7.1 节。
+>
 > 对应能力：第三方接入方代表的真实终端用户身份认证与会话隔离。
 > 日期：2026-07-21
-> 状态：方案已确认，待实施
-> 关联文档：[`external-api-design.md`](./external-api-design.md)、[`implementation-artifacts/5-3-mcp-connection-management.md`](../implementation-artifacts/5-3-mcp-connection-management.md)
+> 状态：~~方案已确认，待实施~~ **已废弃，由 mcp-credential-broker-design.md 取代**
+> 关联文档：[`external-api-design.md`](./external-api-design.md)、[`implementation-artifacts/5-3-mcp-connection-management.md`](../implementation-artifacts/5-3-mcp-connection-management.md)、[`mcp-credential-broker-design.md`](./mcp-credential-broker-design.md)（取代本文档）
 
 ---
 

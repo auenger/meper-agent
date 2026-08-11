@@ -26,6 +26,15 @@ class McpConnectionBase(BaseModel):
         default_factory=dict,
         description="工具调用时自动注入的默认参数（如 token, api_key）",
     )
+    login_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "账密型绑定的登录端点配置。字段：login_url/method(默认POST)/"
+            "body_template(用 {{username}}/{{password}} 占位)/"
+            "token_jsonpath(从响应取 session 的路径)/session_ttl(缓存秒，默认3600)。"
+            "仅当用户用 username/password 绑定该 MCP 时用到。"
+        ),
+    )
 
 
 class McpConnectionCreate(McpConnectionBase):
@@ -52,6 +61,7 @@ class McpConnectionResponse(BaseModel):
     auth_config: dict
     timeout: int
     default_params: dict
+    login_config: dict = Field(default_factory=dict)
     status: ConnectionStatus
     status_message: str
     last_connected_at: str

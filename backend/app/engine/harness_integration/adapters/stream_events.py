@@ -48,6 +48,46 @@ OnEventCallback = "Callable[[AppEvent], Awaitable[None]]"
 _LLM_ERROR_KINDS = ("on_llm_error", "on_chat_model_error")
 _TOOL_ERROR_KINDS = ("on_tool_error",)
 
+# run_id → tool_call_id 映射（on_tool_start 时记录，on_tool_error 时查回）。
+# 每次 stream 开始时清空（见函数体开头的 _run_id_to_tool_call_id.clear()）。
+_run_id_to_tool_call_id: dict[str, str] = {}
+# 待完成的 tool_call 列表（on_chat_model_end 时记录，on_tool_end 时移除）。
+# on_tool_error 时按工具名取最近的一个作为 fallback。
+_pending_tool_calls: list[dict[str, str]] = []
+# 已发出 ToolResultEvent 的 tool_call_id（防 on_tool_error + on_tool_end 重复发）
+_sent_tool_results: set[str] = set()
+
+
+def _extract_tool_call_id_from_event(event: dict[str, Any]) -> str:
+    """从 on_tool_error 事件里尽量提取 tool_call_id。
+
+    LangGraph 的 on_tool_error 事件结构不保证有 tool_call_id，
+    尝试多种路径：data.input.tool_calls / event metadata / tags。
+    """
+    data = event.get("data") or {}
+    # 路径1：data.input 是 AIMessage，其 tool_calls 有 id
+    inp = data.get("input")
+    if inp is not None:
+        # ToolCallRequest 对象
+        tc = getattr(inp, "tool_call", None)
+        if isinstance(tc, dict) and tc.get("id"):
+            return tc["id"]
+        # 可能是 dict 形式
+        if isinstance(inp, dict):
+            calls = inp.get("tool_calls") or inp.get("tool_call")
+            if isinstance(calls, list):
+                for c in calls:
+                    if isinstance(c, dict) and c.get("id"):
+                        return c["id"]
+            if isinstance(calls, dict) and calls.get("id"):
+                return calls["id"]
+    # 路径2：metadata 里可能有
+    meta = event.get("metadata") or {}
+    for v in meta.values():
+        if isinstance(v, dict) and v.get("tool_call_id"):
+            return v["tool_call_id"]
+    return ""
+
 
 def _extract_interrupt(error: Any) -> dict[str, Any] | None:
     """Check if *error* is a GraphInterrupt carrying an interrupt payload.
@@ -126,6 +166,9 @@ async def stream_events_to_app_events(
             returns reasoning content.
     """
     accumulator = _StreamingAccumulator(enable_thinking=enable_thinking)
+    _run_id_to_tool_call_id.clear()
+    _pending_tool_calls.clear()
+    _sent_tool_results.clear()
 
     async for event in astream_iter:
         kind = event.get("event")
@@ -171,20 +214,22 @@ async def stream_events_to_app_events(
                 # 冒泡 on_tool_start 事件，如果从 on_tool_start 发 tool_call 就会
                 # 产生重复。
                 for tc in _iter_tool_calls(output):
+                    tc_id = tc.get("id", "")
+                    tc_name = tc.get("name", "")
+                    if tc_id:
+                        _pending_tool_calls.append({"id": tc_id, "name": tc_name})
                     await on_event(
                         ToolCallEvent(
-                            tool_name=tc.get("name", ""),
+                            tool_name=tc_name,
                             args=tc.get("args") or {},
-                            id=tc.get("id", ""),
+                            id=tc_id,
                         )
                     )
             accumulator.reset()
 
         elif kind == "on_tool_start":
-            # 不发任何事件。tool_call 已在 on_chat_model_end 中发出（创建了
-            # 'running' 状态的条目），tool_result 在 on_tool_end 中发出。
-            # LangGraph 的 astream_events(v2) 会在多个嵌套层级冒泡 on_tool_start，
-            # 如果在此发事件就会产生重复条目。
+            # 不发事件。tool_call 已在 on_chat_model_end 中发出（含 id），
+            # 并记录到 _pending_tool_calls。on_tool_error 时按工具名从那里查回。
             pass
 
         elif kind == "on_tool_end":
@@ -202,14 +247,34 @@ async def stream_events_to_app_events(
             # status="error" 的 ToolMessage 回传 LLM。这里同步透传给前端，
             # 让前端能结构化区分工具成功/失败，不再靠正则嗅探文本。
             status = "error" if getattr(output, "status", None) == "error" else "success"
-            await on_event(
-                ToolResultEvent(
+            tcid = getattr(output, "tool_call_id", "")
+            # 去重：on_tool_error 可能已经发过这个 tool_call_id 的 result
+            if tcid and tcid in _sent_tool_results:
+                logger.debug("on_tool_end_skipped_duplicate", tool_call_id=tcid)
+            else:
+                if tcid:
+                    _sent_tool_results.add(tcid)
+                logger.info(
+                    "on_tool_end_emit",
                     tool_name=tool_name,
-                    content=content,
                     status=status,
-                    tool_call_id=getattr(output, "tool_call_id", ""),
+                    tool_call_id=tcid,
+                    output_type=type(output).__name__,
                 )
-            )
+                await on_event(
+                    ToolResultEvent(
+                        tool_name=tool_name,
+                        content=content,
+                        status=status,
+                        tool_call_id=tcid,
+                    )
+                )
+            # 正常完成的工具从 pending 列表移除
+            tcid = getattr(output, "tool_call_id", "")
+            if tcid:
+                _pending_tool_calls[:] = [
+                    tc for tc in _pending_tool_calls if tc.get("id") != tcid
+                ]
 
         elif kind in _LLM_ERROR_KINDS:
             await on_event(
@@ -228,9 +293,44 @@ async def stream_events_to_app_events(
             if interrupt_payload is not None:
                 await on_event(_build_interrupt_event(interrupt_payload))
             else:
-                await on_event(
-                    ErrorEvent(message=_error_message(data), source="tool")
+                tool_name = event.get("name") or ""
+                # 查 tool_call_id：优先用 run_id 映射，fallback 用工具名从 pending 列表找
+                rid = str(event.get("run_id", "") or "")
+                tool_call_id = _run_id_to_tool_call_id.get(rid, "")
+                if not tool_call_id and tool_name:
+                    # fallback：从 pending tool_calls 里按名字找最近的
+                    for tc in reversed(_pending_tool_calls):
+                        if tc.get("name") == tool_name and tc.get("id"):
+                            tool_call_id = tc["id"]
+                            break
+                logger.info(
+                    "on_tool_error_resolved",
+                    tool_name=tool_name,
+                    run_id=rid,
+                    tool_call_id=tool_call_id,
                 )
+                if tool_call_id:
+                    # 去重：如果 on_tool_end 已经发过这个 id 的 result，跳过
+                    if tool_call_id in _sent_tool_results:
+                        logger.debug("on_tool_error_skipped_duplicate", tool_call_id=tool_call_id)
+                    else:
+                        _sent_tool_results.add(tool_call_id)
+                        # 移除已处理的 pending
+                        _pending_tool_calls[:] = [
+                            tc for tc in _pending_tool_calls if tc.get("id") != tool_call_id
+                        ]
+                        await on_event(
+                            ToolResultEvent(
+                                tool_name=tool_name,
+                                content=_error_message(data),
+                                status="error",
+                                tool_call_id=tool_call_id,
+                            )
+                        )
+                else:
+                    await on_event(
+                        ErrorEvent(message=_error_message(data), source="tool")
+                    )
 
         elif kind == "on_chain_end":
             # Detect graph-level interrupt (ask_clarification /

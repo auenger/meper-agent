@@ -42,6 +42,7 @@ function sessionLabel(session: ChatSession): string {
 
 export function ConversationSidebar(props: ConversationSidebarProps) {
   const user = useAuthStore((state) => state.user)
+  const extUserName = useAuthStore((state) => state.extUserName)
   const theme = useAuthStore((state) => state.theme)
   const toggleTheme = useAuthStore((state) => state.toggleTheme)
   const selected = props.agents.find((agent) => agent.id === props.selectedAgentId)
@@ -56,6 +57,12 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
         <Typography.Text className="sidebar-label" type="secondary">
           选择 Agent
         </Typography.Text>
+        {props.agents.length === 0 ? (
+          <Button className="agent-trigger" block disabled>
+            <Avatar size={28}>A</Avatar>
+            <span>{props.loading ? '加载中...' : '暂无可用 Agent'}</span>
+          </Button>
+        ) : (
         <Dropdown
           trigger={['click']}
           overlayClassName="agent-switcher-menu"
@@ -83,6 +90,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
             <span>{selected?.name || '暂无可用 Agent'}</span>
           </Button>
         </Dropdown>
+        )}
       </div>
 
       <Button
@@ -136,7 +144,7 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
       <div className="sidebar-account">
         <Avatar icon={<UserOutlined />} />
         <div className="account-copy">
-          <strong>{user?.username || '用户'}</strong>
+          <strong>{extUserName || user?.username || '用户'}</strong>
           <small>{user?.role || ''}</small>
         </div>
         <Button

@@ -242,6 +242,9 @@ class WorkflowEngine:
                     "task_id": task_doc["_id"],
                     "user_id": task_doc.get("created_by", ""),
                     "workflow_id": workflow_doc.get("_id", ""),
+                    # 终端用户通用 token（外部触发时透传，供 Agent 节点调
+                    # MCP 时做凭证兑换；内部触发为空 → 用静态凭证）。
+                    "user_token": task_doc.get("ext_user_token", ""),
                 },
             }
         )

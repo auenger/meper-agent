@@ -9,10 +9,13 @@ interface AuthState {
   accessToken: string | null
   refreshToken: string | null
   user: AuthUser | null
+  /** apikey 模式下从 /ext/userinfo 获取的终端用户名 */
+  extUserName: string
   initialized: boolean
   theme: 'light' | 'dark'
   setSession: (bundle: TokenResponse) => void
   setInitialized: (value: boolean) => void
+  setExtUserName: (name: string) => void
   clear: () => void
   toggleTheme: () => void
 }
@@ -27,6 +30,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   accessToken: null,
   refreshToken: localStorage.getItem(REFRESH_TOKEN_KEY),
   user: null,
+  extUserName: '',
   initialized: false,
   theme: storedTheme(),
   setSession: (bundle) => {
@@ -38,6 +42,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     })
   },
   setInitialized: (value) => set({ initialized: value }),
+  setExtUserName: (name) => set({ extUserName: name }),
   clear: () => {
     localStorage.removeItem(REFRESH_TOKEN_KEY)
     set({

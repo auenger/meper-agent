@@ -188,17 +188,14 @@ async def _resolve_mcp_tools(agent: dict) -> tuple[list, list[dict]]:
         try:
             tools = await get_mcp_tools_cached([conn_id])
             if not tools:
-                errors.append({
-                    "tool_name": f"mcp:{conn_id}",
-                    "error": "MCP server 未返回工具(可能连接失败或无可用工具)",
-                })
+                # MCP server 没返回工具——静默跳过（可能暂时离线），
+                # 不作为错误发给前端。只有真正调用时才报错。
+                logger.warning("mcp_no_tools", connection_id=conn_id)
             all_tools.extend(tools)
         except Exception as exc:
+            # MCP 连接失败——记日志但不发给前端（避免每次聊天都弹错误）。
+            # 用户没用到这个 MCP 时不应看到错误。
             logger.warning("mcp_connection_load_failed", connection_id=conn_id, error=str(exc))
-            errors.append({
-                "tool_name": f"mcp:{conn_id}",
-                "error": f"MCP 工具加载失败: {exc}",
-            })
     return all_tools, errors
 
 
@@ -398,8 +395,17 @@ async def resolve_harness_context(
     # asyncio.create_task 会复制 contextvars,所以即便 stream/resume 的
     # 真正执行在后台任务里,MCP loader 的 interceptor 也能读到。
     from agent_flow_harness import set_user_token_context
+    from agent_flow_harness.mcp.user_token_context import set_token_record_id_context
 
     ut_token = set_user_token_context(user_token)
+
+    # 外部路径（/ext/*，user_token 非空）额外注入 token_record_id，触发 MCP
+    # 凭证兑换。内部路径（studio 测试，user_token=None）不注入，interceptor
+    # 自然降级用 connection 静态凭证。
+    # user_id 在外部路径 = principal.user_id = mcp_token_credentials._id。
+    tri_token = set_token_record_id_context(
+        state.get("user_id") if user_token else None
+    )
 
     logger.debug(
         "harness_context_resolved",
@@ -421,6 +427,7 @@ async def resolve_harness_context(
         "sb_token": sb_token,
         "ws_token": ws_token,
         "ut_token": ut_token,
+        "tri_token": tri_token,
         "middlewares": [UsageMiddleware()],
         "context_window": context_window,
         # 压缩配置(全局可配)。
@@ -453,6 +460,7 @@ def _make_tool_output_reference_formatter():
 def release_harness_context(hctx: dict) -> None:
     """释放 resolve_harness_context 持有的 contextvar token(在 finally 调用)。"""
     from agent_flow_harness import reset_sandbox_context, reset_user_token_context
+    from agent_flow_harness.mcp.user_token_context import reset_token_record_id_context
 
     from app.engine.agent.builtin_tools import reset_workspace_context
 
@@ -460,6 +468,8 @@ def release_harness_context(hctx: dict) -> None:
     if hctx.get("ws_token") is not None:
         reset_workspace_context(hctx["ws_token"])
     reset_user_token_context(hctx["ut_token"])
+    if hctx.get("tri_token") is not None:
+        reset_token_record_id_context(hctx["tri_token"])
 
 
 async def _maybe_migrate_legacy(graph, config, legacy_records: list[dict] | None) -> None:

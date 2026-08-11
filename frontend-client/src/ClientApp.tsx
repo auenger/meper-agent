@@ -8,6 +8,8 @@ import {
   listSessions,
 } from './api/chat'
 import { logout } from './api/auth'
+import { AUTH_MODE, apikeyLogout, fetchUserInfo } from './api/client'
+import { useAuthStore } from './store/auth'
 import { ChatView } from './components/ChatView'
 import { ConversationSidebar } from './components/ConversationSidebar'
 import type { AgentSummary, ChatSession } from './types'
@@ -24,27 +26,42 @@ export function ClientApp() {
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [creating, setCreating] = useState(false)
   const [navigationOpen, setNavigationOpen] = useState(false)
+  const setExtUserName = useAuthStore((state) => state.setExtUserName)
+
+  // apikey 模式：获取终端用户名
+  useEffect(() => {
+    if (AUTH_MODE !== 'apikey') return
+    fetchUserInfo().then((name) => setExtUserName(name)).catch(() => {})
+  }, [setExtUserName])
 
   useEffect(() => {
     let cancelled = false
-    listAvailableAgents()
-      .then((items) => {
-        if (cancelled) return
-        setAgents(items)
-        const stored = localStorage.getItem(AGENT_KEY)
-        const selected = items.some((item) => item.id === stored)
-          ? stored
-          : items[0]?.id ?? null
-        setSelectedAgentId(selected)
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) {
+    let retryCount = 0
+    const loadAgents = () => {
+      listAvailableAgents()
+        .then((items) => {
+          if (cancelled) return
+          setAgents(items)
+          const stored = localStorage.getItem(AGENT_KEY)
+          const selected = items.some((item) => item.id === stored)
+            ? stored
+            : items[0]?.id ?? null
+          setSelectedAgentId(selected)
+          if (!cancelled) setAgentsLoading(false)
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return
+          // 首次请求可能因 token 未 ready 而失败，自动重试
+          if (retryCount < 2) {
+            retryCount++
+            setTimeout(loadAgents, 500)
+            return // 保持 loading 态
+          }
+          if (!cancelled) setAgentsLoading(false)
           void message.error(error instanceof Error ? error.message : 'Agent 加载失败')
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setAgentsLoading(false)
-      })
+        })
+    }
+    loadAgents()
     return () => {
       cancelled = true
     }
@@ -142,8 +159,14 @@ export function ClientApp() {
     onCreateSession: () => void createNewSession(),
     onDeleteSession: confirmDeleteSession,
     creating,
-    loading: agentsLoading || sessionsLoading,
-    onLogout: () => void logout(),
+    loading: sessionsLoading,
+    onLogout: () => {
+      if (AUTH_MODE === 'apikey') {
+        apikeyLogout()
+      } else {
+        void logout()
+      }
+    },
   }
 
   return (
@@ -165,6 +188,8 @@ export function ClientApp() {
       </Drawer>
       <ChatView
         agent={selectedAgent}
+        agentLoading={agentsLoading}
+        sessionsLoading={sessionsLoading}
         sessionId={activeSessionId}
         onOpenNavigation={() => setNavigationOpen(true)}
         onCreateSession={() => void createNewSession()}

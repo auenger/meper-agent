@@ -58,6 +58,7 @@ def _doc_to_response(doc: dict) -> McpConnectionResponse:
         auth_config=_mask_auth_config(doc.get("auth_config", {})),
         timeout=doc.get("timeout", 30),
         default_params=_mask_default_params(doc.get("default_params", {})),
+        login_config=doc.get("login_config", {}),
         status=ConnectionStatus(doc.get("status", ConnectionStatus.DISCONNECTED.value)),
         status_message=doc.get("status_message", ""),
         last_connected_at=doc.get("last_connected_at", ""),

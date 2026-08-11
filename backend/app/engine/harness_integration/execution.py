@@ -173,6 +173,7 @@ async def resume_agent(
     enable_thinking: bool = False,
     workspace: Any | None = None,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
+    user_token: str | None = None,
 ) -> dict:
     """恢复被 interrupt() 挂起的 agent（非流式，供工作流恢复使用）。
 
@@ -185,6 +186,7 @@ async def resume_agent(
 
     hctx = await resolve_harness_context(
         agent, state, enable_thinking=enable_thinking, workspace=workspace,
+        user_token=user_token,
     )
     try:
         graph = build_agent_graph(

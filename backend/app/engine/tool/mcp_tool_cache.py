@@ -187,7 +187,16 @@ async def get_mcp_tools_cached(
         return []
 
     try:
-        client = MultiServerMCPClient(connections, tool_name_prefix=True)
+        # 注入 harness 的 _user_token_interceptor —— 让 Workflow 路径的 MCP
+        # 调用也经过凭证兑换（外部路径）或静态凭证降级（内部路径），与
+        # Agent 会话路径（harness loader）行为一致。
+        from agent_flow_harness.mcp.loader import _user_token_interceptor
+
+        client = MultiServerMCPClient(
+            connections,
+            tool_name_prefix=True,
+            tool_interceptors=[_user_token_interceptor],
+        )
         tools = await client.get_tools()
     except Exception as exc:
         # 提取 ExceptionGroup 的子异常以显示真正原因，然后 raise

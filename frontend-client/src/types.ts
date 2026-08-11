@@ -143,6 +143,16 @@ export interface ChatMessage {
   error?: string
 }
 
+export interface ClarificationField {
+  name: string
+  label: string
+  field_type: 'text' | 'number' | 'boolean' | 'select'
+  required: boolean
+  options?: string[] | null
+  default?: string | number | boolean | null
+  description?: string | null
+}
+
 export interface HitlState {
   taskId: string
   /** Discriminator: clarification (ask_clarification) vs workflow_confirmation (confirm_workflow). */
@@ -151,6 +161,7 @@ export interface HitlState {
   clarificationType: string
   context?: string
   options: string[]
+  fields?: ClarificationField[]
   // workflow_confirmation fields (confirm_workflow) — only set when kind === 'workflow_confirmation'.
   workflowName?: string
   workflowDescription?: string
@@ -204,6 +215,7 @@ export interface StreamEvent {
   clarification_type?: string
   context?: string | null
   options?: string[] | null
+  fields?: ClarificationField[] | null
   // interrupt payload — workflow_confirmation (confirm_workflow) fields
   kind?: 'clarification' | 'workflow_confirmation'
   workflow_name?: string

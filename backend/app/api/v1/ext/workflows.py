@@ -156,16 +156,19 @@ async def invoke_workflow(
     ext_metadata: dict = {"ext_api_key_id": principal.key_id}
     if body.callback_url:
         ext_metadata["ext_callback_url"] = body.callback_url
+    # 透传终端用户身份（通用 token 记录 id + token 原文），供 Workflow 内的
+    # Agent 节点调 MCP 时做凭证兑换。详见 mcp-credential-broker-design.md。
+    if principal.user_id:
+        ext_metadata["ext_user_id"] = principal.user_id
+    if principal.user_token:
+        ext_metadata["ext_user_token"] = principal.user_token
 
-    # Create task.
-    # NOTE: Workflow path keeps owner_user_id as created_by for now —
-    # ExtWorkflowInvokeRequest has no visitor_id/user_token field. End-user
-    # isolation for workflows (using principal.user_id from callback-verification
-    # mode) is deferred to Story P3 (call log + token stats).
+    # Create task. created_by 用终端用户 id（= token 记录 id），与 Agent 会话
+    # 路径的 user_id 一致，便于审计与归属。
     task_doc = await TaskService.create_task(
         workflow_id=workflow_id,
         input_data=body.input,
-        created_by=principal.owner_user_id,
+        created_by=principal.user_id or principal.owner_user_id,
         created_by_type="api_key",
         ext_metadata=ext_metadata,
     )

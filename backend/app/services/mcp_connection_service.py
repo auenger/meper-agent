@@ -135,6 +135,7 @@ class McpConnectionService:
             "auth_config": _encrypt_auth_config(data.get("auth_config", {})),
             "timeout": data.get("timeout", 30),
             "default_params": data.get("default_params", {}),
+            "login_config": data.get("login_config", {}),
             "status": ConnectionStatus.DISCONNECTED.value,
             "status_message": "",
             "last_connected_at": "",
@@ -247,6 +248,7 @@ class McpConnectionService:
             ),
             "timeout": data.get("timeout", existing.get("timeout", 30)),
             "default_params": data.get("default_params", existing.get("default_params", {})),
+            "login_config": data.get("login_config", existing.get("login_config", {})),
             "updated_at": now_iso,
         }
 

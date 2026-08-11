@@ -7,7 +7,6 @@ from starlette.status import HTTP_429_TOO_MANY_REQUESTS
 
 from app.core.auth_apikey import ApiKeyPrincipal, get_api_key_principal
 from app.core.rate_limiter import check_rate_limit
-from app.core.user_auth_state import is_introspect_stale
 from app.services.api_key_stats_service import record_request
 from app.services.ext_api_call_log_service import (
     ExtCallContext,
@@ -23,37 +22,26 @@ router = APIRouter(
 
 def resolve_user_id(
     principal: ApiKeyPrincipal,
-    visitor_id: str | None,
+    visitor_id: str | None = None,
 ) -> str:
     """Resolve the stable user_id for session/audit attribution.
 
-    - Callback-verification mode (api_key.user_info_url non-empty):
-      principal.user_id is already set to ``f"{owner}:{sub}"`` by the
-      auth dependency. visitor_id is ignored.
-    - Legacy mode (user_info_url empty): compose from visitor_id;
-      falls back to owner_user_id when visitor_id is absent.
+    新模型下 user_id 即 mcp_token_credentials._id（通用 token 记录 id），
+    由 get_api_key_principal 本地校验后设置。visitor_id 参数保留签名但不再
+    使用（过渡期）。
     """
-    if principal.user_id:
-        return principal.user_id
-    if visitor_id:
-        return f"{principal.owner_user_id}:{visitor_id}"
-    return principal.owner_user_id
+    return principal.user_id or principal.owner_user_id
 
 
 def _split_user_sub(principal: ApiKeyPrincipal) -> str:
-    """Extract the sub portion from principal.user_id (callback mode only).
+    """Extract the sub portion from principal.user_id (compat, deprecated).
 
-    principal.user_id is ``f"{owner}:{sub}"`` in callback mode; we strip
-    the owner prefix to leave just the partner-side sub. Returns "" in
-    legacy mode.
+    旧回调模式下 user_id = ``f"{owner}:{sub}"``；新模型下 user_id 是
+    mcp_token_credentials._id（不含 owner 前缀）。此函数保留供 ExtCallContext
+    旧字段兼容，新逻辑返回空串。
     """
-    if not principal.user_id:
-        return ""
-    # owner_user_id is the prefix; everything after the first ":" is sub.
-    prefix = f"{principal.owner_user_id}:"
-    if principal.user_id.startswith(prefix):
-        return principal.user_id[len(prefix):]
-    return principal.user_id
+    # 新模型 user_id 是 mcptok_xxx，没有 owner: 前缀，sub 概念已废弃。
+    return ""
 
 
 async def auth_and_rate_limit(
@@ -92,12 +80,12 @@ async def auth_and_rate_limit(
     # Stash call context for phase-2 token backfill (agent path) and
     # middleware fallback (error path). asyncio.create_task copies the
     # context, so background _run() tasks also see this.
-    auth_mode = "callback" if principal.user_info_url else "legacy"
-    user_sub = _split_user_sub(principal) if auth_mode == "callback" else ""
+    # 新模型：user_id 是 mcp_token_credentials._id，没有 owner:sub 拆分，
+    # user_sub 恒为空（ExtCallContext 字段保留兼容）。
     set_ext_call_context(ExtCallContext(
         api_key_id=principal.key_id,
         owner_user_id=principal.owner_user_id,
-        user_sub=user_sub,
+        user_sub="",
         endpoint=_extract_endpoint(request),
         request_id=getattr(request.state, "request_id", "") or "",
         start_time_ms=int(time.time() * 1000),
@@ -107,12 +95,19 @@ async def auth_and_rate_limit(
 
 
 # Register sub-routers with combined auth + rate limit
-from app.api.v1.ext import agents, files, tasks, workflows  # noqa: E402, F401
+from app.api.v1.ext import (  # noqa: E402, F401
+    agents,
+    files,
+    tasks,
+    userinfo,  # noqa: E402, F401
+    workflows,
+)
 
 router.include_router(agents.router, prefix="")  # type: ignore[has-type]
 router.include_router(files.router, prefix="")  # type: ignore[has-type]
 router.include_router(workflows.router, prefix="")  # type: ignore[has-type]
 router.include_router(tasks.router, prefix="")  # type: ignore[has-type]
+router.include_router(userinfo.router, prefix="")  # type: ignore[has-type]
 
 
 class ExtApiStatsMiddleware(BaseHTTPMiddleware):
@@ -181,11 +176,7 @@ class ExtApiStatsMiddleware(BaseHTTPMiddleware):
                 getattr(request.state, "rate_reset", 0)
             )
 
-        # Surface stale introspection fallback (AC7): when the partner
-        # introspection endpoint was unreachable and we degraded to a
-        # stale cached result, flag it so clients can retry later.
-        if is_introspect_stale():
-            response.headers["X-User-Auth-Stale"] = "true"
+        # 旧的 stale introspection header 逻辑已废弃（外部回调模式不再使用）。
 
         return response
 

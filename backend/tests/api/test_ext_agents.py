@@ -15,13 +15,20 @@ def client():
 
 @pytest.fixture
 def full_principal():
-    """API Key principal with all scopes and no resource bindings."""
+    """API Key principal with all scopes and no resource bindings.
+
+    新模型下外部路径的 principal 已通过通用 token 本地校验，user_id =
+    token_record_id = mcp_token_credentials._id（这里用 mcptok_test 模拟）。
+    """
     return ApiKeyPrincipal(
         key_id="apikey_test",
         owner_user_id="user_owner",
         scopes=["agents:read", "agents:invoke", "workflows:read", "workflows:invoke", "executions:read"],
         bindings={"agents": [], "workflows": []},
         rate_limit=60,
+        user_id="mcptok_test",
+        token_record_id="mcptok_test",
+        user_token="meper_test_token",
     )
 
 
@@ -369,8 +376,8 @@ class TestCallbackVerificationMode:
         finally:
             cleanup()
 
-    def test_legacy_mode_invoke_uses_visitor_id(self, client, full_principal) -> None:
-        """AC4/AC8: legacy mode composes user_id from visitor_id."""
+    def test_invoke_uses_token_record_id_as_user_id(self, client, full_principal) -> None:
+        """新模型：user_id 来自通用 token 记录 id（principal.user_id），visitor_id 被忽略。"""
         from app.schemas.execution import ExecutionResponse
         cleanup = _override_auth(full_principal)
         try:
@@ -388,11 +395,12 @@ class TestCallbackVerificationMode:
             ) as mock_invoke:
                 resp = client.post(
                     "/api/v1/ext/agents/agent_01/invoke",
-                    json={"message": "hi", "visitor_id": "v-abc"},
+                    json={"message": "hi", "visitor_id": "ignored-now"},
                 )
             assert resp.status_code == 200
             call_kwargs = mock_invoke.call_args.kwargs
-            assert call_kwargs["user_id"] == "user_owner:v-abc"
+            # user_id = principal.user_id = token 记录 id，不再用 visitor_id 拼
+            assert call_kwargs["user_id"] == "mcptok_test"
         finally:
             cleanup()
 
@@ -456,19 +464,20 @@ class TestCreateSession:
             "updated_at": "2026-01-01T00:00:00",
         }
 
-    def test_create_legacy_uses_visitor_id(self, client, full_principal) -> None:
+    def test_create_session_uses_token_record_id(self, client, full_principal) -> None:
+        """新模型：建会话的 user_id 来自 token 记录 id，visitor_id 被忽略。"""
         cleanup = _override_auth(full_principal)
         try:
             with patch(
                 "app.services.session_service.SessionService.create_session",
-                new=AsyncMock(return_value=self._doc("user_owner:v-abc")),
+                new=AsyncMock(return_value=self._doc("mcptok_test")),
             ) as mock_create:
                 resp = client.post(
-                    "/api/v1/ext/agents/agent_01/sessions?visitor_id=v-abc"
+                    "/api/v1/ext/agents/agent_01/sessions?visitor_id=ignored-now"
                 )
             assert resp.status_code == 201
             assert resp.json()["id"] == "sess_new"
-            assert mock_create.call_args.kwargs["user_id"] == "user_owner:v-abc"
+            assert mock_create.call_args.kwargs["user_id"] == "mcptok_test"
         finally:
             cleanup()
 

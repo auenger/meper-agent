@@ -15,12 +15,15 @@ def client():
 
 @pytest.fixture
 def full_principal():
-    """Legacy-mode principal (user_info_url empty)."""
+    """新模型 principal：user_id = token 记录 id（模拟外部路径已校验通用 token）。"""
     return ApiKeyPrincipal(
         key_id="apikey_test",
         owner_user_id="user_owner",
         scopes=["agents:read", "agents:invoke"],
         bindings={"agents": [], "workflows": []},
+        user_id="mcptok_test",
+        token_record_id="mcptok_test",
+        user_token="meper_test_token",
     )
 
 
@@ -94,14 +97,15 @@ class TestSessionFileOwnership:
 class TestSessionFileSuccess:
     """Both auth modes resolve ownership and reach the workspace."""
 
-    def test_list_legacy_success(self, client, full_principal) -> None:
+    def test_list_success(self, client, full_principal) -> None:
+        """新模型：session user_id 与 principal.user_id（token 记录 id）匹配即可访问。"""
         cleanup = _override_auth(full_principal)
         try:
             fake_ws = object()
             with patch(
                 "app.services.session_service.SessionService.get_session",
                 new=AsyncMock(
-                    return_value={"_id": "s1", "user_id": "user_owner:v-abc"}
+                    return_value={"_id": "s1", "user_id": "mcptok_test"}
                 ),
             ), patch(
                 "app.engine.tool.workspace.WorkspaceManager.get_workspace",
@@ -110,10 +114,10 @@ class TestSessionFileSuccess:
                 "app.engine.tool.workspace.WorkspaceManager.list_output_files",
                 return_value=[{"path": "out.txt", "size": 5, "modified": 0}],
             ) as mock_list:
-                resp = client.get("/api/v1/ext/sessions/s1/files?visitor_id=v-abc")
+                resp = client.get("/api/v1/ext/sessions/s1/files?visitor_id=ignored")
             assert resp.status_code == 200
             assert resp.json()[0]["path"] == "out.txt"
-            # Workspace keyed by the resolved legacy user_id.
+            # Workspace keyed by the resolved user_id (token 记录 id).
             assert mock_list.call_args.args[0] is fake_ws
         finally:
             cleanup()

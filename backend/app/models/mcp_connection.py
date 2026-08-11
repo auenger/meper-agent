@@ -50,6 +50,14 @@ class McpConnection(BaseModel):
         default_factory=dict,
         description="工具调用时自动注入的默认参数（如 token, api_key），LLM 传入的同名参数会覆盖",
     )
+    login_config: dict = Field(
+        default_factory=dict,
+        description=(
+            "账密型绑定的登录端点配置（仅当用户用 username/password 绑定时用到）。"
+            "含 login_url/method/body_template/token_jsonpath/session_ttl。"
+            "详见 docs/planning-artifacts/mcp-credential-broker-design.md。"
+        ),
+    )
     status: ConnectionStatus = Field(default=ConnectionStatus.DISCONNECTED)
     status_message: str = Field(default="", description="状态详情/错误信息")
     last_connected_at: str = Field(default="")

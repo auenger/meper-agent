@@ -233,6 +233,10 @@ class AgentNodeExecutor(BaseNodeExecutor):
             return NodeResult(success=False, output={}, error_message="agent_id 未配置")
 
         user_id = sys_vars.get("user_id", "")
+        # 终端用户通用 token（外部触发 Workflow 时透传，供 MCP 凭证兑换）。
+        # 内部触发（studio 测试）为空 → resolve_harness_context 不 set
+        # token_record_id → interceptor 降级用静态凭证。
+        user_token = sys_vars.get("user_token", "") or None
         if not task_id or not user_id:
             missing = []
             if not task_id:
@@ -415,6 +419,7 @@ class AgentNodeExecutor(BaseNodeExecutor):
                                 resume_value="continue",
                                 workspace=task_workspace,
                                 cancel_checker=_cancel_checker,
+                                user_token=user_token,
                             ),
                             timeout=timeout_ms / 1000,
                         )
@@ -434,6 +439,7 @@ class AgentNodeExecutor(BaseNodeExecutor):
                                 },
                                 workspace=task_workspace,
                                 cancel_checker=_cancel_checker,
+                                user_token=user_token,
                             ),
                             timeout=timeout_ms / 1000,
                         )
@@ -772,7 +778,7 @@ class ToolNodeExecutor(BaseNodeExecutor):
 
             if source == "mcp":
                 # MCP tool — invoke via MCP client
-                return await self._execute_mcp_tool(tool_doc, resolved_params)
+                return await self._execute_mcp_tool(tool_doc, resolved_params, variables)
             else:
                 # Markdown/Skill tool — return instructions as context
                 return NodeResult(
@@ -797,10 +803,30 @@ class ToolNodeExecutor(BaseNodeExecutor):
         self,
         tool_doc: dict[str, Any],
         params: dict[str, Any],
+        variables: dict[str, Any] | None = None,
     ) -> NodeResult:
-        """Execute an MCP-sourced tool with timeout protection and retry."""
+        """Execute an MCP-sourced tool with timeout protection and retry.
+
+        外部触发的 Workflow 里，从 system 变量取 user_token/user_id，set
+        ContextVar 让 interceptor 走凭证兑换；内部触发（无 user_token）则
+        interceptor 自动降级用静态凭证。
+        """
         try:
+            # 注入终端用户身份 ContextVar（若外部触发），让 MCP 调用走凭证兑换。
+            # 使用 set/reset 配对，确保不污染后续节点。
+            from agent_flow_harness.mcp.user_token_context import (
+                reset_token_record_id_context,
+                set_token_record_id_context,
+            )
+
             from app.engine.tool.mcp_tool_cache import get_mcp_tools_cached
+
+            sys_vars = (variables or {}).get("system", {}) or {}
+            ext_user_id = sys_vars.get("user_id", "")
+            ext_user_token = sys_vars.get("user_token", "") or None
+            tri_token = None
+            if ext_user_token and ext_user_id:
+                tri_token = set_token_record_id_context(ext_user_id)
 
             # Get connection ID from tool doc
             conn_id = tool_doc.get("mcp_connection_id", "")
@@ -862,6 +888,10 @@ class ToolNodeExecutor(BaseNodeExecutor):
                 output={},
                 error_message=f"MCP 工具执行失败: {exc}",
             )
+        finally:
+            # reset ContextVar（仅当之前 set 过）
+            if tri_token is not None:
+                reset_token_record_id_context(tri_token)
 
 
 # ── Gateway ──

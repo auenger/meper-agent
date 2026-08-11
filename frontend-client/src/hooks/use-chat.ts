@@ -199,6 +199,17 @@ function appendTextBlock(
   }
 }
 
+/** text 事件（on_chat_model_end 的完整文本）覆盖最后一个 text block，
+ * 不追加——因为 text_delta 已经逐字拼出了完整内容，text 是同一份的权威版。 */
+function overwriteTextBlock(blocks: ContentBlock[], type: 'text', content: string) {
+  const last = blocks[blocks.length - 1]
+  if (last && last.type === type) {
+    last.text = content
+  } else {
+    blocks.push({ type, text: content })
+  }
+}
+
 /** 从 blocks 中找出所有 tool 块的 tool 对象(用于附件/chart 提取等)。 */
 function allToolsFromBlocks(blocks: ContentBlock[]): ToolRun[] {
   return blocks.filter((b): b is ContentBlock & { type: 'tool' } => b.type === 'tool').map((b) => b.tool)
@@ -292,6 +303,14 @@ export function useChat(
             })
           } else {
             const rawOptions = args.options
+            // 解析 fields（兼容 JSON 字符串）
+            const rawFields = args.fields
+            let parsedFields: import('../types').ClarificationField[] | undefined
+            if (Array.isArray(rawFields)) {
+              parsedFields = rawFields as import('../types').ClarificationField[]
+            } else if (typeof rawFields === 'string' && rawFields) {
+              try { parsedFields = JSON.parse(rawFields) } catch { /* ignore */ }
+            }
             setHitl({
               taskId: pending.id,
               kind: 'clarification',
@@ -310,6 +329,7 @@ export function useChat(
                       }
                     })()
                   : [],
+              fields: parsedFields,
             })
           }
         }
@@ -409,10 +429,13 @@ export function useChat(
       try {
         for await (const event of events) {
           if ((event.type === 'text_delta' || event.type === 'text') && event.content) {
-            // text 和 text_delta 都追加到末尾 text block(不再覆盖)。
-            // text 是完整块、text_delta 是增量,但流里可以有多个 text 事件
-            // (工具调用前后各一段文字),必须保留全部。
-            appendTextBlock(acc.blocks, 'text', event.content)
+            // text_delta 是流式增量 → 追加
+            // text 是 on_chat_model_end 的完整文本 → 覆盖（不追加，避免重复）
+            if (event.type === 'text') {
+              overwriteTextBlock(acc.blocks, 'text', event.content)
+            } else {
+              appendTextBlock(acc.blocks, 'text', event.content)
+            }
           } else if (
             (event.type === 'thinking' || event.type === 'thinking_delta') &&
             event.content
@@ -515,6 +538,7 @@ export function useChat(
                 clarificationType: event.clarification_type ?? 'missing_info',
                 context: event.context ?? undefined,
                 options: event.options ?? [],
+                fields: event.fields ?? undefined,
               })
             }
             flush(acc, 'success')

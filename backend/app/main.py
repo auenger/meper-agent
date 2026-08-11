@@ -32,6 +32,15 @@ async def lifespan(app: FastAPI):
     # Critical path — must complete before serving requests.
     await init_critical_path()
 
+    # Inject MCP credential resolver into harness（统一凭证兑换）。
+    # harness 保持无 DB 依赖，app 层在此注入实现。外部路径（/ext/*）的 MCP
+    # 调用会经兑换器按用户绑定凭证；内部路径（JWT 测试）不受影响。
+    from agent_flow_harness.mcp.loader import set_credential_resolver
+
+    from app.engine.mcp.user_credential_resolver import UserCredentialResolver
+
+    set_credential_resolver(UserCredentialResolver())
+
     # Background boot — indexes/schedulers/recovery/channels.
     # Store the task reference on app.state to prevent GC, and to allow
     # graceful shutdown ordering (cancel before closing DB clients).
@@ -78,7 +87,9 @@ app.add_middleware(LoggingMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",")],
+    # /ext/* 是公开接口，第三方嵌入网站 origin 不可预知，允许所有。
+    # allow_credentials=True 时不能用 "*"，用正则匹配所有 origin。
+    allow_origin_regex=".*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  Button, Tag, Select, Tooltip, message, Spin, Modal, Empty,
+  Button, Tag, Select, Tooltip, message, Spin, Modal, Empty, Tabs,
   Input, InputNumber,
 } from 'antd'
 import {
@@ -31,6 +31,7 @@ import {
   type McpConnection,
   type ConnectionStatus,
   type McpAuthType,
+  type McpLoginConfig,
 } from '../services/mcp-api'
 import { toolsApi, type Tool } from '../services/tools-api'
 import { agentKeys } from '../services/agent-api'
@@ -99,6 +100,13 @@ export default function McpPage() {
   const [formAuthPassword, setFormAuthPassword] = useState('')     // basic
   const [formDefaultParams, setFormDefaultParams] = useState('')
   const [formTimeout, setFormTimeout] = useState(30)
+  // 账密型绑定的登录端点配置（login_config）
+  const [formLoginUrl, setFormLoginUrl] = useState('')
+  const [formLoginMethod, setFormLoginMethod] = useState('POST')
+  const [formUsernameField, setFormUsernameField] = useState('username')
+  const [formPasswordField, setFormPasswordField] = useState('password')
+  const [formLoginTokenPath, setFormLoginTokenPath] = useState('data.token')
+  const [formLoginTtl, setFormLoginTtl] = useState(3600)
 
   /* ─── Query: connection list ─── */
   const queryParams = {
@@ -186,6 +194,8 @@ export default function McpPage() {
     setFormAuthPassword('')
     setFormDefaultParams('')
     setFormTimeout(30)
+    setFormLoginUrl(''); setFormLoginMethod('POST'); setFormUsernameField('username'); setFormPasswordField('password')
+    setFormLoginTokenPath('data.token'); setFormLoginTtl(3600)
     setModalOpen(true)
   }
 
@@ -206,6 +216,13 @@ export default function McpPage() {
     setFormAuthPassword(ac.password && ac.password !== '***' ? ac.password : '')
     setFormDefaultParams(conn.default_params && Object.keys(conn.default_params).length > 0 ? JSON.stringify(conn.default_params) : '')
     setFormTimeout(conn.timeout)
+    const lc = (conn as unknown as Record<string, unknown>).login_config as McpLoginConfig | undefined
+    setFormLoginUrl(lc?.login_url ?? '')
+    setFormLoginMethod(lc?.method ?? 'POST')
+    setFormUsernameField(lc?.username_field ?? 'username')
+    setFormPasswordField(lc?.password_field ?? 'password')
+    setFormLoginTokenPath(lc?.token_jsonpath ?? 'data.token')
+    setFormLoginTtl(lc?.session_ttl ?? 3600)
     setModalOpen(true)
   }
 
@@ -243,6 +260,18 @@ export default function McpPage() {
       }
     }
 
+    // login_config：仅当填了 login_url 才提交（账密型绑定时用于换 session）
+    const loginConfig = formLoginUrl.trim()
+      ? {
+          login_url: formLoginUrl.trim(),
+          method: formLoginMethod || 'POST',
+          username_field: formUsernameField.trim() || 'username',
+          password_field: formPasswordField.trim() || 'password',
+          token_jsonpath: formLoginTokenPath.trim() || 'data.token',
+          session_ttl: formLoginTtl || 3600,
+        }
+      : undefined
+
     const input = {
       name: formName.trim(),
       description: formDescription.trim(),
@@ -251,6 +280,7 @@ export default function McpPage() {
       auth_type: formAuthType,
       auth_config: authConfig,
       default_params: defaultParams,
+      login_config: loginConfig,
       timeout: formTimeout || 30,
     }
 
@@ -521,174 +551,142 @@ export default function McpPage() {
         destroyOnClose
         width={560}
       >
-        <div className="flex flex-col gap-4 py-2">
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              连接名称 <span className="text-[#EF4444]">*</span>
-            </label>
-            <Input
-              value={formName}
-              onChange={(e) => setFormName(e.target.value)}
-              placeholder="如：文件系统 MCP"
-              maxLength={100}
-              showCount
-            />
-          </div>
+        <Tabs
+          defaultActiveKey="general"
+          size="small"
+          className="mt-1"
+          items={[
+            {
+              key: 'general',
+              label: '通用配置',
+              children: (
+                <div className="flex flex-col gap-3.5 pt-1">
+                  <div className="grid grid-cols-[1fr_auto] gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">连接名称 *</label>
+                      <Input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="如：文件系统 MCP" maxLength={100} />
+                    </div>
+                    <div className="w-28">
+                      <label className="block text-xs font-medium text-[#374151] mb-1">超时（秒）</label>
+                      <InputNumber value={formTimeout} onChange={(v) => setFormTimeout(v ?? 30)} min={1} max={300} className="w-full" />
+                    </div>
+                  </div>
 
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              描述
-            </label>
-            <Input.TextArea
-              value={formDescription}
-              onChange={(e) => setFormDescription(e.target.value)}
-              placeholder="连接的简要描述"
-              maxLength={500}
-              showCount
-              rows={2}
-            />
-          </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#374151] mb-1">MCP 服务地址 *</label>
+                    <Input value={formUrl} onChange={(e) => setFormUrl(e.target.value)} placeholder="如：http://localhost:8080/mcp" />
+                  </div>
 
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              MCP 服务地址 <span className="text-[#EF4444]">*</span>
-            </label>
-            <Input
-              value={formUrl}
-              onChange={(e) => setFormUrl(e.target.value)}
-              placeholder="如：http://localhost:8080/mcp"
-            />
-          </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">传输协议</label>
+                      <Select value={formProtocol} onChange={setFormProtocol} className="w-full"
+                        options={[
+                          { value: 'streamable-http', label: 'Streamable HTTP' },
+                          { value: 'sse', label: 'SSE' },
+                        ]} />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">认证方式</label>
+                      <Select value={formAuthType} onChange={setFormAuthType} className="w-full"
+                        options={[
+                          { value: 'none', label: '无认证' },
+                          { value: 'api_key', label: 'API Key' },
+                          { value: 'bearer_token', label: 'Bearer Token' },
+                          { value: 'basic', label: 'Basic Auth' },
+                        ]} />
+                    </div>
+                  </div>
 
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              传输协议
-            </label>
-            <Select
-              value={formProtocol}
-              onChange={setFormProtocol}
-              className="w-full"
-              options={[
-                { value: 'streamable-http', label: 'Streamable HTTP' },
-                { value: 'sse', label: 'SSE (Server-Sent Events)' },
-              ]}
-            />
-          </div>
+                  {/* 认证字段（按类型） */}
+                  {formAuthType === 'api_key' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-[#374151] mb-1">Header 名</label>
+                        <Input value={formAuthHeaderName} onChange={(e) => setFormAuthHeaderName(e.target.value)} placeholder="X-API-Key" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#374151] mb-1">API Key</label>
+                        <Input.Password value={formAuthApiKey} onChange={(e) => setFormAuthApiKey(e.target.value)} placeholder={modalMode === 'edit' ? '留空不修改' : '请输入'} />
+                      </div>
+                    </div>
+                  )}
+                  {formAuthType === 'bearer_token' && (
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">Token</label>
+                      <Input.Password value={formAuthToken} onChange={(e) => setFormAuthToken(e.target.value)} placeholder={modalMode === 'edit' ? '留空不修改' : '请输入'} />
+                    </div>
+                  )}
+                  {formAuthType === 'basic' && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-[#374151] mb-1">用户名</label>
+                        <Input value={formAuthUsername} onChange={(e) => setFormAuthUsername(e.target.value)} />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-[#374151] mb-1">密码</label>
+                        <Input.Password value={formAuthPassword} onChange={(e) => setFormAuthPassword(e.target.value)} placeholder={modalMode === 'edit' ? '留空不修改' : '请输入'} />
+                      </div>
+                    </div>
+                  )}
 
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              认证方式
-            </label>
-            <Select
-              value={formAuthType}
-              onChange={setFormAuthType}
-              className="w-full"
-              options={[
-                { value: 'none', label: '无认证' },
-                { value: 'api_key', label: 'API Key' },
-                { value: 'bearer_token', label: 'Bearer Token' },
-                { value: 'basic', label: 'Basic Auth' },
-              ]}
-            />
-          </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#374151] mb-1">描述</label>
+                    <Input value={formDescription} onChange={(e) => setFormDescription(e.target.value)} placeholder="连接的简要描述" maxLength={500} />
+                  </div>
 
-          {formAuthType === 'none' && (
-            <div className="text-[11px] text-[#94A3B8]">无需认证配置</div>
-          )}
-
-          {formAuthType === 'api_key' && (
-            <>
-              <div>
-                <label className="block text-sm text-[#0F172A] mb-1.5">
-                  Header 名称
-                </label>
-                <Input
-                  value={formAuthHeaderName}
-                  onChange={(e) => setFormAuthHeaderName(e.target.value)}
-                  placeholder="X-API-Key"
-                />
-                <div className="text-[11px] text-[#94A3B8] mt-1">放置 API Key 的请求头名称，默认 X-API-Key</div>
-              </div>
-              <div>
-                <label className="block text-sm text-[#0F172A] mb-1.5">
-                  API Key
-                </label>
-                <Input.Password
-                  value={formAuthApiKey}
-                  onChange={(e) => setFormAuthApiKey(e.target.value)}
-                  placeholder={modalMode === 'edit' ? '已配置，留空不修改' : '请输入 API Key'}
-                />
-              </div>
-            </>
-          )}
-
-          {formAuthType === 'bearer_token' && (
-            <div>
-              <label className="block text-sm text-[#0F172A] mb-1.5">
-                Token
-              </label>
-              <Input.Password
-                value={formAuthToken}
-                onChange={(e) => setFormAuthToken(e.target.value)}
-                placeholder={modalMode === 'edit' ? '已配置，留空不修改' : '请输入 Token'}
-              />
-              <div className="text-[11px] text-[#94A3B8] mt-1">将作为 <code>Authorization: Bearer &lt;token&gt;</code> 发送，无需手动加 Bearer 前缀</div>
-            </div>
-          )}
-
-          {formAuthType === 'basic' && (
-            <>
-              <div>
-                <label className="block text-sm text-[#0F172A] mb-1.5">
-                  用户名
-                </label>
-                <Input
-                  value={formAuthUsername}
-                  onChange={(e) => setFormAuthUsername(e.target.value)}
-                  placeholder="请输入用户名"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-[#0F172A] mb-1.5">
-                  密码
-                </label>
-                <Input.Password
-                  value={formAuthPassword}
-                  onChange={(e) => setFormAuthPassword(e.target.value)}
-                  placeholder={modalMode === 'edit' ? '已配置，留空不修改' : '请输入密码'}
-                />
-              </div>
-            </>
-          )}
-
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              默认参数（JSON）
-            </label>
-            <Input.TextArea
-              value={formDefaultParams}
-              onChange={(e) => setFormDefaultParams(e.target.value)}
-              placeholder='如：{"token": "xxx", "api_key": "yyy"}'
-              rows={3}
-            />
-            <div className="text-[11px] text-[#94A3B8] mt-1">
-              该连接下的所有工具调用时自动注入的参数，LLM 传入的同名参数会覆盖默认值
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm text-[#0F172A] mb-1.5">
-              超时（秒）
-            </label>
-            <InputNumber
-              value={formTimeout}
-              onChange={(v) => setFormTimeout(v ?? 30)}
-              min={1}
-              max={300}
-              className="w-full"
-            />
-          </div>
-        </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#374151] mb-1">默认参数（JSON）</label>
+                    <Input.TextArea value={formDefaultParams} onChange={(e) => setFormDefaultParams(e.target.value)} placeholder='如：{"token": "xxx"}' rows={2} />
+                    <div className="text-[10px] text-[#94A3B8] mt-1">工具调用时自动注入的参数，LLM 同名参数会覆盖</div>
+                  </div>
+                </div>
+              ),
+            },
+            {
+              key: 'login',
+              label: '账密登录配置',
+              children: (
+                <div className="flex flex-col gap-3.5 pt-1">
+                  <div className="text-[11px] text-[#94A3B8] -mt-1 mb-1">
+                    当终端用户用「用户名+密码」绑定此 MCP 时，平台会调此端点登录换取 session token。
+                    token 型绑定（直传 token）不需要配置此页。
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-[#374151] mb-1">登录端点 URL</label>
+                    <Input value={formLoginUrl} onChange={(e) => setFormLoginUrl(e.target.value)} placeholder="如 https://oa.example.com/api/login（留空 = 不启用）" />
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">请求方法</label>
+                      <Input value={formLoginMethod} onChange={(e) => setFormLoginMethod(e.target.value)} placeholder="POST" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">Token 路径</label>
+                      <Input value={formLoginTokenPath} onChange={(e) => setFormLoginTokenPath(e.target.value)} placeholder="data.token" />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">缓存秒数</label>
+                      <InputNumber value={formLoginTtl} onChange={(v) => setFormLoginTtl(v ?? 3600)} min={60} className="w-full" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">用户名字段名</label>
+                      <Input value={formUsernameField} onChange={(e) => setFormUsernameField(e.target.value)} placeholder="username" />
+                      <div className="text-[10px] text-[#94A3B8] mt-1">登录接口请求体里用户名的字段名，如 username / name / account</div>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#374151] mb-1">密码字段名</label>
+                      <Input value={formPasswordField} onChange={(e) => setFormPasswordField(e.target.value)} placeholder="password" />
+                      <div className="text-[10px] text-[#94A3B8] mt-1">密码的字段名，通常不用改</div>
+                    </div>
+                  </div>
+                </div>
+              ),
+            },
+          ]}
+        />
       </Modal>
 
       {/* Tool list Modal */}

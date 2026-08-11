@@ -16,6 +16,7 @@ import {
   Modal,
   Result,
   Skeleton,
+  Spin,
   Typography,
 } from 'antd'
 import type { UploadFile } from 'antd'
@@ -27,9 +28,12 @@ import { useChat } from '../hooks/use-chat'
 import type { AgentSummary } from '../types'
 import { GeneratedFiles } from './GeneratedFiles'
 import { MessageContent } from './MessageContent'
+import { ClarificationFormCard } from './clarification-form-card'
 
 interface ChatViewProps {
   agent: AgentSummary | null
+  agentLoading?: boolean
+  sessionsLoading?: boolean
   sessionId: string | null
   onOpenNavigation: () => void
   onCreateSession: () => void
@@ -39,6 +43,8 @@ interface ChatViewProps {
 
 export function ChatView({
   agent,
+  agentLoading,
+  sessionsLoading,
   sessionId,
   onOpenNavigation,
   onCreateSession,
@@ -186,11 +192,17 @@ export function ChatView({
             onClick={onOpenNavigation}
           />
         </header>
-        <Result
-          status="info"
-          title="暂无可用 Agent"
-          subTitle="请联系管理员为当前公司分配可调用的 Agent。"
-        />
+        {agentLoading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
+            <Spin size="large" />
+          </div>
+        ) : (
+          <Result
+            status="info"
+            title="暂无可用 Agent"
+            subTitle="请联系管理员为当前公司分配可调用的 Agent。"
+          />
+        )}
       </main>
     )
   }
@@ -222,6 +234,11 @@ export function ChatView({
       </header>
 
       {!sessionId ? (
+        agentLoading || sessionsLoading ? (
+          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', flex: 1 }}>
+            <Spin size="large" />
+          </div>
+        ) : (
         <div className="chat-empty">
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
@@ -232,6 +249,7 @@ export function ChatView({
             </Button>
           </Empty>
         </div>
+        )
       ) : (
         <>
           <section
@@ -377,6 +395,17 @@ export function ChatView({
                       {hitl.context ? (
                         <Typography.Text type="secondary">{hitl.context}</Typography.Text>
                       ) : null}
+                      {hitl.fields && hitl.fields.length > 0 ? (
+                        <ClarificationFormCard
+                          question=""
+                          context={hitl.context}
+                          fields={hitl.fields}
+                          answered={false}
+                          result={undefined}
+                          onSubmit={(jsonStr) => submitClarification(jsonStr)}
+                        />
+                      ) : (
+                      <>
                       {hitl.options.length > 0 ? (
                         <div className="clarification-options">
                           {hitl.options.map((option) => (
@@ -417,6 +446,8 @@ export function ChatView({
                           发送
                         </Button>
                       </div>
+                      </>
+                      )}
                     </div>
                   }
                 />
