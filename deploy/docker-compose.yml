@@ -60,10 +60,7 @@ services:
     restart: unless-stopped
 
   celery-worker:
-    image: ${BACKEND_IMAGE:-deploy-backend}  # 复用 backend 镜像
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:-deploy-backend}  # 复用 backend 镜像，不重复构建
     command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     env_file:
       - .env
@@ -93,11 +90,8 @@ services:
 
   celery-beat:
     # Celery beat 调度器：周期派发任务（Human 节点超时巡检、工作区清理等）。
-    # 复用 backend 镜像，只跑 beat，不需要 sandbox/docker.sock/workspaces 挂载。
+    # 复用 backend 镜像，不重复构建。
     image: ${BACKEND_IMAGE:-deploy-backend}
-    build:
-      context: ../backend
-      dockerfile: Dockerfile
     command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info"]
     env_file:
       - .env
