@@ -13,9 +13,14 @@ COPY pyproject.toml uv.lock .python-version ./
 
 # The local harness package is an editable path dep (packages/harness), so its
 # source must be present before `uv sync --frozen` can resolve the install plan.
-COPY packages/harness packages/harness
+# Create a minimal stub so the layer caches even when harness source changes.
+RUN mkdir -p packages/harness/src/agent_flow_harness && \
+    touch packages/harness/src/agent_flow_harness/__init__.py && \
+    echo '[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n' > packages/harness/pyproject.toml && \
+    echo '[project]\nname = "agent-flow-harness"\nversion = "0"\n' >> packages/harness/pyproject.toml
 
 # Install production dependencies into the project virtualenv (no dev, no project itself yet)
+# This layer is cached unless pyproject.toml / uv.lock changes.
 RUN uv sync --frozen --no-dev --no-install-project
 
 # --- Runtime stage: minimal image with non-root user ---

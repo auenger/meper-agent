@@ -188,6 +188,10 @@ export async function apiRequest<T>(
     const nextToken = await refreshAccessToken()
     if (nextToken) return apiRequest<T>(path, init, false)
   }
+  // apikey 模式收到 401 = token 无效/过期 → 通知 widget（父页）显示登录面板
+  if (response.status === 401 && AUTH_MODE === 'apikey' && inIframe()) {
+    try { window.parent.postMessage({ type: 'agentflow:token_invalid' }, '*') } catch { /* ignore */ }
+  }
   if (!response.ok) throw await readError(response)
   if (response.status === 204) return undefined as T
   const contentType = response.headers.get('content-type') ?? ''

@@ -183,7 +183,7 @@
     return '';
   }
   function writeCookie(name, value) { document.cookie = name + '=' + encodeURIComponent(value) + ';path=/;max-age=' + (30 * 24 * 60 * 60) + ';SameSite=Lax'; }
-  function deleteCookie(name) { document.cookie = name + '=;path=/;max-age=0'; }
+  function deleteCookie(name) { document.cookie = name + '=;path=/;max-age=0;SameSite=Lax'; }
 
   function resolveUserToken() {
     if (state.config.userToken) return state.config.userToken;
@@ -200,6 +200,19 @@
     if (data.type === 'agentflow:request_config') sendConfig();
     // client 退出登录时通知 widget 清 cookie + 关闭
     if (data.type === 'agentflow:logout') onLogout();
+    // client 验证 token 失败（无效/过期）→ 通知 widget 显示登录面板
+    if (data.type === 'agentflow:token_invalid') {
+      deleteCookie(state.config.tokenCookie);
+      var underscored = state.config.tokenCookie.replace(/-/g, '_');
+      if (underscored !== state.config.tokenCookie) deleteCookie(underscored);
+      // 强制重载 iframe
+      if (state.iframeLoaded) {
+        state.iframeLoaded = false;
+        state.loading.classList.remove('afc-loaded');
+        state.iframe.src = 'about:blank';
+      }
+      showLoginPanel();
+    }
   }
 
   function sendConfig() {
@@ -249,26 +262,23 @@
     state.loginButton.textContent = '验证中...';
     state.loginError.classList.remove('afc-show');
 
-    fetchUserInfo(token).then(function (info) {
-      writeCookie(state.config.tokenCookie, token);
-      state.userName = info.name;
-      state.loginButton.disabled = false;
-      state.loginButton.textContent = '进入';
-      hideLoginPanel();
-      open();
-    }).catch(function (err) {
-      state.loginButton.disabled = false;
-      state.loginButton.textContent = '进入';
-      showLoginError((err && err.message) ? err.message : 'Token 无效或已过期');
-    });
+    // 直接存 cookie + 打开聊天——不验证（避免跨域）
+    // token 有效性由 client iframe 内部验证（同域，无跨域问题）
+    writeCookie(state.config.tokenCookie, token);
+    state.loginButton.disabled = false;
+    state.loginButton.textContent = '进入';
+    hideLoginPanel();
+    open();
   }
 
   function showLoginError(msg) { state.loginError.textContent = msg; state.loginError.classList.add('afc-show'); }
 
   function fetchUserInfo(token) {
-    // chatUrl 可能是 https://app.example.com/client，API 在根域 /api/v1/...
-    // 去掉 /client 后缀再拼 API 路径，确保走 Caddy 反向代理（同域，无跨域）
-    var baseUrl = state.config.chatUrl.replace(/\/+$/, '').replace(/\/client$/, '');
+    // 从 chatUrl 提取根域（协议+主机+端口），API 在根域 /api/v1/...
+    // chatUrl 可能是 http://x/client、http://x/client/、http://x/client/index.html 等
+    var parsed;
+    try { parsed = new URL(state.config.chatUrl); } catch (e) { parsed = { origin: state.config.chatUrl }; }
+    var baseUrl = parsed.origin || state.config.chatUrl.replace(/\/+$/, '');
     return fetch(baseUrl + '/api/v1/ext/userinfo', {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + state.config.apiKey, 'X-User-Token': token }

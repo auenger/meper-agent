@@ -3,7 +3,8 @@
  *
  * 列表 + 编辑 Modal（Modal 内绑定原地展开编辑，不套子 Modal）。
  */
-import { useState, Fragment } from 'react'
+import { useState, useRef, Fragment } from 'react'
+import { BindingInlineEditor } from './BindingInlineEditor'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Users, Plus, Copy, Trash2, Pencil, RefreshCw,
@@ -86,24 +87,17 @@ export function ExternalUsersPage() {
 
   /* ═══ 编辑 Modal + 内联绑定编辑 ═══ */
   const [editTarget, setEditTarget] = useState<McpTokenRecord | null>(null)
-  const [inlineEditor, setInlineEditor] = useState<{ mode: 'add' | 'edit'; connId: string; form: BindingFormState } | null>(null)
+  const [inlineEditor, setInlineEditor] = useState<{ mode: 'add' | 'edit'; connId: string; existing?: McpBindingMasked } | null>(null)
   const [bindingSaving, setBindingSaving] = useState(false)
 
-  const openAddInline = () => setInlineEditor({ mode: 'add', connId: '', form: { credential_type: 'token', auth_type: 'bearer_token', token: '', username: '', password: '', header_name: '' } })
-  const openEditInline = (connId: string, b: McpBindingMasked) => setInlineEditor({ mode: 'edit', connId, form: { credential_type: b.credential_type, auth_type: b.auth_type, token: '', username: b.username ?? '', password: '', header_name: b.header_name ?? '' } })
+  const openAddInline = () => setInlineEditor({ mode: 'add', connId: '' })
+  const openEditInline = (connId: string, b: McpBindingMasked) => setInlineEditor({ mode: 'edit', connId, existing: b })
 
-  const saveBinding = async () => {
-    if (!editTarget || !inlineEditor) return
-    const ed = inlineEditor
-    if (!ed.connId) { toast.warning('请选择 MCP 连接'); return }
-    if (ed.form.credential_type === 'token' && ed.mode === 'add' && !ed.form.token.trim()) { toast.warning('请填写 token'); return }
-    if (ed.form.credential_type === 'password' && !ed.form.username.trim()) { toast.warning('请填写用户名'); return }
+  const handleSaveBinding = async (connId: string, binding: McpBindingInput) => {
+    if (!editTarget) return
     const baseBindings: Record<string, McpBindingInput> = {}
     for (const [cid, b] of Object.entries(editTarget.mcp_bindings || {})) { baseBindings[cid] = { credential_type: b.credential_type, auth_type: b.auth_type } }
-    const b: McpBindingInput = { credential_type: ed.form.credential_type, auth_type: ed.form.auth_type }
-    if (ed.form.credential_type === 'token') { b.token = ed.form.token.trim(); if (ed.form.auth_type === 'api_key' && ed.form.header_name.trim()) b.header_name = ed.form.header_name.trim() }
-    else { b.username = ed.form.username.trim(); b.password = ed.form.password }
-    baseBindings[ed.connId] = b
+    baseBindings[connId] = binding
     setBindingSaving(true)
     try { const updated = await externalUsersApi.update(editTarget.id, { mcp_bindings: baseBindings }); toast.success('已保存'); invalidate(); setEditTarget(updated); setInlineEditor(null) }
     catch (err) { toast.error(getErrorMessage(err, '保存失败')) } finally { setBindingSaving(false) }
@@ -118,9 +112,6 @@ export function ExternalUsersPage() {
     try { const updated = await externalUsersApi.update(editTarget.id, { mcp_bindings: baseBindings }); toast.success('已移除'); invalidate(); setEditTarget(updated) }
     catch (err) { toast.error(getErrorMessage(err, '移除失败')) }
   }
-
-  const availableConns = (currentConnId?: string) =>
-    editTarget ? connections.filter(c => c.id === currentConnId || !editTarget.mcp_bindings?.[c.id]) : connections
 
   // 兼容 HTTPS（clipboard API）和 HTTP（execCommand 兜底）
   const copyToClipboard = (text: string) => {
@@ -142,36 +133,6 @@ export function ExternalUsersPage() {
   const copyText = copyToClipboard
   const inputCls = "w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 transition"
   const labelCls = "block text-xs font-medium text-slate-400 mb-1.5"
-
-  // 内联编辑表单组件（在 Modal 内部复用）
-  const InlineEditorForm = ({ ed }: { ed: NonNullable<typeof inlineEditor> }) => (
-    <div className="rounded-lg border border-indigo-500/30 bg-[#121214] p-3 space-y-3">
-      {ed.mode === 'add' && (
-        <Select value={ed.connId || ''} onChange={(v: string) => setInlineEditor({ ...ed, connId: v })}
-          placeholder="选择 MCP 连接" options={availableConns().map(c => ({ label: c.name, value: c.id }))} />
-      )}
-      <div className="grid grid-cols-2 gap-2">
-        <Select value={ed.form.credential_type} onChange={(v) => setInlineEditor({ ...ed, form: { ...ed.form, credential_type: v as McpCredentialType } })} options={CREDENTIAL_TYPE_OPTIONS} />
-        <Select value={ed.form.auth_type} onChange={(v) => setInlineEditor({ ...ed, form: { ...ed.form, auth_type: v as McpAuthType } })} options={AUTH_TYPE_OPTIONS} />
-      </div>
-      {ed.form.credential_type === 'token' ? (
-        <input type="password" value={ed.form.token} onChange={e => setInlineEditor({ ...ed, form: { ...ed.form, token: e.target.value } })}
-          placeholder={ed.mode === 'edit' ? '新 token（留空 = 不修改）' : '目标 MCP 的 token'} className={inputCls} />
-      ) : (
-        <div className="grid grid-cols-2 gap-2">
-          <input value={ed.form.username} onChange={e => setInlineEditor({ ...ed, form: { ...ed.form, username: e.target.value } })} placeholder="用户名" className={inputCls} />
-          <input type="password" value={ed.form.password} onChange={e => setInlineEditor({ ...ed, form: { ...ed.form, password: e.target.value } })}
-            placeholder={ed.mode === 'edit' ? '新密码（留空=不改）' : '密码'} className={inputCls} />
-        </div>
-      )}
-      <div className="flex justify-end gap-2">
-        <button onClick={() => setInlineEditor(null)} className="px-2 py-1 text-xs text-slate-500 hover:text-slate-300 transition">取消</button>
-        <button onClick={saveBinding} disabled={bindingSaving} className="px-3 py-1 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 rounded transition-colors">
-          {bindingSaving ? '保存中...' : '保存'}
-        </button>
-      </div>
-    </div>
-  )
 
   return (
     <div className="space-y-6">
@@ -292,7 +253,11 @@ export function ExternalUsersPage() {
               <div className="space-y-2">
                 {Object.entries(editTarget.mcp_bindings || {}).map(([connId, b]) => {
                   const isEditing = inlineEditor?.mode === 'edit' && inlineEditor.connId === connId
-                  if (isEditing) return <InlineEditorForm key={connId} ed={inlineEditor!} />
+                  if (isEditing) return (
+                    <BindingInlineEditor key={connId} mode="edit" connId={connId} existing={b}
+                      connections={connections} usedConnIds={Object.keys(editTarget.mcp_bindings || {})}
+                      saving={bindingSaving} onSave={handleSaveBinding} onCancel={() => setInlineEditor(null)} />
+                  )
                   return (
                     <div key={connId} className="flex items-center justify-between py-2 px-3 bg-[#121214] border border-[#27272a] rounded-lg">
                       <div className="flex items-center gap-2 min-w-0">
@@ -310,7 +275,11 @@ export function ExternalUsersPage() {
                 })}
 
                 {/* 添加新绑定（内联表单） */}
-                {inlineEditor?.mode === 'add' && <InlineEditorForm ed={inlineEditor} />}
+                {inlineEditor?.mode === 'add' && (
+                  <BindingInlineEditor mode="add" connId="" connections={connections}
+                    usedConnIds={Object.keys(editTarget.mcp_bindings || {})}
+                    saving={bindingSaving} onSave={handleSaveBinding} onCancel={() => setInlineEditor(null)} />
+                )}
 
                 {/* 空状态 */}
                 {Object.keys(editTarget.mcp_bindings || {}).length === 0 && !inlineEditor && (
