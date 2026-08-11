@@ -68,8 +68,10 @@ export function ExternalUsersPage() {
   const [copyingId, setCopyingId] = useState<string | null>(null)
   const handleCopy = async (tok: McpTokenRecord) => {
     setCopyingId(tok.id)
-    try { const r = await externalUsersApi.reveal(tok.id); await navigator.clipboard.writeText(r.token); toast.success('Token 已复制') }
-    catch { toast.error('复制失败') } finally { setCopyingId(null) }
+    try {
+      const r = await externalUsersApi.reveal(tok.id)
+      copyToClipboard(r.token)
+    } catch { toast.error('复制失败') } finally { setCopyingId(null) }
   }
   const rotateMutation = useMutation({
     mutationFn: (id: string) => externalUsersApi.rotate(id),
@@ -120,7 +122,24 @@ export function ExternalUsersPage() {
   const availableConns = (currentConnId?: string) =>
     editTarget ? connections.filter(c => c.id === currentConnId || !editTarget.mcp_bindings?.[c.id]) : connections
 
-  const copyText = (text: string) => navigator.clipboard.writeText(text).then(() => toast.success('已复制'), () => toast.error('复制失败'))
+  // 兼容 HTTPS（clipboard API）和 HTTP（execCommand 兜底）
+  const copyToClipboard = (text: string) => {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(() => toast.success('已复制'), () => fallbackCopy(text))
+    } else {
+      fallbackCopy(text)
+    }
+  }
+  const fallbackCopy = (text: string) => {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy'); toast.success('已复制') } catch { toast.error('复制失败') }
+    document.body.removeChild(ta)
+  }
+  const copyText = copyToClipboard
   const inputCls = "w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 transition"
   const labelCls = "block text-xs font-medium text-slate-400 mb-1.5"
 

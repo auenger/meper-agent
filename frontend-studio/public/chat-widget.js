@@ -170,7 +170,10 @@
     state.overlay = overlay;
   }
 
-  function loadIframe() { if (!state.iframe.getAttribute('src')) state.iframe.setAttribute('src', state.config.chatUrl); }
+  function loadIframe() {
+    var src = state.iframe.getAttribute('src');
+    if (!src || src === 'about:blank') state.iframe.setAttribute('src', state.config.chatUrl);
+  }
 
   /* ═══ Cookie ═══ */
   function readCookie(name) {
@@ -212,7 +215,13 @@
   /* ═══ 登录 ═══ */
   function onLauncherClick() {
     var token = resolveUserToken();
-    if (token) { open(); } else { showLoginPanel(); }
+    if (token) {
+      // 有 token 直接打开聊天——token 有效性由 client iframe 内部验证
+      // （client 调后端 API 时如果 token 无效会收到 401，client 自己处理）
+      open();
+    } else {
+      showLoginPanel();
+    }
   }
 
   function showLoginPanel() {
@@ -257,7 +266,9 @@
   function showLoginError(msg) { state.loginError.textContent = msg; state.loginError.classList.add('afc-show'); }
 
   function fetchUserInfo(token) {
-    var baseUrl = state.config.chatUrl.replace(/\/+$/, '');
+    // chatUrl 可能是 https://app.example.com/client，API 在根域 /api/v1/...
+    // 去掉 /client 后缀再拼 API 路径，确保走 Caddy 反向代理（同域，无跨域）
+    var baseUrl = state.config.chatUrl.replace(/\/+$/, '').replace(/\/client$/, '');
     return fetch(baseUrl + '/api/v1/ext/userinfo', {
       method: 'GET',
       headers: { 'Authorization': 'Bearer ' + state.config.apiKey, 'X-User-Token': token }
@@ -277,15 +288,17 @@
 
   function onLogout() {
     deleteCookie(state.config.tokenCookie);
+    // 兼容下划线变体
+    var underscored = state.config.tokenCookie.replace(/-/g, '_');
+    if (underscored !== state.config.tokenCookie) deleteCookie(underscored);
     state.userName = '';
     state.open = false;
-    // 重载 iframe 让 client 回到未登录状态
+    // 强制重载 iframe（不只是 removeAttribute，要重新设 src 才能触发重载）
     if (state.iframeLoaded) {
       state.iframeLoaded = false;
       state.loading.classList.remove('afc-loaded');
-      state.iframe.removeAttribute('src');
+      state.iframe.src = 'about:blank';
     }
-    // 不关闭面板，直接显示登录面板（让用户可以输入新 token）
     showLoginPanel();
   }
 
