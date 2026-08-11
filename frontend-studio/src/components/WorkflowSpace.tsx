@@ -9,7 +9,7 @@
 import { useState, useMemo, type FC } from 'react';
 import { getErrorMessage } from '../lib/api-client';
 import {
-  Layers, Search, Plus, Pencil, Trash2, Loader2, X,
+  Layers, Search, Plus, Pencil, Trash2, Loader2, X, Play,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -18,6 +18,9 @@ import {
   type WorkflowSummary,
   type WorkflowStatusValue,
 } from '../services/workflows-api';
+import { useWorkflowExecution } from '../hooks/useWorkflowExecution';
+import { TaskTraceModal } from '../features/workflow-editor/TaskTraceModal';
+import ExecuteInputDialog from '../features/workflow-editor/ExecuteInputDialog';
 
 const STATUS_META: Record<WorkflowStatusValue, { label: string; dot: string; text: string }> = {
   draft: { label: '草稿', dot: 'bg-slate-500', text: 'text-slate-400' },
@@ -98,6 +101,11 @@ export function WorkflowSpace({
     onError: (e: unknown) => setError(getErrorMessage(e, '删除失败')),
   });
 
+  // 工作流执行（与详情页共用 useWorkflowExecution）：列表页直接运行，
+  // 不传 detail —— hook 内部按需拉取（命中详情页缓存则零请求）。
+  const exec = useWorkflowExecution();
+  const handleRun = (wf: WorkflowSummary) => exec.execute(wf.id);
+
   return (
     <div className="space-y-5">
       {/* Header */}
@@ -177,7 +185,15 @@ export function WorkflowSpace({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {filtered.map((wf) => (
-            <WorkflowCard key={wf.id} wf={wf} onOpen={onOpen} onDelete={setConfirmDelete} theme={theme} />
+            <WorkflowCard
+              key={wf.id}
+              wf={wf}
+              onOpen={onOpen}
+              onDelete={setConfirmDelete}
+              onRun={handleRun}
+              running={exec.executing}
+              theme={theme}
+            />
           ))}
         </div>
       )}
@@ -215,6 +231,19 @@ export function WorkflowSpace({
           </div>
         </div>
       )}
+
+      {/* 执行追踪弹窗 */}
+      {exec.traceOpen && (
+        <TaskTraceModal task={exec.trackingTask} onClose={exec.closeTrace} />
+      )}
+
+      {/* 执行参数输入弹窗 */}
+      <ExecuteInputDialog
+        open={exec.execInputOpen}
+        variables={exec.execInputVariables}
+        onCancel={exec.cancelInput}
+        onSubmit={exec.submitInput}
+      />
     </div>
   );
 }
@@ -223,9 +252,13 @@ const WorkflowCard: FC<{
   wf: WorkflowSummary;
   onOpen: (id: string) => void;
   onDelete: (wf: WorkflowSummary) => void;
+  onRun: (wf: WorkflowSummary) => void;
+  running: boolean;
   theme: 'dark' | 'light';
-}> = ({ wf, onOpen, onDelete }) => {
+}> = ({ wf, onOpen, onDelete, onRun, running }) => {
   const meta = STATUS_META[wf.status] ?? STATUS_META.draft;
+  const isPublished = wf.status === 'published';
+  const canRun = isPublished && !running;
   return (
     <div className="group relative bg-[#18181b] border border-[#27272a] rounded-xl p-5 hover:border-[#52525b] transition cursor-pointer" onClick={() => onOpen(wf.id)}>
       {/* Header: icon + name + status */}
@@ -266,7 +299,24 @@ const WorkflowCard: FC<{
         <span className="text-[10px] text-[#52525b] flex items-center gap-1">
           <Layers className="w-3 h-3" /> {wf.node_count} 节点
         </span>
-        <span className="text-[10px] text-[#52525b]">{formatTime(wf.updated_at)}</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] text-[#52525b]">{formatTime(wf.updated_at)}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onRun(wf);
+            }}
+            disabled={!canRun}
+            title={!isPublished ? '需先发布' : running ? '正在执行…' : '运行'}
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-semibold transition ${
+              canRun
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer'
+                : 'bg-[#121214] border border-[#27272a] text-[#52525b] cursor-not-allowed'
+            }`}
+          >
+            <Play className="w-3 h-3" /> 运行
+          </button>
+        </div>
       </div>
 
       {/* Hover actions */}

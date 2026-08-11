@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     AVATARS_CONTAINER_DIR: str | None = None
     AVATARS_HOST_DIR: str = "~/.agent-flow/avatars"
 
+    # Skill (Tool) avatars — root directory for uploaded Skill avatar images.
+    # Each avatar is a single file ``{SKILL_AVATARS_CONTAINER_DIR}/{tool_id}.png``
+    # (overwrite on re-upload). Served read-only via StaticFiles mount.
+    # None = derive from SKILL_AVATARS_HOST_DIR (local dev).
+    SKILL_AVATARS_CONTAINER_DIR: str | None = None
+    SKILL_AVATARS_HOST_DIR: str = "~/.agent-flow/skill_avatars"
+
     # Knowledge Base tool limits (truncation / caps, aligned with langxin tree KB).
     KB_GLOB_MAX_RESULTS: int = 200
     KB_GREP_MAX_FILES: int = 50
@@ -208,6 +215,7 @@ class Settings(BaseSettings):
         self.SKILLS_HOST_DIR = os.path.expanduser(self.SKILLS_HOST_DIR)
         self.KB_HOST_DIR = os.path.expanduser(self.KB_HOST_DIR)
         self.AVATARS_HOST_DIR = os.path.expanduser(self.AVATARS_HOST_DIR)
+        self.SKILL_AVATARS_HOST_DIR = os.path.expanduser(self.SKILL_AVATARS_HOST_DIR)
         if self.WORKSPACES_CONTAINER_DIR is None:
             self.WORKSPACES_CONTAINER_DIR = self.WORKSPACES_HOST_DIR
         if self.SKILLS_CONTAINER_DIR is None:
@@ -216,6 +224,8 @@ class Settings(BaseSettings):
             self.KB_CONTAINER_DIR = self.KB_HOST_DIR
         if self.AVATARS_CONTAINER_DIR is None:
             self.AVATARS_CONTAINER_DIR = self.AVATARS_HOST_DIR
+        if self.SKILL_AVATARS_CONTAINER_DIR is None:
+            self.SKILL_AVATARS_CONTAINER_DIR = self.SKILL_AVATARS_HOST_DIR
         return self
 
     # ── Sandbox ──────────────────────────────────────────────────────────
@@ -276,6 +286,7 @@ class Settings(BaseSettings):
     #     messages queue inside dispatch_inbound until a slot frees up.
     CHANNEL_EXECUTION_MAX_RETRIES: int = 3
     CHANNEL_MAX_CONCURRENT_EXECUTIONS_PER_CHANNEL: int = 4
+
 
 
 

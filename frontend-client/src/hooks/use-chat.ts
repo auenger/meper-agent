@@ -243,6 +243,13 @@ export function useChat(
   const abortRef = useRef<AbortController | null>(null)
   const accRef = useRef<AssistantAccumulator | null>(null)
   const urlsRef = useRef<Set<string>>(new Set())
+  // reloadTick: 后台轮询发现后端落库后 +1，触发主加载 effect 重新完整加载（含图片/chart artifacts）。
+  const [reloadTick, setReloadTick] = useState(0)
+  // 被流式中切换走的会话：后端任务仍会跑完落库，切回时轮询直到落库。
+  const pendingBackgroundRef = useRef<Set<string>>(new Set())
+  const prevSessionIdRef = useRef<string | null>(null)
+  const runningRef = useRef(false)
+  runningRef.current = running
 
   const revokeUrls = useCallback(() => {
     for (const url of urlsRef.current) URL.revokeObjectURL(url)
@@ -251,6 +258,15 @@ export function useChat(
 
   useEffect(() => {
     let cancelled = false
+    // 切换会话：旧会话若仍在生成，标记为后台进行中（后端会继续跑完落库）。
+    if (
+      prevSessionIdRef.current &&
+      prevSessionIdRef.current !== sessionId &&
+      runningRef.current
+    ) {
+      pendingBackgroundRef.current.add(prevSessionIdRef.current)
+    }
+    prevSessionIdRef.current = sessionId
     abortRef.current?.abort()
     accRef.current = null
     revokeUrls()
@@ -401,7 +417,41 @@ export function useChat(
       cancelled = true
       abortRef.current?.abort()
     }
-  }, [sessionId, revokeUrls])
+  }, [sessionId, revokeUrls, reloadTick])
+
+  // 切回"后台仍在生成"的会话：轮询 listMessages，后端落库 agent 回复后触发主加载
+  // effect 重新完整加载（含图片/chart artifacts）。未落库时探针只看 role，不下载附件。
+  useEffect(() => {
+    if (!sessionId || !pendingBackgroundRef.current.has(sessionId)) return
+    let cancelled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const startedAt = Date.now()
+    const tick = () => {
+      if (cancelled) return
+      listMessages(sessionId)
+        .then((records) => {
+          if (cancelled) return
+          const lastIsAgent =
+            records.length > 0 && records[records.length - 1]?.role === 'agent'
+          if (lastIsAgent) {
+            pendingBackgroundRef.current.delete(sessionId)
+            setReloadTick((t) => t + 1)
+          } else if (Date.now() - startedAt < 90000) {
+            timer = setTimeout(tick, 1500)
+          } else {
+            pendingBackgroundRef.current.delete(sessionId)
+          }
+        })
+        .catch(() => {
+          pendingBackgroundRef.current.delete(sessionId)
+        })
+    }
+    timer = setTimeout(tick, 1500)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [sessionId])
 
   useEffect(() => revokeUrls, [revokeUrls])
 

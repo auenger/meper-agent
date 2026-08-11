@@ -27,6 +27,7 @@ import { TaskBoardCard } from './task/TaskBoardCard'
 import { TaskDetailDrawer } from './task/TaskDetailDrawer'
 import { Modal, Select, Button } from './ui'
 import { confirmDialog } from './ui/confirm'
+import { getErrorMessage } from '../lib/api-client'
 
 export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
   const qc = useQueryClient()
@@ -165,7 +166,7 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
       setCreateOpen(false)
       setNewTask({ entryId: '', input: '' })
     },
-    onError: (e) => setActionError(`创建任务失败：${(e as Error).message}`),
+    onError: (e) => setActionError(`创建任务失败：${getErrorMessage(e)}`),
   })
 
   const intervene = useMutation({
@@ -175,7 +176,7 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
       qc.invalidateQueries({ queryKey: taskKeys.lists() })
       if (detailTaskId) qc.invalidateQueries({ queryKey: taskKeys.detail(detailTaskId) })
     },
-    onError: (e) => setActionError(`操作失败：${(e as Error).message}`),
+    onError: (e) => setActionError(`操作失败：${getErrorMessage(e)}`),
   })
 
   const removeTask = useMutation({
@@ -184,7 +185,7 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
       qc.invalidateQueries({ queryKey: taskKeys.lists() })
       if (detailTaskId) qc.invalidateQueries({ queryKey: taskKeys.detail(detailTaskId) })
     },
-    onError: (e) => setActionError(`删除失败：${(e as Error).message}`),
+    onError: (e) => setActionError(`删除失败：${getErrorMessage(e)}`),
   })
 
   /* ─── Actions ─── */

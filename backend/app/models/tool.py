@@ -75,6 +75,10 @@ class Tool(BaseModel):
     )
     version: int = Field(default=1, ge=1)
     tags: list[str] = Field(default_factory=list)
+    avatar: str = Field(
+        default="",
+        description="头像：图片 URL 路径(/api/v1/skill-avatars/{id}.png)或空",
+    )
     files: list[SkillFile] = Field(
         default_factory=list,
         description="目录模式下的文件列表（单文件模式为空）",

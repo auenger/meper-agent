@@ -8,6 +8,8 @@ export interface Agent {
   /** 终端用户首屏推荐问题/操作 — 后端 recommended_items */
   recommendedItems?: { label: string; prompt: string }[];
   model: string;
+  /** Agent-level capability switch; global voice credentials are checked separately. */
+  voiceEnabled: boolean;
   temperature: number;
   systemPrompt: string;
   /** 角色定义 — 后端 prompt_slots.role（必填） */
@@ -35,11 +37,9 @@ export interface Skill {
   id: string;
   name: string;
   description: string;
-  category: 'all' | 'media' | 'finance' | 'legal' | 'tech' | 'edu' | 'health' | 'life' | 'common' | 'others';
   tags: string[];
+  avatar: string;
   author: string;
-  icon: string;
-  iconColor: string;
   rating: number;
   usersCount: number;
   isAdded: boolean;

@@ -10,7 +10,7 @@ import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
 import { PermissionTree } from './ui/PermissionTree';
-import { getErrorMessage, type NormalizedApiError } from '../lib/api-client';
+import { type NormalizedApiError } from '../lib/api-client';
 import type { User } from '../types';
 import type { Role } from '../services/types';
 
@@ -103,13 +103,11 @@ export function UserManagement() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '更新用户失败')),
   });
 
   const deleteM = useMutation({
     mutationFn: (id: string) => userApi.delete(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const createRoleM = useMutation({
@@ -119,7 +117,6 @@ export function UserManagement() {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
       toast.success('角色已创建');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '创建角色失败')),
   });
 
   const deleteRoleM = useMutation({
@@ -128,7 +125,6 @@ export function UserManagement() {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
       toast.success('角色已删除');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除角色失败')),
   });
 
   const handleDeleteRole = async (role: Role) => {

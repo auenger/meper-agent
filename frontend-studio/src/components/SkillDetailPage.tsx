@@ -3,17 +3,25 @@
  *
  * Directory Skills: left file tree (getFileTree) + right editor (getFileContent
  * / updateFileContent). Single-file Skills (SKILL.md only): render instructions
- * directly. Ported from frontend skill-detail-page.tsx + skill-file-tree/editor,
- * native Tailwind (no antd Tree/TextArea).
+ * as Markdown with an edit toggle. Native Tailwind (no antd Tree/TextArea).
+ *
+ * NOTE: backend ToolResponse.files is always empty (the file list is not
+ * persisted to Mongo), so directory mode is decided from getFileTree's leaf
+ * count rather than tool.files.
  */
 import { useMemo, useState, type FC } from 'react';
 import {
-  ArrowLeft, Folder, FileText, Loader2, Save, Undo2, FilePen,
+  ArrowLeft, Folder, FileText, Loader2, Save, Undo2, FilePen, Trash2, Pencil, FileX,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   toolsApi, toolKeys, type SkillFileTreeNode,
 } from '../services/tools-api';
+import { confirmDialog } from './ui/confirm';
+import { toast } from './ui/toast';
+import { getErrorMessage } from '../lib/api-client';
+import { Markdown } from './Markdown';
+import AvatarField from './AvatarField';
 
 export function SkillDetailPage({
   toolId,
@@ -24,12 +32,45 @@ export function SkillDetailPage({
   toolName: string;
   onBack: () => void;
 }) {
+  const queryClient = useQueryClient();
   const { data: tool } = useQuery({
     queryKey: toolKeys.detail(toolId),
     queryFn: () => toolsApi.get(toolId),
   });
+  const { data: treeData, isLoading: treeLoading } = useQuery({
+    queryKey: toolKeys.files(toolId),
+    queryFn: () => toolsApi.getFileTree(toolId),
+  });
 
-  const isDirectory = (tool?.files?.length ?? 0) > 0 || (tool?.source === 'markdown' && (tool?.files?.length ?? 0) > 0);
+  // tool.files is always empty (backend gap); use the on-disk tree instead.
+  const leafCount = treeData ? countLeaves(treeData.files) : 0;
+  const isDirectory = leafCount > 1;
+  // For single-file mode, edit the (only) leaf — fallback to SKILL.md.
+  const singlePath = leafCount >= 1 ? (firstLeaf(treeData?.files ?? []) ?? 'SKILL.md') : 'SKILL.md';
+
+  // Avatar: local override carries the cache-busting ?t= right after upload;
+  // falls back to the persisted tool.avatar from the query.
+  const [avatarOverride, setAvatarOverride] = useState<string | null>(null);
+  const displayAvatar = avatarOverride ?? tool?.avatar ?? '';
+
+  const deleteM = useMutation({
+    mutationFn: () => toolsApi.remove(toolId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: toolKeys.all });
+      toast.success('Skill 已删除');
+      onBack();
+    },
+  });
+
+  const handleDelete = async () => {
+    const ok = await confirmDialog({
+      title: `删除 Skill「${toolName}」？`,
+      description: '该 Skill 的文件将被清除。若被 Agent 引用将拒绝删除。',
+      okText: '删除',
+      danger: true,
+    });
+    if (ok) deleteM.mutate();
+  };
 
   return (
     <div className="space-y-4">
@@ -38,22 +79,58 @@ export function SkillDetailPage({
         <button onClick={onBack} className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition cursor-pointer">
           <ArrowLeft className="w-4 h-4" />
         </button>
-        <div>
+        <div className="min-w-0">
           <div className="flex items-center gap-2 text-xs text-[#71717a]">
-            <span>技能商店</span><span>/</span><span className="text-white font-semibold">{toolName}</span>
+            <span>技能商店</span><span>/</span><span className="text-white font-semibold truncate">{toolName}</span>
           </div>
           {tool && (
             <p className="text-[11px] text-[#52525b] mt-0.5">
-              v{tool.version} · {tool.files?.length ?? 0} 文件 · {tool.source}
+              v{tool.version} · {leafCount} 文件 · {tool.source}
             </p>
           )}
         </div>
+        <button
+          onClick={handleDelete}
+          disabled={deleteM.isPending}
+          className="ml-auto flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg text-rose-300 hover:text-rose-200 hover:bg-rose-950/30 border border-rose-800/40 transition cursor-pointer disabled:opacity-50"
+        >
+          {deleteM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+          删除
+        </button>
       </div>
 
-      {isDirectory ? (
+      {/* 头像 */}
+      <div className="flex items-center gap-3 px-4 py-3 bg-[#18181b] rounded-xl border border-[#27272a]">
+        <span className="text-xs font-semibold text-[#a1a1aa] shrink-0">头像</span>
+        <AvatarField
+          value={displayAvatar}
+          entityId={toolId}
+          upload={toolsApi.uploadAvatar}
+          onChange={(url) => {
+            setAvatarOverride(url);
+            // 上传时后端已写库；移除（空串）需后端清空 avatar，再统一失效缓存刷新。
+            if (!url) {
+              toolsApi.removeAvatar(toolId).finally(() =>
+                queryClient.invalidateQueries({ queryKey: toolKeys.detail(toolId) }),
+              );
+            } else {
+              queryClient.invalidateQueries({ queryKey: toolKeys.detail(toolId) });
+            }
+          }}
+        />
+        {!displayAvatar && (
+          <span className="text-[10px] text-[#52525b]">未设置时显示默认 logo</span>
+        )}
+      </div>
+
+      {treeLoading ? (
+        <div className="flex items-center justify-center py-12 text-[#71717a]">
+          <Loader2 className="w-5 h-5 animate-spin mr-2" />加载…
+        </div>
+      ) : isDirectory ? (
         <DirectoryEditor toolId={toolId} />
       ) : (
-        <SingleFileView toolId={toolId} />
+        <SingleFileView toolId={toolId} filePath={singlePath} />
       )}
     </div>
   );
@@ -157,13 +234,14 @@ const TreeRow: FC<{
   );
 };
 
-/** Load + edit a single file, with dirty/save. */
+/** Load + edit a single file, with dirty/save and a Markdown preview toggle. */
 function FileEditor({ toolId, filePath }: { toolId: string; filePath: string }) {
   const queryClient = useQueryClient();
   const [local, setLocal] = useState<string>('');
   const [loaded, setLoaded] = useState(false);
+  const [mode, setMode] = useState<'edit' | 'preview'>('edit');
 
-  const { data: file, isLoading } = useQuery({
+  const { data: file, isLoading, error } = useQuery({
     queryKey: toolKeys.fileContent(toolId, filePath),
     queryFn: () => toolsApi.getFileContent(toolId, filePath),
   });
@@ -174,6 +252,8 @@ function FileEditor({ toolId, filePath }: { toolId: string; filePath: string }) 
   }
 
   const isDirty = loaded && local !== (file?.content ?? '');
+  const isMarkdown = /\.md$/i.test(filePath);
+  const showPreview = mode === 'preview' && isMarkdown;
 
   const saveM = useMutation({
     mutationFn: (content: string) => toolsApi.updateFileContent(toolId, filePath, content),
@@ -189,6 +269,22 @@ function FileEditor({ toolId, filePath }: { toolId: string; filePath: string }) 
       <div className="flex items-center justify-between px-4 py-2 border-b border-[#27272a] shrink-0">
         <span className="text-[11px] font-mono text-[#a1a1aa] truncate">{filePath}</span>
         <div className="flex items-center gap-2">
+          {isMarkdown && (
+            <div className="flex items-center bg-[#121214] border border-[#27272a] rounded-lg p-0.5">
+              <button
+                onClick={() => setMode('edit')}
+                className={`px-2 py-0.5 text-[10px] rounded-md transition cursor-pointer ${mode === 'edit' ? 'bg-indigo-600 text-white font-semibold' : 'text-[#a1a1aa] hover:text-white'}`}
+              >
+                编辑
+              </button>
+              <button
+                onClick={() => setMode('preview')}
+                className={`px-2 py-0.5 text-[10px] rounded-md transition cursor-pointer ${mode === 'preview' ? 'bg-indigo-600 text-white font-semibold' : 'text-[#a1a1aa] hover:text-white'}`}
+              >
+                预览
+              </button>
+            </div>
+          )}
           {isDirty && <span className="text-[10px] text-amber-400 font-semibold">未保存</span>}
           <button
             onClick={() => file && setLocal(file.content)}
@@ -208,9 +304,19 @@ function FileEditor({ toolId, filePath }: { toolId: string; filePath: string }) 
         </div>
       </div>
 
-      {/* Editor area */}
+      {/* Editor / preview area */}
       {isLoading ? (
         <div className="flex-1 flex items-center justify-center text-[#71717a]"><Loader2 className="w-5 h-5 animate-spin mr-2" />加载…</div>
+      ) : error ? (
+        <div className="flex-1 flex flex-col items-center justify-center text-center px-6 gap-2 text-[#71717a]">
+          <FileX className="w-6 h-6 text-rose-400" />
+          <p className="text-xs font-semibold">文件加载失败</p>
+          <p className="text-[10px] text-[#52525b] max-w-md">{getErrorMessage(error, '文件不存在或无法读取')}</p>
+        </div>
+      ) : showPreview ? (
+        <div className="flex-1 overflow-y-auto p-5">
+          <Markdown content={local} />
+        </div>
       ) : (
         <textarea
           value={local}
@@ -226,27 +332,64 @@ function FileEditor({ toolId, filePath }: { toolId: string; filePath: string }) 
   );
 }
 
-/** Single-file Skill (SKILL.md): render instructions directly. */
-function SingleFileView({ toolId }: { toolId: string }) {
+/** Single-file Skill (SKILL.md only): Markdown preview + edit toggle. */
+function SingleFileView({ toolId, filePath }: { toolId: string; filePath: string }) {
+  const [editing, setEditing] = useState(false);
   const { data: tool, isLoading } = useQuery({
     queryKey: toolKeys.detail(toolId),
     queryFn: () => toolsApi.get(toolId),
   });
 
+  if (editing) {
+    return (
+      <div className="h-[calc(100vh-180px)] min-h-[400px] flex flex-col gap-3">
+        <button
+          onClick={() => setEditing(false)}
+          className="self-start flex items-center gap-1 text-[11px] text-[#a1a1aa] hover:text-white cursor-pointer"
+        >
+          <ArrowLeft className="w-3 h-3" /> 返回预览
+        </button>
+        <div className="flex-1 min-h-0">
+          <FileEditor key={filePath} toolId={toolId} filePath={filePath} />
+        </div>
+      </div>
+    );
+  }
+
+  const content = tool?.instructions || tool?.description || '';
+
   return (
     <div className="rounded-xl border border-[#27272a] bg-[#18181b] overflow-hidden">
-      <div className="flex items-center gap-2 px-4 py-3 border-b border-[#27272a]">
-        <FilePen className="w-4 h-4 text-indigo-400" />
-        <span className="text-sm font-bold text-white">工具说明</span>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#27272a]">
+        <div className="flex items-center gap-2">
+          <FilePen className="w-4 h-4 text-indigo-400" />
+          <span className="text-sm font-bold text-white">工具说明</span>
+        </div>
+        <button
+          onClick={() => setEditing(true)}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] bg-indigo-600 hover:bg-indigo-500 text-white transition cursor-pointer font-semibold"
+        >
+          <Pencil className="w-3 h-3" /> 编辑
+        </button>
       </div>
       {isLoading ? (
         <div className="flex items-center justify-center py-12 text-[#71717a]"><Loader2 className="w-5 h-5 animate-spin mr-2" />加载…</div>
+      ) : content ? (
+        <div className="p-5 max-h-[60vh] overflow-y-auto">
+          <Markdown content={content} />
+        </div>
       ) : (
-        <pre className="p-5 text-xs text-[#d4d4d8] font-sans whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto">
-          {tool?.instructions || tool?.description || '（无说明）'}
-        </pre>
+        <p className="p-5 text-xs text-[#52525b]">（无说明）</p>
       )}
     </div>
+  );
+}
+
+/** Count leaf files in a tree. */
+function countLeaves(nodes: SkillFileTreeNode[]): number {
+  return nodes.reduce(
+    (sum, n) => sum + (n.is_leaf ? 1 : countLeaves(n.children ?? [])),
+    0,
   );
 }
 

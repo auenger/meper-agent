@@ -551,6 +551,23 @@ class ToolService:
         return await ToolService.get_tool(tool_id)
 
     @staticmethod
+    async def set_avatar(tool_id: str, avatar_url: str) -> dict | None:
+        """Set only the avatar field.
+
+        The avatar is a cosmetic (display-only) field, not tool config/behavior.
+        Tool has no published-immutability guard, so this is a plain field
+        update. Used by the avatar upload endpoint.
+        """
+        col = ToolService._collection()
+        if await col.find_one({"_id": tool_id}) is None:
+            return None
+        await col.update_one(
+            {"_id": tool_id},
+            {"$set": {"avatar": avatar_url, "updated_at": utc_now().isoformat()}},
+        )
+        return await ToolService.get_tool(tool_id)
+
+    @staticmethod
     async def delete_tool(tool_id: str) -> bool:
         """Delete a Tool by ID. (AC5)
 
@@ -595,6 +612,18 @@ class ToolService:
             tool_name = existing_doc.get("name")
             if tool_name:
                 delete_skill_dir(tool_name)
+
+            # Best-effort: 删除该 Tool 的头像文件（失败仅记日志，不阻断删除）
+            try:
+                import pathlib
+
+                from app.core.config import settings
+
+                avatar_file = pathlib.Path(settings.SKILL_AVATARS_CONTAINER_DIR) / f"{tool_id}.png"
+                if avatar_file.exists():
+                    avatar_file.unlink()
+            except Exception as exc:
+                logger.warning("tool_avatar_cleanup_failed", tool_id=tool_id, error=str(exc))
 
             logger.info(
                 "tool_deleted",

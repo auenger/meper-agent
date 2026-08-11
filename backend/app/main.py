@@ -105,6 +105,11 @@ _avatars_dir = pathlib.Path(settings.AVATARS_CONTAINER_DIR)
 _avatars_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/api/v1/agent-avatars", StaticFiles(directory=str(_avatars_dir)), name="agent-avatars")
 
+# Skill (Tool) 头像静态目录（同上，独立目录避免与 Agent 混淆）。
+_skill_avatars_dir = pathlib.Path(settings.SKILL_AVATARS_CONTAINER_DIR)
+_skill_avatars_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/api/v1/skill-avatars", StaticFiles(directory=str(_skill_avatars_dir)), name="skill-avatars")
+
 
 @app.get("/", tags=["root"])
 async def root() -> dict[str, str]:

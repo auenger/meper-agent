@@ -73,7 +73,6 @@ export function KbVectorDetailPage({
         toast.success(`已上传 ${res.created.length} 个文件，正在后台索引…`);
       }
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '上传失败')),
   });
 
   const deleteDocM = useMutation({
@@ -82,7 +81,6 @@ export function KbVectorDetailPage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
       toast.success('文档已删除');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '删除失败')),
   });
 
   const reindexM = useMutation({
@@ -91,13 +89,11 @@ export function KbVectorDetailPage({
       queryClient.invalidateQueries({ queryKey: knowledgeKeys.documents(kbId) });
       toast.success('已重新派发索引任务');
     },
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '重试失败')),
   });
 
   const searchM = useMutation({
     mutationFn: () => knowledgeApi.search(kbId, query, 5),
     onSuccess: (res) => setSearchResults(res.results),
-    onError: (e: unknown) => toast.error(getErrorMessage(e, '检索失败')),
   });
 
   // ── View chunks modal ──

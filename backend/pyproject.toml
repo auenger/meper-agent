@@ -40,7 +40,16 @@ dependencies = [
     # Image/scan PDF processing: Pillow for image handling, RapidOCR for OCR
     # fallback when no vision model is configured.
     "pillow>=10.0.0",
-    "rapidocr-onnxruntime>=1.4.0",
+    # RapidOCR pulls onnxruntime, which ships no macOS x86_64 wheel — make it
+    # optional on Intel macOS (KB OCR degrades gracefully; matches feat branch).
+    "rapidocr-onnxruntime>=1.4.0; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    # Voice module: streaming WS client to Volcano ASR/TTS.
+    "websockets>=13.0",
+    # websockets 15+ honors system SOCKS proxies; this provides its proxy transport.
+    "python-socks>=2.0.0",
+    # Optional accurate VAD for barge-in (falls back to energy VAD if absent;
+    # pulls torch, so excluded on Intel macOS like rapidocr).
+    "silero-vad>=5.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 
 [dependency-groups]

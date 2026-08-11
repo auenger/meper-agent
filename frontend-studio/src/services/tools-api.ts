@@ -26,6 +26,7 @@ export interface Tool {
   mcp_connection_id: string
   version: number
   tags: string[]
+  avatar: string
   files: SkillFile[]
   created_at: string
   updated_at: string
@@ -156,6 +157,29 @@ export const toolsApi = {
    */
   async remove(toolId: string): Promise<void> {
     await apiClient.delete(`/api/v1/tools/${encodeURIComponent(toolId)}`)
+  },
+
+  /**
+   * Upload a Skill/Tool avatar image (cropped PNG blob).
+   * POST /api/v1/tools/{id}/avatar (multipart) → returns { avatar: url }.
+   */
+  async uploadAvatar(toolId: string, file: Blob): Promise<string> {
+    const form = new FormData()
+    form.append('file', file, 'avatar.png')
+    const res = await apiClient.post<{ avatar: string }>(
+      `/api/v1/tools/${encodeURIComponent(toolId)}/avatar`,
+      form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    return res.data.avatar
+  },
+
+  /**
+   * Remove a Skill/Tool avatar (revert to default logo).
+   * DELETE /api/v1/tools/{id}/avatar
+   */
+  async removeAvatar(toolId: string): Promise<void> {
+    await apiClient.delete(`/api/v1/tools/${encodeURIComponent(toolId)}/avatar`)
   },
 
   /**
