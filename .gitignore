@@ -99,3 +99,4 @@ __MACOSX/
 .zcode/
 deploy/data/
 celerybeat-schedule.db
+docs/

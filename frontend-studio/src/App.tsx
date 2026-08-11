@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Bot, BookOpen, LayoutDashboard, Layers, Key, Server,
   Sun, Moon, MessageSquare, ListTodo, Sparkles, Shield,
-  Wrench, Plug, UserCog, LogOut, ChevronDown,
+  Wrench, Plug, UserCog, LogOut, ChevronDown, Users,
   PanelLeftClose, PanelLeftOpen, Clock, Mic, SlidersHorizontal,
 } from 'lucide-react';
 import { useAuthStore, REFRESH_TOKEN_KEY } from './stores/auth-store';
@@ -36,6 +36,7 @@ import { KnowledgeBasePage } from './components/KnowledgeBasePage';
 import { KbDetailPage } from './components/KbDetailPage';
 import { KbVectorDetailPage } from './components/KbVectorDetailPage';
 import { UserManagement } from './components/UserManagement';
+import { ExternalUsersPage } from './components/ExternalUsersPage';
 import { SystemSettings } from './components/SystemSettings';
 import { ModelsPage } from './components/ModelsPage';
 import { TriggersPage } from './components/TriggersPage';
@@ -76,6 +77,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'mcp', label: '外部工具接入', icon: Plug, permission: 'tool:read' },
   { id: 'skills', label: '技能商店', icon: Sparkles, permission: 'tool:read' },
   { id: 'knowledge', label: '知识库', icon: BookOpen, permission: 'knowledge:read' },
+  { id: 'external-users', label: '外部用户', icon: Users, permission: 'apikey:manage' },
   { id: 'users', label: '用户权限', icon: Shield, permission: 'user:read' },
   { id: 'settings', label: '系统设置', icon: Key, permission: 'settings:manage' },
 ];
@@ -575,6 +577,7 @@ export default function App() {
           )}
 
           {activeTab === 'users' && <UserManagement />}
+          {activeTab === 'external-users' && <ExternalUsersPage />}
 
           {activeTab === 'settings' && <SystemSettings />}
 

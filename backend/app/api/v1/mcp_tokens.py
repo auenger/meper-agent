@@ -5,7 +5,7 @@
 """
 from fastapi import APIRouter, Depends, Query
 
-from app.core.errors import NotFoundError, ValidationError
+from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.core.security import require_permission
 from app.schemas.mcp_token_credential import (
     McpTokenCreate,
@@ -52,6 +52,13 @@ async def create_mcp_token(
 
     通用 token 明文仅此一次返回（``token_plaintext``），admin 须妥善下发给终端用户。
     """
+    # 查重：同名用户不允许
+    existing = await McpTokenCredentialService._collection().find_one({"name": body.name})
+    if existing is not None:
+        raise ConflictError(
+            code="MCP_TOKEN_NAME_CONFLICT",
+            message=f"用户名「{body.name}」已存在",
+        )
     mcp_bindings = {k: _binding_input_to_dict(v) for k, v in body.mcp_bindings.items()}
     doc, token = await McpTokenCredentialService.create_record(
         name=body.name,
