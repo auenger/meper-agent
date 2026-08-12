@@ -25,6 +25,7 @@ import { TASK_STATUS_STYLES } from '../constants/task-status';
 import { TaskOutputFiles } from './task/TaskOutputFiles';
 import { TaskFlowTimeline } from './task/TaskFlowTimeline';
 import { toast } from './ui/toast';
+import { copyToClipboard } from '../lib/clipboard';
 
 /** 轮询间隔：可经 VITE_TASK_POLL_INTERVAL_MS 配置，默认 15s。 */
 const POLL_MS = Number(import.meta.env.VITE_TASK_POLL_INTERVAL_MS) || 15000;
@@ -155,7 +156,8 @@ export function WorkflowTaskCard({ created }: { created: TaskCreated }) {
   };
 
   const copyId = () => {
-    void navigator.clipboard.writeText(created.task_id).then(() => toast.success('已复制 Task ID'));
+    copyToClipboard(created.task_id);
+    toast.success('已复制 Task ID');
   };
 
   const ckpt = task?.checkpoint ?? null;

@@ -20,6 +20,7 @@ import { Select } from './ui'
 import { confirmDialog } from './ui/confirm'
 import { toast } from './ui/toast'
 import { getErrorMessage } from '../lib/api-client'
+import { copyToClipboard } from '../lib/clipboard'
 
 const AUTH_TYPE_OPTIONS: { label: string; value: McpAuthType }[] = [
   { label: 'Bearer Token', value: 'bearer_token' },
@@ -113,24 +114,10 @@ export function ExternalUsersPage() {
     catch (err) { toast.error(getErrorMessage(err, '移除失败')) }
   }
 
-  // 兼容 HTTPS（clipboard API）和 HTTP（execCommand 兜底）
-  const copyToClipboard = (text: string) => {
-    if (navigator.clipboard && window.isSecureContext) {
-      navigator.clipboard.writeText(text).then(() => toast.success('已复制'), () => fallbackCopy(text))
-    } else {
-      fallbackCopy(text)
-    }
+  const copyText = (text: string) => {
+    copyToClipboard(text)
+    toast.success('已复制')
   }
-  const fallbackCopy = (text: string) => {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px'
-    document.body.appendChild(ta)
-    ta.select()
-    try { document.execCommand('copy'); toast.success('已复制') } catch { toast.error('复制失败') }
-    document.body.removeChild(ta)
-  }
-  const copyText = copyToClipboard
   const inputCls = "w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-sm text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 transition"
   const labelCls = "block text-xs font-medium text-slate-400 mb-1.5"
 

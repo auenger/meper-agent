@@ -13,6 +13,7 @@ import {
   type ApiKeyCreatePayload, type ApiKeyCreateResponse, type ApiKeyUpdatePayload,
 } from '../services/api-keys-api';
 import { getErrorMessage } from '../lib/api-client';
+import { copyToClipboard } from '../lib/clipboard';
 
 /** Fields rendered in the detail panel — satisfied by both list items and the create response. */
 type KeyDetailLike = {
@@ -77,14 +78,10 @@ export function SystemSettings() {
   const agentName = (id: string) => agentsData?.items.find((a) => a.id === id)?.name ?? id;
   const workflowName = (id: string) => workflowsData?.items.find((w) => w.id === id)?.name ?? id;
 
-  const copy = async (text: string) => {
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopiedValue(text);
-      setTimeout(() => setCopiedValue(null), 2000);
-    } catch {
-      /* clipboard unavailable */
-    }
+  const copy = (text: string) => {
+    copyToClipboard(text);
+    setCopiedValue(text);
+    setTimeout(() => setCopiedValue(null), 2000);
   };
 
   const createMutation = useMutation({
