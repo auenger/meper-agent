@@ -14,15 +14,12 @@ import {
 } from '../services/api-keys-api';
 import { getErrorMessage } from '../lib/api-client';
 
-type AccessMode = 'legacy' | 'callback';
-
 /** Fields rendered in the detail panel — satisfied by both list items and the create response. */
 type KeyDetailLike = {
   scopes: ApiKeyScope[];
   bindings: { agents: string[]; workflows: string[] };
   rate_limit: number;
   expires_at: string | null;
-  user_info_url: string;
   key_prefix: string;
   created_at: string;
   last_used_at?: string | null;
@@ -57,8 +54,6 @@ export function SystemSettings() {
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(
     new Set<ApiKeyScope>(['agents:read', 'agents:invoke']),
   );
-  const [mode, setMode] = useState<AccessMode>('legacy');
-  const [userInfoUrl, setUserInfoUrl] = useState('');
   const [rateLimit, setRateLimit] = useState(60);
   const [boundAgents, setBoundAgents] = useState<Set<string>>(new Set());
   const [boundWorkflows, setBoundWorkflows] = useState<Set<string>>(new Set());
@@ -99,8 +94,6 @@ export function SystemSettings() {
       qc.invalidateQueries({ queryKey: apiKeyKeys.lists() });
       setName('');
       setScopes(new Set<ApiKeyScope>(['agents:read', 'agents:invoke']));
-      setMode('legacy');
-      setUserInfoUrl('');
       setRateLimit(60);
       setBoundAgents(new Set());
       setBoundWorkflows(new Set());
@@ -119,13 +112,10 @@ export function SystemSettings() {
     setError('');
     if (!name.trim()) return setError('请填写 Key 名称');
     if (scopes.size === 0) return setError('至少选择一项权限');
-    if (mode === 'callback' && !userInfoUrl.trim())
-      return setError('回调验证模式需填写 introspection 端点');
     createMutation.mutate({
       name: name.trim(),
       scopes: [...scopes],
       rate_limit: rateLimit,
-      user_info_url: mode === 'callback' ? userInfoUrl.trim() : null,
       bindings: { agents: [...boundAgents], workflows: [...boundWorkflows] },
     });
   };
@@ -148,11 +138,6 @@ export function SystemSettings() {
     const wNames = info.bindings.workflows.map(workflowName);
     return (
       <div className="space-y-2.5 pt-3 mt-3 border-t border-[#27272a] text-[10px] font-sans">
-        {renderRow(
-          '访问模式',
-          info.user_info_url ? '回调验证（X-User-Token）' : '访客模式（visitor_id 匿名）',
-        )}
-        {info.user_info_url && renderRow('Introspection', info.user_info_url, true)}
         <div className="flex gap-2">
           <span className="text-[#71717a] w-20 shrink-0">权限</span>
           <div className="flex flex-wrap gap-1">
@@ -282,7 +267,7 @@ export function SystemSettings() {
               </button>
             </div>
             <p className="text-xs text-slate-500 font-sans">
-              第三方经此 Key 调用 /ext 接口。每个 Key 的「访问模式」决定终端用户身份解析方式。点击列表项查看详情。
+              第三方经此 Key 调用 /ext 接口。点击列表项查看详情。
             </p>
           </div>
 
@@ -324,40 +309,6 @@ export function SystemSettings() {
                   );
                 })}
               </div>
-            </div>
-
-            {/* access mode */}
-            <div className="space-y-1.5">
-              <label className="text-[11px] text-[#a1a1aa] font-sans">访问模式（终端用户身份）</label>
-              <div className="flex gap-4 text-xs">
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
-                  <input
-                    type="radio"
-                    checked={mode === 'legacy'}
-                    onChange={() => setMode('legacy')}
-                    className="accent-amber-500"
-                  />
-                  访客模式（visitor_id，匿名）
-                </label>
-                <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
-                  <input
-                    type="radio"
-                    checked={mode === 'callback'}
-                    onChange={() => setMode('callback')}
-                    className="accent-amber-500"
-                  />
-                  回调验证（X-User-Token）
-                </label>
-              </div>
-              {mode === 'callback' && (
-                <input
-                  type="url"
-                  value={userInfoUrl}
-                  onChange={(e) => setUserInfoUrl(e.target.value)}
-                  placeholder="introspection 端点 URL（RFC 7662），如 https://your-idp/oauth/introspect"
-                  className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
-                />
-              )}
             </div>
 
             {/* bindings (collapsible) */}
@@ -476,11 +427,6 @@ export function SystemSettings() {
                         key.status === 'active' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-red-400'
                       }`}>
                         {key.status === 'active' ? 'ACTIVE' : 'REVOKED'}
-                      </span>
-                      <span className={`px-1.5 py-0.5 rounded text-[8px] font-mono font-bold ${
-                        key.user_info_url ? 'bg-sky-500/10 text-sky-400' : 'bg-slate-500/10 text-slate-400'
-                      }`}>
-                        {key.user_info_url ? '回调验证' : '访客模式'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
@@ -628,8 +574,8 @@ export function SystemSettings() {
 
 /* ─────────────────────────────────────────────────────────────────────── */
 /*  EditKeyModal — edit an existing API Key (name / scopes / bindings /   */
-/*  access mode / rate limit). Rendered via portal; reuses the create     */
-/*  form's field layout and amber-dark styling. PUT /api/v1/api-keys/{id}. */
+/*  rate limit). Rendered via portal; reuses the create form's field      */
+/*  layout and amber-dark styling. PUT /api/v1/api-keys/{id}.             */
 /* ─────────────────────────────────────────────────────────────────────── */
 
 function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () => void }) {
@@ -638,8 +584,6 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
   // ── form state, initialised from the key being edited ─────────────────
   const [name, setName] = useState(keyItem.name);
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(keyItem.scopes));
-  const [mode, setMode] = useState<AccessMode>(keyItem.user_info_url ? 'callback' : 'legacy');
-  const [userInfoUrl, setUserInfoUrl] = useState(keyItem.user_info_url ?? '');
   const [rateLimit, setRateLimit] = useState(keyItem.rate_limit);
   const [boundAgents, setBoundAgents] = useState<Set<string>>(new Set(keyItem.bindings.agents));
   const [boundWorkflows, setBoundWorkflows] = useState<Set<string>>(new Set(keyItem.bindings.workflows));
@@ -679,13 +623,10 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
     setError('');
     if (!name.trim()) return setError('请填写 Key 名称');
     if (scopes.size === 0) return setError('至少选择一项权限');
-    if (mode === 'callback' && !userInfoUrl.trim())
-      return setError('回调验证模式需填写 introspection 端点');
     updateMutation.mutate({
       name: name.trim(),
       scopes: [...scopes],
       rate_limit: rateLimit,
-      user_info_url: mode === 'callback' ? userInfoUrl.trim() : '',
       bindings: { agents: [...boundAgents], workflows: [...boundWorkflows] },
     });
   };
@@ -755,40 +696,6 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
                 );
               })}
             </div>
-          </div>
-
-          {/* access mode */}
-          <div className="space-y-1.5">
-            <label className="text-[11px] text-[#a1a1aa] font-sans">访问模式（终端用户身份）</label>
-            <div className="flex gap-4 text-xs">
-              <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
-                <input
-                  type="radio"
-                  checked={mode === 'legacy'}
-                  onChange={() => setMode('legacy')}
-                  className="accent-amber-500"
-                />
-                访客模式（visitor_id，匿名）
-              </label>
-              <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 font-sans">
-                <input
-                  type="radio"
-                  checked={mode === 'callback'}
-                  onChange={() => setMode('callback')}
-                  className="accent-amber-500"
-                />
-                回调验证（X-User-Token）
-              </label>
-            </div>
-            {mode === 'callback' && (
-              <input
-                type="url"
-                value={userInfoUrl}
-                onChange={(e) => setUserInfoUrl(e.target.value)}
-                placeholder="introspection 端点 URL（RFC 7662），如 https://your-idp/oauth/introspect"
-                className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
-              />
-            )}
           </div>
 
           {/* bindings (collapsible) */}

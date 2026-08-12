@@ -3,10 +3,7 @@
  *
  * An API Key is the credential third parties use to call the /ext surface
  * (embedded chat / iframe). It carries: scopes (permissions), resource
- * bindings (which agents/workflows it may touch), a per-minute rate limit,
- * and `user_info_url` — the Story 8.2 mode switch:
- *   - empty  → legacy mode (end-users identified by visitor_id, anonymous)
- *   - set    → callback mode (RFC 7662 introspection of X-User-Token → sub)
+ * bindings (which agents/workflows it may touch) and a per-minute rate limit.
  *
  * The raw key is returned exactly once on create (ApiKeyCreateResponse.key);
  * afterwards only `key_prefix` is ever exposed.
@@ -62,7 +59,6 @@ export interface ApiKeyItem {
   status: ApiKeyStatus
   expires_at: string | null
   last_used_at: string | null
-  user_info_url: string
   created_at: string
   updated_at: string
 }
@@ -79,11 +75,6 @@ export interface ApiKeyCreatePayload {
   rate_limit?: number
   /** ISO datetime or null (null = never expires). Defaults to null. */
   expires_at?: string | null
-  /**
-   * Introspection endpoint (RFC 7662). Empty/null = legacy mode;
-   * set = callback mode (X-User-Token required per request).
-   */
-  user_info_url?: string | null
 }
 
 /**
@@ -96,8 +87,6 @@ export interface ApiKeyUpdatePayload {
   bindings?: ApiKeyBindings
   rate_limit?: number
   expires_at?: string | null
-  /** Pass '' to clear (back to legacy mode); a URL to switch to callback mode. */
-  user_info_url?: string | null
 }
 
 export interface ApiKeyListResponse {

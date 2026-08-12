@@ -18,6 +18,7 @@ import {
   type McpConnectionCreateInput,
   type ConnectionStatus,
   type McpAuthType,
+  type McpLoginConfig,
 } from '../services/mcp-api';
 import { toolsApi, toolKeys } from '../services/tools-api';
 import { Select } from './ui';
@@ -50,7 +51,7 @@ const AUTH_HINTS: Record<Exclude<McpAuthType, 'none'>, string> = {
 const PROTOCOL_OPTIONS = ['streamable-http', 'sse'];
 const AUTH_OPTIONS: McpAuthType[] = ['none', 'api_key', 'bearer_token', 'basic'];
 
-type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params'> & {
+type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params' | 'login_config'> & {
   // Structured auth fields — assembled into auth_config on submit. Keep them
   // flat (instead of editing raw JSON) so users pick an auth_type and just fill
   // labeled inputs. auth_config keys follow the backend contract:
@@ -63,6 +64,14 @@ type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params'>
   username: string;
   password: string;
   default_params: string; // JSON string
+  // 账密型绑定的登录端点配置（login_config）—— 仅当用户用 username/password
+  // 绑定时用到，token 型绑定不需要。assembled into login_config on submit.
+  loginUrl: string;
+  loginMethod: string;
+  usernameField: string;
+  passwordField: string;
+  loginTokenPath: string;
+  loginTtl: number;
 };
 
 function emptyForm(): ConnForm {
@@ -79,11 +88,19 @@ function emptyForm(): ConnForm {
     password: '',
     timeout: 30,
     default_params: '',
+    loginUrl: '',
+    loginMethod: 'POST',
+    usernameField: 'username',
+    passwordField: 'password',
+    loginTokenPath: 'data.token',
+    loginTtl: 3600,
   };
 }
 
 function connToForm(c: McpConnection): ConnForm {
   const cfg = c.auth_config ?? {};
+  // login_config 可能是空对象（未配置）或完整对象；逐字段兜底默认值。
+  const lc = (c.login_config ?? {}) as Partial<McpLoginConfig>;
   return {
     name: c.name,
     description: c.description ?? '',
@@ -99,6 +116,12 @@ function connToForm(c: McpConnection): ConnForm {
     password: String(cfg.password ?? ''),
     timeout: c.timeout ?? 30,
     default_params: c.default_params && Object.keys(c.default_params).length ? JSON.stringify(c.default_params, null, 2) : '',
+    loginUrl: lc.login_url ?? '',
+    loginMethod: lc.method ?? 'POST',
+    usernameField: lc.username_field ?? 'username',
+    passwordField: lc.password_field ?? 'password',
+    loginTokenPath: lc.token_jsonpath ?? 'data.token',
+    loginTtl: lc.session_ttl ?? 3600,
   };
 }
 
@@ -151,6 +174,8 @@ export function McpManagePage() {
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [viewingConn, setViewingConn] = useState<McpConnection | null>(null);
+  // 表单内两个 tab：通用配置 / 账密登录配置（对齐 frontend mcp-page 的 Tabs）
+  const [formTab, setFormTab] = useState<'general' | 'login'>('general');
 
   const { data, isLoading } = useQuery({
     queryKey: mcpKeys.list({ page: 1, page_size: 100 }),
@@ -222,6 +247,17 @@ export function McpManagePage() {
   const buildPayload = (): McpConnectionCreateInput => {
     const auth_config = buildAuthConfig(form);
     const default_params = parseJsonOrEmpty(form.default_params, 'default_params');
+    // login_config：仅当填了 login_url 才提交（账密型绑定时用于换 session）
+    const login_config: McpLoginConfig | undefined = form.loginUrl.trim()
+      ? {
+          login_url: form.loginUrl.trim(),
+          method: form.loginMethod.trim() || 'POST',
+          username_field: form.usernameField.trim() || 'username',
+          password_field: form.passwordField.trim() || 'password',
+          token_jsonpath: form.loginTokenPath.trim() || 'data.token',
+          session_ttl: form.loginTtl || 3600,
+        }
+      : undefined;
     return {
       name: form.name.trim(),
       description: form.description.trim() || undefined,
@@ -231,6 +267,7 @@ export function McpManagePage() {
       ...(auth_config ? { auth_config } : {}),
       ...(form.timeout ? { timeout: form.timeout } : {}),
       ...(Object.keys(default_params).length ? { default_params } : {}),
+      ...(login_config ? { login_config } : {}),
     };
   };
 
@@ -271,7 +308,7 @@ export function McpManagePage() {
           </p>
         </div>
         <button
-          onClick={() => { setError(null); setForm(emptyForm()); setCreating(true); }}
+          onClick={() => { setError(null); setForm(emptyForm()); setFormTab('general'); setCreating(true); }}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
         >
           <Plus className="w-4 h-4" /> 新建连接
@@ -359,7 +396,7 @@ export function McpManagePage() {
                           className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-sky-400 hover:bg-[#27272a] transition cursor-pointer">
                           <Eye className="w-4 h-4" />
                         </button>
-                        <button onClick={() => { setError(null); setForm(connToForm(c)); setEditing(c); }} title="编辑"
+                        <button onClick={() => { setError(null); setForm(connToForm(c)); setFormTab('general'); setEditing(c); }} title="编辑"
                           className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
                           <Pencil className="w-4 h-4" />
                         </button>
@@ -392,6 +429,29 @@ export function McpManagePage() {
               </button>
             </div>
             <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
+              {/* 表单内 Tab 切换：通用配置 / 账密登录配置（对齐 frontend mcp-page） */}
+              <div className="inline-flex rounded-lg border border-[#27272a] p-0.5 bg-[#18181b]/60">
+                {([
+                  { key: 'general', label: '通用配置' },
+                  { key: 'login', label: '账密登录配置' },
+                ] as const).map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setFormTab(t.key)}
+                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer select-none ${
+                      formTab === t.key
+                        ? 'bg-indigo-500/10 text-indigo-400'
+                        : 'text-[#71717a] hover:text-white hover:bg-[#27272a]'
+                    }`}
+                  >
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+
+              {formTab === 'general' && (
+              <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <Field label="连接名称 *"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
                 <Field label="协议">
@@ -480,6 +540,75 @@ export function McpManagePage() {
               <Field label="默认参数 (JSON，可选)">
                 <textarea value={form.default_params} onChange={(e) => setForm({ ...form, default_params: e.target.value })} placeholder="{}" rows={2} className={`${inputCls} font-mono resize-y`} />
               </Field>
+              </div>
+              )}
+
+              {/* 账密登录配置：仅当终端用户用「用户名+密码」绑定此 MCP 时用到 */}
+              {formTab === 'login' && (
+              <div className="space-y-3 rounded-lg border border-[#27272a] bg-[#18181b]/40 p-3">
+                <div>
+                  <p className="text-slate-400 font-medium font-sans">账密登录配置</p>
+                  <p className="text-[10px] text-[#71717a] leading-relaxed mt-1">
+                    当终端用户用「用户名+密码」绑定此 MCP 时，平台会调此端点登录换取 session token。token 型绑定（直传 token）不需要配置此区。
+                  </p>
+                </div>
+                <Field label="登录端点 URL">
+                  <input
+                    value={form.loginUrl}
+                    onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
+                    placeholder="https://oa.example.com/api/login（留空 = 不启用）"
+                    className={inputCls}
+                    autoComplete="off"
+                  />
+                </Field>
+                <div className="grid grid-cols-3 gap-3">
+                  <Field label="请求方法">
+                    <input
+                      value={form.loginMethod}
+                      onChange={(e) => setForm({ ...form, loginMethod: e.target.value })}
+                      placeholder="POST"
+                      className={inputCls}
+                    />
+                  </Field>
+                  <Field label="Token 路径">
+                    <input
+                      value={form.loginTokenPath}
+                      onChange={(e) => setForm({ ...form, loginTokenPath: e.target.value })}
+                      placeholder="data.token"
+                      className={inputCls}
+                    />
+                  </Field>
+                  <Field label="缓存秒数">
+                    <input
+                      type="number"
+                      min="60"
+                      value={form.loginTtl}
+                      onChange={(e) => setForm({ ...form, loginTtl: Number(e.target.value) })}
+                      className={inputCls}
+                    />
+                  </Field>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="用户名字段名" hint="登录接口请求体里用户名的字段名，如 username / name / account">
+                    <input
+                      value={form.usernameField}
+                      onChange={(e) => setForm({ ...form, usernameField: e.target.value })}
+                      placeholder="username"
+                      className={inputCls}
+                    />
+                  </Field>
+                  <Field label="密码字段名" hint="密码的字段名，通常不用改">
+                    <input
+                      value={form.passwordField}
+                      onChange={(e) => setForm({ ...form, passwordField: e.target.value })}
+                      placeholder="password"
+                      className={inputCls}
+                    />
+                  </Field>
+                </div>
+              </div>
+              )}
+
               <div className="flex justify-end gap-3 pt-4 border-t border-[#27272a]">
                 <button type="button" onClick={() => { setCreating(false); setEditing(null); setError(null); }}
                   className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg cursor-pointer font-semibold">取消</button>
