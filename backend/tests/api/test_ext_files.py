@@ -32,18 +32,6 @@ def _override_auth(principal):
     return lambda: app.dependency_overrides.clear()
 
 
-def _callback_principal() -> ApiKeyPrincipal:
-    """Callback-mode principal already resolved by the auth layer."""
-    return ApiKeyPrincipal(
-        key_id="apikey_cb",
-        owner_user_id="user_owner",
-        scopes=["agents:read", "agents:invoke"],
-        bindings={"agents": [], "workflows": []},
-        user_info_url="https://partner.example.com/introspect",
-        user_id="user_owner:user-123",
-    )
-
-
 class TestSessionFileOwnership:
     """An end-user must not reach another end-user's session files."""
 
@@ -95,7 +83,7 @@ class TestSessionFileOwnership:
 
 
 class TestSessionFileSuccess:
-    """Both auth modes resolve ownership and reach the workspace."""
+    """Ownership resolves via the token-record user_id and reaches the workspace."""
 
     def test_list_success(self, client, full_principal) -> None:
         """新模型：session user_id 与 principal.user_id（token 记录 id）匹配即可访问。"""
@@ -122,15 +110,21 @@ class TestSessionFileSuccess:
         finally:
             cleanup()
 
-    def test_list_callback_success(self, client) -> None:
-        """Callback mode: ownership keyed by {owner}:{sub}, visitor_id ignored."""
-        principal = _callback_principal()
+    def test_list_success_empty(self, client) -> None:
+        """空输出目录：ownership 解析通过后返回空列表。"""
+        principal = ApiKeyPrincipal(
+            key_id="apikey_test",
+            owner_user_id="user_owner",
+            scopes=["agents:read", "agents:invoke"],
+            bindings={"agents": [], "workflows": []},
+            user_id="mcptok_alt",
+        )
         cleanup = _override_auth(principal)
         try:
             with patch(
                 "app.services.session_service.SessionService.get_session",
                 new=AsyncMock(
-                    return_value={"_id": "s1", "user_id": "user_owner:user-123"}
+                    return_value={"_id": "s1", "user_id": "mcptok_alt"}
                 ),
             ), patch(
                 "app.engine.tool.workspace.WorkspaceManager.list_output_files",
@@ -139,11 +133,10 @@ class TestSessionFileSuccess:
                 "app.engine.tool.workspace.WorkspaceManager.get_workspace",
                 return_value=object(),
             ) as mock_get_ws:
-                # visitor_id deliberately omitted — callback mode ignores it.
                 resp = client.get("/api/v1/ext/sessions/s1/files")
             assert resp.status_code == 200
             assert resp.json() == []
-            # get_workspace received the sub-based user_id.
-            assert mock_get_ws.call_args.args[0] == "user_owner:user-123"
+            # get_workspace received the resolved user_id.
+            assert mock_get_ws.call_args.args[0] == "mcptok_alt"
         finally:
             cleanup()

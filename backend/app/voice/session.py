@@ -19,6 +19,7 @@ Design notes:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import html
 import json
 import math
@@ -421,7 +422,7 @@ class VoiceSession:
                     )
                 except Exception as exc:
                     logger.warning("voice_persist_error", error=str(exc))
-            try:
+            with contextlib.suppress(Exception):
                 await _record_execution_log(
                     user_id=self.user_id,
                     agent_id=self.agent_id,
@@ -431,8 +432,6 @@ class VoiceSession:
                     token_usage=turn.usage,
                     error=run_error,
                 )
-            except Exception:
-                pass
             await self._send(
                 {
                     "type": P.SERVER_TURN_END,
@@ -535,7 +534,7 @@ class VoiceSession:
                     )
                 except Exception as exc:
                     logger.warning("voice_persist_error", error=str(exc))
-            try:
+            with contextlib.suppress(Exception):
                 await _record_execution_log(
                     user_id=self.user_id,
                     agent_id=self.agent_id,
@@ -545,8 +544,6 @@ class VoiceSession:
                     token_usage=turn.usage,
                     error=run_error,
                 )
-            except Exception:
-                pass
             await self._send(
                 {
                     "type": P.SERVER_TURN_END,
@@ -642,10 +639,8 @@ class VoiceSession:
         if turn.tts_task and not turn.tts_task.done():
             turn.tts_task.cancel()
         if self._tts is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._tts.stop()
-            except Exception:
-                pass
 
     # ── helpers ────────────────────────────────────────────────────────
 
@@ -658,10 +653,8 @@ class VoiceSession:
 
     async def _close_asr(self) -> None:
         if self._asr is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._asr.close()
-            except Exception:
-                pass
             self._asr = None
 
     async def close(self) -> None:
@@ -679,14 +672,10 @@ class VoiceSession:
         ):
             self._active_turn.tts_task.cancel()
         if self._vad is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._vad.close()
-            except Exception:
-                pass
         await self._close_asr()
         if self._tts is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await self._tts.close()
-            except Exception:
-                pass
             self._tts = None

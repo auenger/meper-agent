@@ -39,8 +39,6 @@ class ExecutionLog(BaseModel):
 
     # ── External-specific (source=api_key) ──
     api_key_id: str = Field(default="")
-    user_sub: str = Field(default="", description="终端用户 sub (回调验证模式)")
-    visitor_id: str = Field(default="", description="兼容模式访客标识")
     endpoint: str = Field(default="", description="逻辑端点，如 agents:invoke:stream")
 
     # ── IM-specific (source=im) ──

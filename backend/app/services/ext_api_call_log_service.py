@@ -4,9 +4,9 @@ This module used to own the ``ext_api_call_logs`` collection + its CRUD
 service. That collection has been merged into the unified ``execution_logs``
 table (see ``execution_log_service``). What remains here is the
 request-scoped ``ExtCallContext`` — a ContextVar that carries ext-only
-fields (api_key_id / user_sub / endpoint / ...) from the
-``auth_and_rate_limit`` dependency into the background ``_run()`` task
-where the unified execution log is written.
+fields (api_key_id / endpoint / ...) from the ``auth_and_rate_limit``
+dependency into the background ``_run()`` task where the unified execution
+log is written.
 
 ``asyncio.create_task`` copies the context, so the ContextVar set during
 request handling is visible inside the streamed agent's background task.
@@ -23,15 +23,13 @@ class ExtCallContext:
     """Stashed ext-call context — populated by ``auth_and_rate_limit``.
 
     Carries ext-only fields that ``_record_execution_log`` reads to enrich
-    the unified execution_logs record (api_key_id / user_sub / endpoint /
-    visitor_id). Also carries ``start_time_ms`` for latency and ``consumed``
-    so the stats middleware fallback avoids duplicate writes.
+    the unified execution_logs record (api_key_id / endpoint). Also
+    carries ``start_time_ms`` for latency and ``consumed`` so the stats
+    middleware fallback avoids duplicate writes.
     """
 
     api_key_id: str
     owner_user_id: str = ""
-    user_sub: str = ""
-    visitor_id: str = ""
     endpoint: str = ""
     request_id: str = ""
     start_time_ms: int = 0
@@ -41,7 +39,7 @@ class ExtCallContext:
     # Set to True once the unified log has been written, so the middleware
     # fallback knows to skip (avoids a duplicate token-less record).
     consumed: bool = False
-    # Free-form metadata (e.g. introspect_stale flag).
+    # Free-form metadata.
     extra: dict[str, Any] = field(default_factory=dict)
 
 

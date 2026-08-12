@@ -13,6 +13,7 @@ Three modes (``VOICE_VAD_MODE``):
 """
 from __future__ import annotations
 
+import contextlib
 import enum
 import struct
 
@@ -74,7 +75,10 @@ class SileroVAD(VADDetector):
 
     def __init__(self, threshold: float = 0.5, silence_ms: int = 600) -> None:
         import torch  # noqa: F401  (silero-vad requires torch)
-        from silero_vad import VADIterator, load_silero_vad
+        from silero_vad import (  # type: ignore[import-untyped]
+            VADIterator,
+            load_silero_vad,
+        )
 
         self.threshold = threshold
         self._iter = VADIterator(
@@ -100,10 +104,8 @@ class SileroVAD(VADDetector):
         return None
 
     def close(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self._iter.reset_states()
-        except Exception:
-            pass
 
 
 def create_vad(mode: str, threshold: float, silence_ms: int) -> VADDetector | None:

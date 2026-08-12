@@ -219,10 +219,6 @@ class TestStatsEndpoint:
                     "app.services.execution_log_service.ExecutionLogService.get_token_summary_by_api_key",
                     new_callable=AsyncMock,
                 ) as mock_tokens,
-                patch(
-                    "app.services.execution_log_service.ExecutionLogService.get_users_summary_by_api_key",
-                    new_callable=AsyncMock,
-                ) as mock_users,
             ):
                 mock_get.return_value = {"_id": "apikey_01", "name": "Test Key"}
                 mock_stats.return_value = {
@@ -239,9 +235,6 @@ class TestStatsEndpoint:
                     "output_tokens": 200,
                     "calls": 42,
                 }
-                mock_users.return_value = [
-                    {"user_sub": "user-A", "calls": 10, "total_tokens": 100, "last_seen_at": "2026-07-21T00:00:00"},
-                ]
                 resp = client.get("/api/v1/api-keys/apikey_01/stats")
 
             assert resp.status_code == 200
@@ -250,7 +243,6 @@ class TestStatsEndpoint:
             assert data["successful"] == 40
             # P3: token fields are now part of the response.
             assert data["total_tokens"] == 500
-            assert data["unique_users"] == 1
         finally:
             app.dependency_overrides.clear()
 

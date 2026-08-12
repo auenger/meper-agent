@@ -31,7 +31,7 @@ function isInIframe(): boolean {
  * 安全：
  * - 两类消息都只接受来自直接父页（event.source === window.parent），防其他 iframe 注入。
  * - config 通道（apiKey + userToken）由客户部署的 chat-widget.js 发出：apiKey 公开写在客户 HTML；
- *   userToken 由该脚本从宿主页 cookie（默认 mep-access-token）读取，属同一信任链，source 校验即可。
+ *   userToken 由该脚本从宿主页 cookie（默认 x-mep-token）读取，属同一信任链，source 校验即可。
  *   多客户通用 client 模式下客户域名不定，无法穷举白名单；真正的身份校验在后端 RFC 7662
  *   introspection（无效 token 必拒，伪造 token 无法冒充）。
  * - user_token 通道是终端用户身份凭据（敏感），额外校验 VITE_ALLOWED_PARENT_ORIGINS 白名单，

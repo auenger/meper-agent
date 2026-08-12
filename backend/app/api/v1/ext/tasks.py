@@ -46,8 +46,8 @@ async def _get_owned_task(task_id: str, principal: ApiKeyPrincipal) -> dict:
     accessible; others return 404 (not 403) to avoid leaking existence.
 
     Tasks created directly (Workflow invoke) carry the bare owner id; tasks
-    created by an Agent on a user's behalf carry ``owner:sub`` /
-    ``owner:visitor_id`` — both belong to this owner.
+    created by an Agent on a user's behalf carry the resolved user_id
+    (mcp_token_credentials._id) — both belong to this owner.
     """
     doc = await TaskService.get_task(task_id)
     if doc is None:
@@ -171,17 +171,13 @@ async def intervene_task(
 
     Core logic is shared with the internal JWT endpoint via
     ``TaskService.intervene``. The actor identity is resolved from the
-    API-Key principal (callback-verification ``owner:sub`` or legacy
-    ``owner:visitor_id``).
+    API-Key principal (mcp_token_credentials._id).
     """
     principal.require_scope("workflows:invoke")
     await _get_owned_task(task_id, principal)
 
     # Resolve end-user identity for attribution (timeline / variables).
-    # In callback-verification mode principal.user_id is "owner:sub"; in
-    # legacy mode there is no visitor_id on this path, so it falls back to
-    # the bare owner_user_id.
-    triggered_by = resolve_user_id(principal, None)
+    triggered_by = resolve_user_id(principal)
 
     doc = await TaskService.intervene(
         task_id=task_id,

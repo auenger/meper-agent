@@ -43,14 +43,6 @@ class ApiKeyCreate(BaseModel):
         default=None,
         description="过期时间（ISO 格式），null 表示永不过期",
     )
-    user_info_url: str | None = Field(
-        default=None,
-        max_length=500,
-        description=(
-            "接入方 introspection 端点 URL（RFC 7662）。"
-            "null/空=兼容模式(visitor_id);有值=回调验证模式(强制 X-User-Token)"
-        ),
-    )
 
 
 class ApiKeyUpdate(BaseModel):
@@ -61,11 +53,6 @@ class ApiKeyUpdate(BaseModel):
     bindings: ApiKeyBindingsSchema | None = None
     rate_limit: int | None = Field(default=None, ge=1, le=10000)
     expires_at: str | None = None
-    user_info_url: str | None = Field(
-        default=None,
-        max_length=500,
-        description="接入方 introspection 端点 URL；传空串清除",
-    )
 
 
 class ApiKeyResponse(BaseModel):
@@ -81,7 +68,6 @@ class ApiKeyResponse(BaseModel):
     status: ApiKeyStatus
     expires_at: str | None
     last_used_at: str | None
-    user_info_url: str = Field(default="", description="空=兼容模式;有值=回调验证模式")
     created_at: str
     updated_at: str
 
@@ -99,7 +85,6 @@ class ApiKeyCreateResponse(BaseModel):
     rate_limit: int
     status: ApiKeyStatus
     expires_at: str | None
-    user_info_url: str = Field(default="", description="空=兼容模式;有值=回调验证模式")
     created_at: str
 
 
@@ -125,8 +110,6 @@ class ApiKeyStatsResponse(BaseModel):
     total_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
-    # Distinct active end-users in the time window (callback mode only).
-    unique_users: int = 0
 
 
 class ApiKeyLogItem(BaseModel):
@@ -135,8 +118,6 @@ class ApiKeyLogItem(BaseModel):
     source: str = ""
     user_id: str = ""
     api_key_id: str = ""
-    user_sub: str = ""
-    visitor_id: str = ""
     endpoint: str = ""
     agent_id: str = ""
     session_id: str = ""
@@ -158,19 +139,3 @@ class ApiKeyLogsResponse(BaseModel):
     total: int
     page: int
     page_size: int
-
-
-class ApiKeyUserStats(BaseModel):
-    """Per-user aggregate (one row per active end-user)."""
-
-    user_sub: str
-    calls: int
-    total_tokens: int
-    last_seen_at: str = ""
-
-
-class ApiKeyUsersResponse(BaseModel):
-    """Active end-users for an API Key (callback-verification mode)."""
-
-    items: list[ApiKeyUserStats]
-    period_days: int

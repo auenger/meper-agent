@@ -54,7 +54,7 @@
       openOnLoad: bool(i.openOnLoad !== undefined ? i.openOnLoad : d.openOnLoad, false),
       apiKey: String(i.apiKey || d.apiKey || ''),
       userToken: String(i.userToken || d.userToken || ''),
-      tokenCookie: String(i.tokenCookie || d.tokenCookie || 'mep-access-token')
+      tokenCookie: String(i.tokenCookie || d.tokenCookie || 'x-mep-token')
     };
   }
 

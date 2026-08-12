@@ -547,9 +547,9 @@ async def _record_execution_log(
 
     Writes unconditionally for internal / api_key / im calls alike. Channel
     (source) is derived from ``user_id`` by the service. External-only
-    fields (api_key_id / user_sub / endpoint / visitor_id) are pulled from
-    the stashed ExtCallContext when present, and the context is marked
-    consumed so the stats middleware fallback skips the duplicate write.
+    fields (api_key_id / endpoint) are pulled from the stashed
+    ExtCallContext when present, and the context is marked consumed so
+    the stats middleware fallback skips the duplicate write.
 
     Failure is logged but never raised — execution logging must not
     break the user-facing request flow.
@@ -563,17 +563,12 @@ async def _record_execution_log(
     latency_ms = int(_time.time() * 1000) - start_time_ms
     status = "error" if error is not None else "success"
 
-    # External calls carry api_key_id / user_sub / endpoint / visitor_id
-    # in the stashed context.
+    # External calls carry api_key_id / endpoint in the stashed context.
     api_key_id = ""
-    user_sub = ""
-    visitor_id = ""
     endpoint = ""
     ctx = get_ext_call_context()
     if ctx is not None:
         api_key_id = ctx.api_key_id
-        user_sub = ctx.user_sub
-        visitor_id = ctx.visitor_id
         endpoint = ctx.endpoint
         ctx.consumed = True  # suppress middleware fallback duplicate
 
@@ -583,8 +578,6 @@ async def _record_execution_log(
         session_id=session_id,
         request_id=request_id,
         api_key_id=api_key_id,
-        user_sub=user_sub,
-        visitor_id=visitor_id,
         endpoint=endpoint,
         status=status,
         status_code=500 if error is not None else 200,

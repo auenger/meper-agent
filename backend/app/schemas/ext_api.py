@@ -52,10 +52,6 @@ class ExtInvokeRequest(BaseModel):
         default=None,
         description="会话 ID（不传则自动创建新会话）",
     )
-    visitor_id: str | None = Field(
-        default=None,
-        description="前端生成的访客 ID，用于会话隔离",
-    )
     enable_thinking: bool = Field(
         default=False,
         description="启用 LLM 原生推理（与内部 /v1/agents/*/stream 一致）",
@@ -93,10 +89,6 @@ class ExtResumeRequest(BaseModel):
     enable_thinking: bool = Field(
         default=False,
         description="启用 LLM 推理模式（与内部 /v1/agents/*/resume 一致）",
-    )
-    visitor_id: str | None = Field(
-        default=None,
-        description="前端生成的访客 ID，用于会话隔离",
     )
 
 

@@ -7,9 +7,6 @@ the Bearer token as an API Key (not JWT) and returns an
 终端用户身份由 MEPER 统一托管：X-User-Token 必须是 MEPER 签发的通用 token
 （``meper_`` 前缀），本地校验后解出 token 记录 id。详见
 ``docs/planning-artifacts/mcp-credential-broker-design.md``。
-
-旧的外部 introspection 回调（RFC 7662）已废弃，``user_info_url`` 字段保留但
-不再使用（向后兼容现有 ApiKey 文档）。
 """
 from __future__ import annotations
 
@@ -38,8 +35,6 @@ class ApiKeyPrincipal:
     scopes: list[str] = field(default_factory=list)
     bindings: dict = field(default_factory=dict)
     rate_limit: int = 60
-    # 保留字段（向后兼容），新逻辑不再使用
-    user_info_url: str = ""
     user_id: str | None = None
     # MCP 兑换器查绑定的 key = mcp_token_credentials._id
     token_record_id: str | None = None
@@ -89,11 +84,9 @@ class ApiKeyPrincipal:
 
         Resources created via the Workflow invoke path carry the bare
         ``owner_user_id``. Resources created by an Agent on the user's
-        behalf carry the resolved user_id — ``f"{owner}:{sub}"`` (callback
-        mode) or ``f"{owner}:{visitor_id}"`` (legacy mode with visitor_id)
-        — because NotificationService reads ``task.created_by`` as the
-        end-user id. Both shapes belong to the same owner, so we accept an
-        exact match or an ``owner:`` prefix match.
+        behalf carry the resolved user_id (``mcp_token_credentials._id``).
+        Both shapes belong to the same owner, so we accept an exact match
+        or an ``owner:`` prefix match.
         """
         if not created_by:
             return False
@@ -159,7 +152,6 @@ async def get_api_key_principal(
         scopes=doc.get("scopes", []),
         bindings=doc.get("bindings", {}),
         rate_limit=doc.get("rate_limit", 60),
-        user_info_url=doc.get("user_info_url", "") or "",  # 保留，不再使用
     )
 
     # 终端用户身份校验（通用 token，本地校验）。

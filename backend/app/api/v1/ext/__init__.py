@@ -20,28 +20,13 @@ router = APIRouter(
 )
 
 
-def resolve_user_id(
-    principal: ApiKeyPrincipal,
-    visitor_id: str | None = None,
-) -> str:
+def resolve_user_id(principal: ApiKeyPrincipal) -> str:
     """Resolve the stable user_id for session/audit attribution.
 
-    新模型下 user_id 即 mcp_token_credentials._id（通用 token 记录 id），
-    由 get_api_key_principal 本地校验后设置。visitor_id 参数保留签名但不再
-    使用（过渡期）。
+    user_id 即 mcp_token_credentials._id（通用 token 记录 id），由
+    get_api_key_principal 本地校验后设置。
     """
     return principal.user_id or principal.owner_user_id
-
-
-def _split_user_sub(principal: ApiKeyPrincipal) -> str:
-    """Extract the sub portion from principal.user_id (compat, deprecated).
-
-    旧回调模式下 user_id = ``f"{owner}:{sub}"``；新模型下 user_id 是
-    mcp_token_credentials._id（不含 owner 前缀）。此函数保留供 ExtCallContext
-    旧字段兼容，新逻辑返回空串。
-    """
-    # 新模型 user_id 是 mcptok_xxx，没有 owner: 前缀，sub 概念已废弃。
-    return ""
 
 
 async def auth_and_rate_limit(
@@ -80,12 +65,9 @@ async def auth_and_rate_limit(
     # Stash call context for phase-2 token backfill (agent path) and
     # middleware fallback (error path). asyncio.create_task copies the
     # context, so background _run() tasks also see this.
-    # 新模型：user_id 是 mcp_token_credentials._id，没有 owner:sub 拆分，
-    # user_sub 恒为空（ExtCallContext 字段保留兼容）。
     set_ext_call_context(ExtCallContext(
         api_key_id=principal.key_id,
         owner_user_id=principal.owner_user_id,
-        user_sub="",
         endpoint=_extract_endpoint(request),
         request_id=getattr(request.state, "request_id", "") or "",
         start_time_ms=int(time.time() * 1000),
@@ -154,10 +136,8 @@ class ExtApiStatsMiddleware(BaseHTTPMiddleware):
                 from app.services.execution_log_service import ExecutionLogService
 
                 await ExecutionLogService.write_log(
-                    user_id=f"{ctx.owner_user_id}:{ctx.user_sub}" if ctx.user_sub else ctx.owner_user_id,
+                    user_id=ctx.owner_user_id,
                     api_key_id=ctx.api_key_id,
-                    user_sub=ctx.user_sub,
-                    visitor_id=ctx.visitor_id,
                     endpoint=ctx.endpoint,
                     request_id=ctx.request_id,
                     status=status,

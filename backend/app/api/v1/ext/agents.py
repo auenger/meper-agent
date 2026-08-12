@@ -1,7 +1,7 @@
 """External API — Agent resource discovery and invocation."""
 import asyncio
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.api.v1.ext import auth_and_rate_limit, resolve_user_id
@@ -152,7 +152,7 @@ async def invoke_agent(
     result = await AgentExecutionService.invoke(
         agent_id=agent_id,
         body=exec_request,
-        user_id=resolve_user_id(principal, body.visitor_id),
+        user_id=resolve_user_id(principal),
         user_token=principal.user_token,
     )
 
@@ -192,7 +192,7 @@ async def stream_agent(
     event_queue, request_id, session_id = await AgentExecutionService.stream(
         agent_id=agent_id,
         body=exec_request,
-        user_id=resolve_user_id(principal, body.visitor_id),
+        user_id=resolve_user_id(principal),
         user_token=principal.user_token,
     )
 
@@ -241,7 +241,7 @@ async def resume_agent(
     event_queue, request_id, session_id = await AgentExecutionService.resume(
         agent_id=agent_id,
         body=resume_request,
-        user_id=resolve_user_id(principal, body.visitor_id),
+        user_id=resolve_user_id(principal),
         user_token=principal.user_token,
     )
 
@@ -281,21 +281,17 @@ async def resume_agent(
 )
 async def create_session(
     agent_id: str,
-    visitor_id: str | None = Query(
-        None, description="访客 ID（兼容模式必填，回调验证模式忽略）"
-    ),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> ExtSessionResponse:
     """Create a new session for the current end-user.
 
-    The session is attributed via ``resolve_user_id`` (legacy:
-    ``{owner}:{visitor_id}``; callback: ``{owner}:{sub}``), matching how
-    ``invoke`` attributes sessions so subsequent calls find it.
+    The session is attributed via ``resolve_user_id`` (mcp_token_credentials._id),
+    matching how ``invoke`` attributes sessions so subsequent calls find it.
     """
     principal.require_scope("agents:invoke")
     principal.require_agent_access(agent_id)
 
-    user_id = resolve_user_id(principal, visitor_id)
+    user_id = resolve_user_id(principal)
     doc = await SessionService.create_session(
         user_id=user_id,
         agent_id=agent_id,
@@ -313,25 +309,22 @@ async def create_session(
 @router.get(
     "/agents/{agent_id}/sessions",
     response_model=ExtSessionListResponse,
-    summary="List visitor sessions",
+    summary="List end-user sessions",
 )
-async def list_visitor_sessions(
+async def list_user_sessions(
     agent_id: str,
-    visitor_id: str | None = Query(None, description="访客 ID（兼容模式必填，回调验证模式忽略）"),
     page: int = 1,
     page_size: int = 20,
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> ExtSessionListResponse:
     """List sessions for the current end-user.
 
-    Sessions are keyed by ``user_id``:
-    - Legacy mode: ``{owner_user_id}:{visitor_id}``
-    - Callback-verification mode: ``{owner_user_id}:{sub}`` (visitor_id ignored)
+    Sessions are keyed by ``user_id`` (mcp_token_credentials._id).
     """
     principal.require_scope("agents:invoke")
     principal.require_agent_access(agent_id)
 
-    user_id = resolve_user_id(principal, visitor_id)
+    user_id = resolve_user_id(principal)
 
     items, total = await SessionService.list_sessions(
         user_id=user_id,
@@ -361,7 +354,6 @@ async def list_visitor_sessions(
 )
 async def get_session_detail(
     session_id: str,
-    visitor_id: str | None = Query(None, description="访客 ID（兼容模式必填，回调验证模式忽略）"),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> "ExtSessionDetailResponse":
     """Get session detail including all messages.
@@ -370,7 +362,7 @@ async def get_session_detail(
     """
     principal.require_scope("agents:invoke")
 
-    user_id = resolve_user_id(principal, visitor_id)
+    user_id = resolve_user_id(principal)
 
     # Get session and verify ownership
     session_doc = await SessionService.get_session(session_id)
@@ -402,11 +394,10 @@ async def get_session_detail(
 
 @router.delete(
     "/sessions/{session_id}",
-    summary="Delete a visitor session",
+    summary="Delete an end-user session",
 )
 async def delete_session(
     session_id: str,
-    visitor_id: str | None = Query(None, description="访客 ID（兼容模式必填，回调验证模式忽略）"),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> JSONResponse:
     """Delete a session and all its messages.
@@ -415,7 +406,7 @@ async def delete_session(
     """
     principal.require_scope("agents:invoke")
 
-    user_id = resolve_user_id(principal, visitor_id)
+    user_id = resolve_user_id(principal)
 
     # Verify ownership before deleting
     session_doc = await SessionService.get_session(session_id)

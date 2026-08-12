@@ -11,7 +11,7 @@ Channel classification mirrors ``execution_stats_service.classify_channel``:
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from loguru import logger
@@ -82,14 +82,10 @@ class ExecutionLogService:
         )
         await col.create_index("session_id", name="idx_xlog_session")
         await col.create_index("request_id", name="idx_xlog_request_id")
-        # API Key 维度查询（服务 API Keys 页面的 /stats /logs /users）。
+        # API Key 维度查询（服务 API Keys 页面的 /stats /logs）。
         await col.create_index(
             [("api_key_id", 1), ("timestamp", -1)],
             name="idx_xlog_key_time",
-        )
-        await col.create_index(
-            [("api_key_id", 1), ("user_sub", 1), ("timestamp", -1)],
-            name="idx_xlog_key_user_time",
         )
         # TTL: timestamp MUST be a BSON date for the TTL monitor to expire docs.
         await col.create_index(
@@ -109,8 +105,6 @@ class ExecutionLogService:
         session_id: str = "",
         request_id: str = "",
         api_key_id: str = "",
-        user_sub: str = "",
-        visitor_id: str = "",
         endpoint: str = "",
         status: str = "success",
         status_code: int = 0,
@@ -137,8 +131,6 @@ class ExecutionLogService:
             session_id=session_id,
             request_id=request_id,
             api_key_id=api_key_id,
-            user_sub=user_sub,
-            visitor_id=visitor_id,
             endpoint=endpoint,
             channel_id=channel_id,
             status=status,
@@ -296,8 +288,6 @@ class ExecutionLogService:
     async def list_logs_by_api_key(
         api_key_id: str,
         *,
-        user_sub: str | None = None,
-        visitor_id: str | None = None,
         session_id: str | None = None,
         endpoint: str | None = None,
         start: str | None = None,
@@ -307,10 +297,6 @@ class ExecutionLogService:
     ) -> tuple[list[dict], int]:
         """Paginated log query scoped to one API Key."""
         query: dict[str, Any] = {"api_key_id": api_key_id, "source": CHANNEL_API_KEY}
-        if user_sub:
-            query["user_sub"] = user_sub
-        if visitor_id:
-            query["visitor_id"] = visitor_id
         if session_id:
             query["session_id"] = session_id
         if endpoint:
@@ -373,42 +359,6 @@ class ExecutionLogService:
             "output_tokens": r.get("output_tokens", 0),
             "calls": r.get("calls", 0),
         }
-
-    @staticmethod
-    async def get_users_summary_by_api_key(
-        api_key_id: str,
-        *,
-        period_days: int = 7,
-    ) -> list[dict[str, Any]]:
-        """Active end-users (by user_sub) ranked by token usage."""
-        cutoff = datetime.now(UTC) - timedelta(days=period_days)
-        pipeline = [
-            {
-                "$match": {
-                    "api_key_id": api_key_id,
-                    "source": CHANNEL_API_KEY,
-                    "user_sub": {"$ne": ""},
-                    "timestamp": {"$gte": cutoff},
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$user_sub",
-                    "total_tokens": {"$sum": "$total_tokens"},
-                    "calls": {"$sum": 1},
-                    "last_seen": {"$max": "$timestamp"},
-                }
-            },
-            {"$sort": {"total_tokens": -1}},
-            {"$limit": 100},
-        ]
-        col = ExecutionLogService._collection()
-        rows = await col.aggregate(pipeline).to_list(length=100)
-        for r in rows:
-            r["user_sub"] = r.pop("_id", "")
-            ts = r.get("last_seen")
-            r["last_seen_at"] = ts.isoformat() if hasattr(ts, "isoformat") else ""
-        return rows
 
 
 def _time_range(start: str | None, end: str | None) -> dict[str, Any] | None:

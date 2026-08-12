@@ -1,10 +1,8 @@
 """External API — session file upload/download (API Key authenticated).
 
-Mirrors ``/v1/sessions/*/files`` but authenticates via API Key (plus an
-optional ``X-User-Token`` in callback-verification mode). Ownership is
-resolved through :func:`resolve_user_id`, so legacy (``visitor_id``) and
-callback (``X-User-Token`` sub) modes attribute files identically —
-matching how ``/v1/ext/agents/*/invoke`` attributes sessions.
+Mirrors ``/v1/sessions/*/files`` but authenticates via API Key. Ownership
+is resolved through :func:`resolve_user_id` (终端用户身份来自通用 token
+记录 id), matching how ``/v1/ext/agents/*/invoke`` attributes sessions.
 
 File-handling helpers (size limit, extension whitelist, filename
 sanitization, path-traversal defense) are imported verbatim from the
@@ -16,7 +14,7 @@ import zipfile
 from contextlib import suppress
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.v1.ext import auth_and_rate_limit, resolve_user_id
@@ -45,15 +43,13 @@ router = APIRouter(tags=["external-session-files"])
 async def _verify_ext_session_ownership(
     session_id: str,
     principal: ApiKeyPrincipal,
-    visitor_id: str | None,
 ) -> Workspace:
     """Verify the session belongs to the resolved end-user; return workspace.
 
-    ``user_id`` comes from :func:`resolve_user_id` (legacy:
-    ``{owner}:{visitor_id}``; callback: ``{owner}:{sub}``), matching how
-    ``/v1/ext/agents/*/invoke`` attributes sessions.
+    ``user_id`` comes from :func:`resolve_user_id` (mcp_token_credentials._id),
+    matching how ``/v1/ext/agents/*/invoke`` attributes sessions.
     """
-    user_id = resolve_user_id(principal, visitor_id)
+    user_id = resolve_user_id(principal)
     session_doc = await SessionService.get_session(session_id)
     if session_doc is None or session_doc.get("user_id") != user_id:
         raise NotFoundError(code="SESSION_NOT_FOUND", message="会话不存在")
@@ -69,9 +65,6 @@ async def _verify_ext_session_ownership(
 )
 async def upload_chat_file(
     session_id: str,
-    visitor_id: str | None = Query(
-        None, description="访客 ID（兼容模式必填，回调验证模式忽略）"
-    ),
     file: UploadFile = File(...),
     content: str = Form(""),
     svc: FileService = Depends(_get_file_service),
@@ -85,8 +78,8 @@ async def upload_chat_file(
     """
     principal.require_scope("agents:invoke")
 
-    ws = await _verify_ext_session_ownership(session_id, principal, visitor_id)
-    user_id = resolve_user_id(principal, visitor_id)
+    ws = await _verify_ext_session_ownership(session_id, principal)
+    user_id = resolve_user_id(principal)
 
     data = await file.read()
     if len(data) > MAX_FILE_SIZE:
@@ -157,14 +150,11 @@ async def upload_chat_file(
 )
 async def list_session_files(
     session_id: str,
-    visitor_id: str | None = Query(
-        None, description="访客 ID（兼容模式必填，回调验证模式忽略）"
-    ),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> list[dict]:
     """List all files in the session's output/ directory."""
     principal.require_scope("agents:invoke")
-    ws = await _verify_ext_session_ownership(session_id, principal, visitor_id)
+    ws = await _verify_ext_session_ownership(session_id, principal)
     return WorkspaceManager.list_output_files(ws)
 
 
@@ -174,14 +164,11 @@ async def list_session_files(
 )
 async def download_session_files_zip(
     session_id: str,
-    visitor_id: str | None = Query(
-        None, description="访客 ID（兼容模式必填，回调验证模式忽略）"
-    ),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> StreamingResponse:
     """Download all files in the session's output/ as a ZIP archive."""
     principal.require_scope("agents:invoke")
-    ws = await _verify_ext_session_ownership(session_id, principal, visitor_id)
+    ws = await _verify_ext_session_ownership(session_id, principal)
 
     files = WorkspaceManager.list_output_files(ws)
     if not files:
@@ -214,14 +201,11 @@ async def download_session_files_zip(
 async def download_session_file(
     session_id: str,
     file_path: str,
-    visitor_id: str | None = Query(
-        None, description="访客 ID（兼容模式必填，回调验证模式忽略）"
-    ),
     principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
 ) -> StreamingResponse:
     """Download a single file from the session's output/ directory."""
     principal.require_scope("agents:invoke")
-    ws = await _verify_ext_session_ownership(session_id, principal, visitor_id)
+    ws = await _verify_ext_session_ownership(session_id, principal)
 
     resolved = WorkspaceManager.safe_resolve_path(ws.output_dir, file_path)
     if resolved is None or not resolved.exists() or not resolved.is_file():
