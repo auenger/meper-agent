@@ -124,7 +124,7 @@ export function useVoiceConversation(options: UseVoiceConversationOptions) {
       setError(detail)
       return false
     }
-    voiceWs.sendJson({ type: 'voice.start', agent_id: agentId, session_id: sessionId })
+    voiceWs.sendJson({ type: 'voice.start', mode: 'ptt', agent_id: agentId, session_id: sessionId })
     const started = await recorder.start(
       audioDevices.inputDeviceId,
       audioDevices.fallbackInput,
@@ -154,6 +154,18 @@ export function useVoiceConversation(options: UseVoiceConversationOptions) {
     player.clear()
   }, [player.clear])
 
+  const press = useCallback(async () => {
+    // Drop any locally queued playback, then listen; backend voice.start
+    // barge-ins if the agent is still mid-turn.
+    player.clear()
+    await start()
+  }, [player.clear, start])
+
+  const release = useCallback(() => {
+    voiceWs.sendJson({ type: 'voice.release' })
+    recorder.stop()
+  }, [recorder.stop])
+
   return {
     voiceState,
     connected,
@@ -166,5 +178,7 @@ export function useVoiceConversation(options: UseVoiceConversationOptions) {
     start,
     pause,
     interrupt,
+    press,
+    release,
   }
 }

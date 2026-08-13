@@ -8,8 +8,9 @@
  *   - `interrupt` button sends a manual barge-in (also triggered by VAD)
  *   - turn.started/end frame the agent reply accumulation
  */
-import { useEffect, useRef, useState } from 'react'
-import { Mic, MicOff, Hand } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Hand, Mic } from 'lucide-react'
+import { usePttSpaceTrigger } from '../../hooks/voice/usePttSpaceTrigger'
 import { voiceWs } from '../../lib/voice/voice-ws-client'
 import { useVoiceRecorder } from '../../hooks/voice/useVoiceRecorder'
 import { useVoicePlayer } from '../../hooks/voice/useVoicePlayer'
@@ -100,29 +101,35 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
     return () => off()
   }, [clear])
 
-  const toggleMic = async () => {
+  const press = useCallback(async () => {
+    if (recorder.recording) return  // already in a press (button + space race)
     setErrorMsg(null)
-    if (recorder.recording) {
-      voiceWs.sendJson({ type: 'voice.stop' })
-      recorder.stop()
-    } else {
-      if (!agentId) {
-        setErrorMsg('请先选择一个智能体')
-        return
-      }
-      if (!agents.find((agent) => agent.id === agentId)?.voiceEnabled) {
-        setErrorMsg('当前 Agent 未开启语音对话能力')
-        return
-      }
-      setTurns([])
-      setPartial('')
-      agentBufRef.current = ''
-      voiceWs.sendJson({ type: 'voice.start', agent_id: agentId })
-      const started = await recorder.start(audioDevices.inputDeviceId, audioDevices.fallbackInput)
-      if (started) await audioDevices.refreshAfterPermission()
-      else voiceWs.sendJson({ type: 'voice.stop' })
+    if (!agentId) {
+      setErrorMsg('请先选择一个智能体')
+      return
     }
-  }
+    if (!agents.find((agent) => agent.id === agentId)?.voiceEnabled) {
+      setErrorMsg('当前 Agent 未开启语音对话能力')
+      return
+    }
+    clear()  // barge-in: drop any queued TTS playback
+    voiceWs.sendJson({ type: 'voice.start', mode: 'ptt', agent_id: agentId })
+    const started = await recorder.start(audioDevices.inputDeviceId, audioDevices.fallbackInput)
+    if (started) await audioDevices.refreshAfterPermission()
+    else voiceWs.sendJson({ type: 'voice.stop' })
+  }, [recorder.recording, agentId, agents, clear, audioDevices.inputDeviceId, audioDevices.fallbackInput, audioDevices.refreshAfterPermission])
+
+  const release = useCallback(() => {
+    if (!recorder.recording) return
+    voiceWs.sendJson({ type: 'voice.release' })
+    recorder.stop()
+  }, [recorder.recording])
+
+  usePttSpaceTrigger(
+    !!connected && !!agentId && !!agents.find((agent) => agent.id === agentId)?.voiceEnabled,
+    () => void press(),
+    release,
+  )
 
   const dark = theme === 'dark'
   const card = dark ? 'bg-[#18181b] border-[#27272a]' : 'bg-white border-slate-200'
@@ -184,13 +191,20 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
 
         <div className="flex items-center gap-4">
           <button
-            onClick={toggleMic}
+            onPointerDown={(e) => {
+              e.preventDefault()
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+              void press()
+            }}
+            onPointerUp={() => release()}
+            onPointerCancel={() => release()}
             disabled={!connected || !agentId || !agents.find((agent) => agent.id === agentId)?.voiceEnabled}
             className={`w-16 h-16 rounded-full flex items-center justify-center transition-all shadow-lg cursor-pointer text-white disabled:opacity-40 disabled:cursor-not-allowed ${
               recorder.recording ? 'bg-rose-500 hover:bg-rose-600' : 'bg-indigo-500 hover:bg-indigo-600'
             }`}
+            aria-label={recorder.recording ? '松开结束说话' : '按住说话'}
           >
-            {recorder.recording ? <MicOff className="w-7 h-7" /> : <Mic className="w-7 h-7" />}
+            <Mic className="w-7 h-7" />
           </button>
 
           {canInterrupt && (
@@ -204,7 +218,7 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
         </div>
 
         <div className={`text-xs ${dark ? 'text-[#71717a]' : 'text-slate-400'}`}>
-          {recorder.recording ? '录音中 — 说话即可，Agent 会语音回复' : '点击麦克风开始语音对话（需配置火山 ASR/TTS 凭证）'}
+          {recorder.recording ? '松开结束，Agent 会语音回复' : '按住麦克风（或空格）说话，松开自动发送（需配置火山 ASR/TTS 凭证）'}
         </div>
         {(recorder.error || errorMsg) && (
           <div className="text-xs text-rose-500">{recorder.error || errorMsg}</div>
