@@ -107,6 +107,7 @@ class VoiceSession:
         self._last_asr_partial = ""
         self._vad_commit_task: asyncio.Task | None = None
         self._partial_idle_task: asyncio.Task | None = None
+        self._ptt: bool = False  # push-to-talk: utterance bounded by release, not VAD
 
     # ── inbound dispatch ──────────────────────────────────────────────
 
@@ -119,11 +120,21 @@ class VoiceSession:
         if mtype == P.CLIENT_VOICE_START:
             self.agent_id = msg.get("agent_id")
             self.session_id = msg.get("session_id")
+            self._ptt = msg.get("mode") == "ptt"
             if not await self._agent_allows_voice():
                 return
+            # PTT press while the agent is mid-turn = barge-in, then listen.
+            if self._ptt and (
+                self._active_turn is not None
+                or self.state in (P.STATE_THINKING, P.STATE_SPEAKING)
+            ):
+                await self._handle_interrupt()
             await self._start_listening()
         elif mtype == P.CLIENT_VOICE_STOP:
+            self._ptt = False
             await self._stop_listening()
+        elif mtype == P.CLIENT_VOICE_RELEASE:
+            await self._release()
         elif mtype == P.CLIENT_INTERRUPT:
             await self._handle_interrupt()
         elif mtype == P.CLIENT_AUDIO_INFO:
@@ -182,7 +193,9 @@ class VoiceSession:
             )
         if self._asr is not None:
             await self._asr.feed(pcm16)
-        if self._vad is not None:
+        # PTT bounds utterances by the release event; skip VAD auto-commit and
+        # barge-in so a mid-press pause doesn't end the turn early.
+        if self._vad is not None and not self._ptt:
             evt = self._vad.feed(pcm16)
             if evt is Speech.START:
                 logger.info("voice_vad_speech_start", user_id=self.user_id)
@@ -239,12 +252,37 @@ class VoiceSession:
         await self._close_asr()
         await self._set_state(P.STATE_IDLE)
 
+    async def _release(self) -> None:
+        """PTT release-to-send: commit the latest partial and end the utterance.
+
+        The utterance boundary is the release event (not VAD silence), so we
+        commit whatever ASR has so far and do not reopen the ASR stream —
+        ``_run_turn`` returns to idle once the turn finishes.
+        """
+        if not self._ptt:
+            return
+        text = self._last_asr_partial.strip()
+        self._last_asr_partial = ""
+        await self._close_asr()
+        if not text:
+            # Held the button without speaking — quietly return to idle.
+            await self._set_state(P.STATE_IDLE)
+            return
+        logger.info("voice_ptt_release", user_id=self.user_id, text=text)
+        await self._send({"type": P.SERVER_TRANSCRIPT_FINAL, "content": text})
+        if self.agent_id:
+            task = asyncio.create_task(self._run_turn(text))
+            self._active_llm_task = task
+            task.add_done_callback(lambda t: self._clear_active_task(t))
+
     # ── ASR callbacks ─────────────────────────────────────────────────
 
     async def _on_asr_partial(self, text: str) -> None:
         self._last_asr_partial = text
         logger.debug("voice_asr_partial", user_id=self.user_id, text=text)
         await self._send({"type": P.SERVER_TRANSCRIPT_DELTA, "content": text})
+        if self._ptt:
+            return  # utterance bounded by release; no idle auto-commit
         if self._partial_idle_task and not self._partial_idle_task.done():
             self._partial_idle_task.cancel()
         self._partial_idle_task = asyncio.create_task(
@@ -345,7 +383,9 @@ class VoiceSession:
                 await self._abort_tts(turn)
             finally:
                 self._active_turn = None
-                if self.state != P.STATE_IDLE:
+                if self._ptt:
+                    await self._set_state(P.STATE_IDLE)
+                elif self.state != P.STATE_IDLE:
                     await self._set_state(P.STATE_LISTENING)
 
     async def _exec_brain(self, turn: TurnContext) -> None:

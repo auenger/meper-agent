@@ -1,5 +1,6 @@
-import { Hand, Keyboard, Mic, Pause } from 'lucide-react'
+import { Hand, Keyboard, Mic } from 'lucide-react'
 import { useVoiceConversation } from '../../hooks/voice/useVoiceConversation'
+import { usePttSpaceTrigger } from '../../hooks/voice/usePttSpaceTrigger'
 import { StateOrb } from './StateOrb'
 import { AudioDeviceMenu } from './AudioDeviceMenu'
 
@@ -17,10 +18,10 @@ interface ChatVoiceComposerProps {
 }
 
 const STATE_COPY: Record<string, string> = {
-  idle: '已暂停，点击开始继续语音对话',
-  listening: '正在聆听，说完后会自动发送',
-  thinking: 'Agent 正在思考，可直接说话打断',
-  speaking: 'Agent 正在回复，可直接说话打断',
+  idle: '按住麦克风或空格说话，松开自动发送',
+  listening: '正在聆听，松开发送',
+  thinking: 'Agent 正在思考，按住可打断',
+  speaking: 'Agent 正在回复，按住可打断',
   error: '语音服务出现异常',
 }
 
@@ -38,6 +39,12 @@ export function ChatVoiceComposer(props: ChatVoiceComposerProps) {
     onError: props.onError,
   })
   const canInterrupt = voice.voiceState === 'thinking' || voice.voiceState === 'speaking'
+
+  usePttSpaceTrigger(
+    voice.connected && !!props.agentId && !!props.sessionId,
+    () => void voice.press(),
+    voice.release,
+  )
 
   const exitToText = () => {
     voice.pause()
@@ -98,28 +105,26 @@ export function ChatVoiceComposer(props: ChatVoiceComposerProps) {
         </p>
 
         <div className="mt-2 flex items-center gap-2">
-          {voice.recording ? (
-            <button
-              type="button"
-              onClick={voice.pause}
-              className={`flex min-h-11 items-center gap-2 rounded-full border border-rose-400/35 bg-rose-500/15 px-4 text-[11px] font-semibold transition-colors duration-200 hover:bg-rose-500/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-400 cursor-pointer ${dark ? 'text-rose-200' : 'text-rose-700'}`}
-              aria-label="暂停语音输入"
-            >
-              <Pause className="h-3.5 w-3.5 fill-current" />
-              暂停
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void voice.start()}
-              disabled={!voice.connected || !props.agentId || !props.sessionId}
-              className="flex min-h-11 items-center gap-2 rounded-full bg-indigo-600 px-4 text-[11px] font-semibold text-white shadow-lg shadow-indigo-950/30 transition-colors duration-200 hover:bg-indigo-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
-              aria-label="开始语音输入"
-            >
-              <Mic className="h-3.5 w-3.5" />
-              开始语音
-            </button>
-          )}
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.preventDefault()
+              try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* ignore */ }
+              void voice.press()
+            }}
+            onPointerUp={() => voice.release()}
+            onPointerCancel={() => voice.release()}
+            disabled={!voice.connected || !props.agentId || !props.sessionId}
+            className={`flex min-h-11 items-center gap-2 rounded-full px-4 text-[11px] font-semibold text-white shadow-lg transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer ${
+              voice.recording
+                ? 'bg-rose-600 shadow-rose-950/30 hover:bg-rose-500'
+                : 'bg-indigo-600 shadow-indigo-950/30 hover:bg-indigo-500'
+            }`}
+            aria-label={voice.recording ? '松开结束语音输入' : '按住说话'}
+          >
+            <Mic className="h-3.5 w-3.5" />
+            {voice.recording ? '松开发送' : '按住说话'}
+          </button>
 
           {canInterrupt && (
             <button
