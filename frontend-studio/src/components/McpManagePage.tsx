@@ -5,10 +5,10 @@
  * Renders connection status with color-coded dots. Ported from
  * frontend/src/pages/mcp-page.tsx, native Tailwind (lucide icons).
  */
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useState, useMemo, type FormEvent, type ReactNode } from 'react';
 import {
   Plug, Plus, Search, Zap, Pencil, Trash2, Eye, X, Loader2,
-  CircleCheck, CircleSlash, AlertCircle, PlugZap,
+  CircleCheck, CircleSlash, AlertCircle, PlugZap, Folder,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -18,8 +18,13 @@ import {
   type McpConnectionCreateInput,
   type ConnectionStatus,
   type McpAuthType,
-  type McpLoginConfig,
 } from '../services/mcp-api';
+import {
+  mcpCategoryApi,
+  mcpCategoryKeys,
+  type McpCategory,
+  type McpCategoryCreateInput,
+} from '../services/mcp-category-api';
 import { toolsApi, toolKeys } from '../services/tools-api';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
@@ -51,7 +56,7 @@ const AUTH_HINTS: Record<Exclude<McpAuthType, 'none'>, string> = {
 const PROTOCOL_OPTIONS = ['streamable-http', 'sse'];
 const AUTH_OPTIONS: McpAuthType[] = ['none', 'api_key', 'bearer_token', 'basic'];
 
-type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params' | 'login_config'> & {
+type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params' | 'category_id'> & {
   // Structured auth fields — assembled into auth_config on submit. Keep them
   // flat (instead of editing raw JSON) so users pick an auth_type and just fill
   // labeled inputs. auth_config keys follow the backend contract:
@@ -64,20 +69,14 @@ type ConnForm = Omit<McpConnectionCreateInput, 'auth_config' | 'default_params' 
   username: string;
   password: string;
   default_params: string; // JSON string
-  // 账密型绑定的登录端点配置（login_config）—— 仅当用户用 username/password
-  // 绑定时用到，token 型绑定不需要。assembled into login_config on submit.
-  loginUrl: string;
-  loginMethod: string;
-  usernameField: string;
-  passwordField: string;
-  loginTokenPath: string;
-  loginTtl: number;
+  categoryId: string;
 };
 
 function emptyForm(): ConnForm {
   return {
     name: '',
     description: '',
+    categoryId: '',
     url: '',
     protocol: 'streamable-http',
     auth_type: 'none',
@@ -88,22 +87,15 @@ function emptyForm(): ConnForm {
     password: '',
     timeout: 30,
     default_params: '',
-    loginUrl: '',
-    loginMethod: 'POST',
-    usernameField: 'username',
-    passwordField: 'password',
-    loginTokenPath: 'data.token',
-    loginTtl: 3600,
   };
 }
 
 function connToForm(c: McpConnection): ConnForm {
   const cfg = c.auth_config ?? {};
-  // login_config 可能是空对象（未配置）或完整对象；逐字段兜底默认值。
-  const lc = (c.login_config ?? {}) as Partial<McpLoginConfig>;
   return {
     name: c.name,
     description: c.description ?? '',
+    categoryId: c.category_id ?? '',
     url: c.url,
     protocol: c.protocol ?? 'streamable-http',
     auth_type: c.auth_type ?? 'none',
@@ -116,12 +108,6 @@ function connToForm(c: McpConnection): ConnForm {
     password: String(cfg.password ?? ''),
     timeout: c.timeout ?? 30,
     default_params: c.default_params && Object.keys(c.default_params).length ? JSON.stringify(c.default_params, null, 2) : '',
-    loginUrl: lc.login_url ?? '',
-    loginMethod: lc.method ?? 'POST',
-    usernameField: lc.username_field ?? 'username',
-    passwordField: lc.password_field ?? 'password',
-    loginTokenPath: lc.token_jsonpath ?? 'data.token',
-    loginTtl: lc.session_ttl ?? 3600,
   };
 }
 
@@ -174,8 +160,8 @@ export function McpManagePage() {
   const [error, setError] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [viewingConn, setViewingConn] = useState<McpConnection | null>(null);
-  // 表单内两个 tab：通用配置 / 账密登录配置（对齐 frontend mcp-page 的 Tabs）
-  const [formTab, setFormTab] = useState<'general' | 'login'>('general');
+  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: mcpKeys.list({ page: 1, page_size: 100 }),
@@ -183,9 +169,21 @@ export function McpManagePage() {
   });
   const connections = data?.items ?? [];
 
-  const filtered = search.trim()
-    ? connections.filter((c) => c.name.toLowerCase().includes(search.trim().toLowerCase()))
-    : connections;
+  // 分组列表（用于过滤 / 表单下拉 / 表格显示分组名）
+  const { data: categoryData } = useQuery({
+    queryKey: mcpCategoryKeys.lists(),
+    queryFn: () => mcpCategoryApi.list(),
+  });
+  const categories = useMemo(() => categoryData?.items ?? [], [categoryData]);
+  const categoryMap = useMemo(() => {
+    const m = new Map<string, McpCategory>();
+    for (const c of categories) m.set(c.id, c);
+    return m;
+  }, [categories]);
+
+  const filtered = connections
+    .filter((c) => (categoryFilter === 'all' ? true : (c.category_id ?? '') === categoryFilter))
+    .filter((c) => (search.trim() ? c.name.toLowerCase().includes(search.trim().toLowerCase()) : true));
 
   const stats = {
     total: connections.length,
@@ -247,27 +245,16 @@ export function McpManagePage() {
   const buildPayload = (): McpConnectionCreateInput => {
     const auth_config = buildAuthConfig(form);
     const default_params = parseJsonOrEmpty(form.default_params, 'default_params');
-    // login_config：仅当填了 login_url 才提交（账密型绑定时用于换 session）
-    const login_config: McpLoginConfig | undefined = form.loginUrl.trim()
-      ? {
-          login_url: form.loginUrl.trim(),
-          method: form.loginMethod.trim() || 'POST',
-          username_field: form.usernameField.trim() || 'username',
-          password_field: form.passwordField.trim() || 'password',
-          token_jsonpath: form.loginTokenPath.trim() || 'data.token',
-          session_ttl: form.loginTtl || 3600,
-        }
-      : undefined;
     return {
       name: form.name.trim(),
       description: form.description.trim() || undefined,
+      category_id: form.categoryId || '',
       url: form.url.trim(),
       protocol: form.protocol,
       auth_type: form.auth_type,
       ...(auth_config ? { auth_config } : {}),
       ...(form.timeout ? { timeout: form.timeout } : {}),
       ...(Object.keys(default_params).length ? { default_params } : {}),
-      ...(login_config ? { login_config } : {}),
     };
   };
 
@@ -308,7 +295,7 @@ export function McpManagePage() {
           </p>
         </div>
         <button
-          onClick={() => { setError(null); setForm(emptyForm()); setFormTab('general'); setCreating(true); }}
+          onClick={() => { setError(null); setForm(emptyForm()); setCreating(true); }}
           className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
         >
           <Plus className="w-4 h-4" /> 新建连接
@@ -330,15 +317,34 @@ export function McpManagePage() {
         ))}
       </div>
 
-      {/* Search */}
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#71717a]" />
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="搜索连接名称"
-          className="w-full pl-9 pr-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-sm text-white placeholder:text-[#52525b] focus:outline-none focus:border-indigo-500 transition"
-        />
+      {/* Search + Category filter */}
+      <div className="flex items-center gap-3">
+        <div className="relative flex-1 max-w-sm">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#71717a]" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="搜索连接名称"
+            className="w-full pl-9 pr-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-sm text-white placeholder:text-[#52525b] focus:outline-none focus:border-indigo-500 transition"
+          />
+        </div>
+        <div className="w-44">
+          <Select
+            value={categoryFilter}
+            onChange={(v) => setCategoryFilter(v ?? 'all')}
+            options={[
+              { value: 'all', label: '全部分组' },
+              { value: '', label: '未分组' },
+              ...categories.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+          />
+        </div>
+        <button
+          onClick={() => setCategoryModalOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer"
+        >
+          <Folder className="w-4 h-4" /> 管理分组
+        </button>
       </div>
 
       {error && (
@@ -361,6 +367,7 @@ export function McpManagePage() {
             <thead>
               <tr className="border-b border-[#27272a] text-[#71717a] text-[11px] uppercase tracking-wider">
                 <th className="text-left font-semibold px-4 py-3">名称</th>
+                <th className="text-left font-semibold px-4 py-3">分组</th>
                 <th className="text-left font-semibold px-4 py-3">URL</th>
                 <th className="text-left font-semibold px-4 py-3">协议</th>
                 <th className="text-left font-semibold px-4 py-3">状态</th>
@@ -376,6 +383,16 @@ export function McpManagePage() {
                     <td className="px-4 py-3">
                       <p className="font-semibold text-white">{c.name}</p>
                       {c.description && <p className="text-[11px] text-[#71717a] line-clamp-1">{c.description}</p>}
+                    </td>
+                    <td className="px-4 py-3">
+                      {c.category_id && categoryMap.has(c.category_id) ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 text-[10px] font-semibold">
+                          <Folder className="w-3 h-3" />
+                          {categoryMap.get(c.category_id)?.name}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-[#52525b]">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-[11px] text-[#a1a1aa] font-mono max-w-[200px] truncate">{c.url}</td>
                     <td className="px-4 py-3 text-[11px] text-[#a1a1aa]">{c.protocol ?? '—'}</td>
@@ -396,7 +413,7 @@ export function McpManagePage() {
                           className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-sky-400 hover:bg-[#27272a] transition cursor-pointer">
                           <Eye className="w-4 h-4" />
                         </button>
-                        <button onClick={() => { setError(null); setForm(connToForm(c)); setFormTab('general'); setEditing(c); }} title="编辑"
+                        <button onClick={() => { setError(null); setForm(connToForm(c)); setEditing(c); }} title="编辑"
                           className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
                           <Pencil className="w-4 h-4" />
                         </button>
@@ -429,28 +446,6 @@ export function McpManagePage() {
               </button>
             </div>
             <form onSubmit={handleSubmit} className="p-5 space-y-4 text-xs">
-              {/* 表单内 Tab 切换：通用配置 / 账密登录配置（对齐 frontend mcp-page） */}
-              <div className="inline-flex rounded-lg border border-[#27272a] p-0.5 bg-[#18181b]/60">
-                {([
-                  { key: 'general', label: '通用配置' },
-                  { key: 'login', label: '账密登录配置' },
-                ] as const).map((t) => (
-                  <button
-                    key={t.key}
-                    type="button"
-                    onClick={() => setFormTab(t.key)}
-                    className={`px-3 py-1.5 rounded-md text-xs font-semibold transition cursor-pointer select-none ${
-                      formTab === t.key
-                        ? 'bg-indigo-500/10 text-indigo-400'
-                        : 'text-[#71717a] hover:text-white hover:bg-[#27272a]'
-                    }`}
-                  >
-                    {t.label}
-                  </button>
-                ))}
-              </div>
-
-              {formTab === 'general' && (
               <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <Field label="连接名称 *"><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
@@ -463,6 +458,16 @@ export function McpManagePage() {
                 </Field>
               </div>
               <Field label="端点 URL *"><input required value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://api.example.com/v1/tools" className={inputCls} /></Field>
+              <Field label="分组">
+                <Select
+                  value={form.categoryId}
+                  onChange={(v) => setForm({ ...form, categoryId: v ?? '' })}
+                  options={[
+                    { value: '', label: '未分组' },
+                    ...categories.map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                />
+              </Field>
               <Field label="描述"><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className={inputCls} /></Field>
               <div className="grid grid-cols-2 gap-4">
                 <Field label="认证方式">
@@ -541,73 +546,6 @@ export function McpManagePage() {
                 <textarea value={form.default_params} onChange={(e) => setForm({ ...form, default_params: e.target.value })} placeholder="{}" rows={2} className={`${inputCls} font-mono resize-y`} />
               </Field>
               </div>
-              )}
-
-              {/* 账密登录配置：仅当终端用户用「用户名+密码」绑定此 MCP 时用到 */}
-              {formTab === 'login' && (
-              <div className="space-y-3 rounded-lg border border-[#27272a] bg-[#18181b]/40 p-3">
-                <div>
-                  <p className="text-slate-400 font-medium font-sans">账密登录配置</p>
-                  <p className="text-[10px] text-[#71717a] leading-relaxed mt-1">
-                    当终端用户用「用户名+密码」绑定此 MCP 时，平台会调此端点登录换取 session token。token 型绑定（直传 token）不需要配置此区。
-                  </p>
-                </div>
-                <Field label="登录端点 URL">
-                  <input
-                    value={form.loginUrl}
-                    onChange={(e) => setForm({ ...form, loginUrl: e.target.value })}
-                    placeholder="https://oa.example.com/api/login（留空 = 不启用）"
-                    className={inputCls}
-                    autoComplete="off"
-                  />
-                </Field>
-                <div className="grid grid-cols-3 gap-3">
-                  <Field label="请求方法">
-                    <input
-                      value={form.loginMethod}
-                      onChange={(e) => setForm({ ...form, loginMethod: e.target.value })}
-                      placeholder="POST"
-                      className={inputCls}
-                    />
-                  </Field>
-                  <Field label="Token 路径">
-                    <input
-                      value={form.loginTokenPath}
-                      onChange={(e) => setForm({ ...form, loginTokenPath: e.target.value })}
-                      placeholder="data.token"
-                      className={inputCls}
-                    />
-                  </Field>
-                  <Field label="缓存秒数">
-                    <input
-                      type="number"
-                      min="60"
-                      value={form.loginTtl}
-                      onChange={(e) => setForm({ ...form, loginTtl: Number(e.target.value) })}
-                      className={inputCls}
-                    />
-                  </Field>
-                </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <Field label="用户名字段名" hint="登录接口请求体里用户名的字段名，如 username / name / account">
-                    <input
-                      value={form.usernameField}
-                      onChange={(e) => setForm({ ...form, usernameField: e.target.value })}
-                      placeholder="username"
-                      className={inputCls}
-                    />
-                  </Field>
-                  <Field label="密码字段名" hint="密码的字段名，通常不用改">
-                    <input
-                      value={form.passwordField}
-                      onChange={(e) => setForm({ ...form, passwordField: e.target.value })}
-                      placeholder="password"
-                      className={inputCls}
-                    />
-                  </Field>
-                </div>
-              </div>
-              )}
 
               <div className="flex justify-end gap-3 pt-4 border-t border-[#27272a]">
                 <button type="button" onClick={() => { setCreating(false); setEditing(null); setError(null); }}
@@ -625,6 +563,168 @@ export function McpManagePage() {
 
       {/* View-tools Modal */}
       {viewingConn && <ViewToolsModal conn={viewingConn} onClose={() => setViewingConn(null)} />}
+
+      {/* Category manage Modal */}
+      {categoryModalOpen && <McpCategoryModal onClose={() => setCategoryModalOpen(false)} />}
+    </div>
+  );
+}
+
+/* ─── MCP 分组管理 Modal ─── */
+
+function McpCategoryModal({ onClose }: { onClose: () => void }) {
+  const queryClient = useQueryClient();
+  const [editId, setEditId] = useState<string | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formDescription, setFormDescription] = useState('');
+  const [formSort, setFormSort] = useState(0);
+
+  const { data, isLoading } = useQuery({
+    queryKey: mcpCategoryKeys.lists(),
+    queryFn: () => mcpCategoryApi.list(),
+  });
+  const categories = data?.items ?? [];
+
+  const createM = useMutation({
+    mutationFn: (input: McpCategoryCreateInput) => mcpCategoryApi.create(input),
+    onSuccess: () => {
+      toast.success('分组创建成功');
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all });
+      resetForm();
+    },
+    onError: (e) => toast.error(getErrorMessage(e, '创建失败')),
+  });
+
+  const updateM = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: McpCategoryCreateInput }) => mcpCategoryApi.update(id, input),
+    onSuccess: () => {
+      toast.success('分组已更新');
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all });
+      resetForm();
+    },
+    onError: (e) => toast.error(getErrorMessage(e, '更新失败')),
+  });
+
+  const deleteM = useMutation({
+    mutationFn: (id: string) => mcpCategoryApi.remove(id),
+    onSuccess: () => {
+      toast.success('分组已删除');
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all });
+    },
+    onError: (e) => toast.error(getErrorMessage(e, '删除失败')),
+  });
+
+  function resetForm() {
+    setEditId(null);
+    setFormName('');
+    setFormDescription('');
+    setFormSort(0);
+  }
+
+  function startEdit(c: McpCategory) {
+    setEditId(c.id);
+    setFormName(c.name);
+    setFormDescription(c.description || '');
+    setFormSort(c.sort ?? 0);
+  }
+
+  function handleSubmit() {
+    if (!formName.trim()) {
+      toast.error('请填写分组名称');
+      return;
+    }
+    const input: McpCategoryCreateInput = {
+      name: formName.trim(),
+      description: formDescription.trim(),
+      sort: formSort ?? 0,
+    };
+    if (editId) updateM.mutate({ id: editId, input });
+    else createM.mutate(input);
+  }
+
+  async function handleDelete(c: McpCategory) {
+    const ok = await confirmDialog({
+      title: `删除分组「${c.name}」？`,
+      description: '若分组下仍有 MCP 连接将无法删除。',
+      okText: '删除',
+      danger: true,
+    });
+    if (ok) deleteM.mutate(c.id);
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+      <div className="w-full max-w-lg max-h-[85vh] overflow-y-auto bg-[#121214] border border-[#27272a] rounded-2xl shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#27272a] sticky top-0 bg-[#121214] z-10">
+          <h3 className="text-sm font-bold text-white flex items-center gap-2">
+            <Folder className="w-4 h-4 text-indigo-400" />
+            MCP 分组管理
+          </h3>
+          <button onClick={() => { resetForm(); onClose(); }}
+            className="p-1 rounded-lg text-[#71717a] hover:text-white hover:bg-[#27272a] transition cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="p-5 space-y-4">
+          {/* 内联新增/编辑表单 */}
+          <div className="space-y-2.5 rounded-lg border border-[#27272a] bg-[#18181b]/40 p-3">
+            <p className="text-xs font-bold text-white">{editId ? '编辑分组' : '新增分组'}</p>
+            <div className="grid grid-cols-[1fr_90px] gap-2">
+              <div className="space-y-1">
+                <label className="text-[11px] text-[#a1a1aa]">分组名称 *</label>
+                <input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="如：飞书" maxLength={50} className={inputCls} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-[#a1a1aa]">排序</label>
+                <input type="number" min="0" value={formSort} onChange={(e) => setFormSort(Number(e.target.value))} className={inputCls} />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#a1a1aa]">描述</label>
+              <input value={formDescription} onChange={(e) => setFormDescription(e.target.value)} placeholder="分组描述（可选）" maxLength={200} className={inputCls} />
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              {editId && (
+                <button type="button" onClick={resetForm}
+                  className="px-3 py-1.5 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer">取消编辑</button>
+              )}
+              <button type="button" onClick={handleSubmit} disabled={createM.isPending || updateM.isPending}
+                className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60 flex items-center gap-1.5">
+                {(createM.isPending || updateM.isPending) && <Loader2 className="w-3 h-3 animate-spin" />}
+                {editId ? '保存' : '新增'}
+              </button>
+            </div>
+          </div>
+
+          {/* 分组列表 */}
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8 text-[#71717a]"><Loader2 className="w-4 h-4 animate-spin mr-2" />加载中…</div>
+          ) : categories.length === 0 ? (
+            <div className="text-center py-8 text-[#52525b] text-sm">暂无分组</div>
+          ) : (
+            <div className="flex flex-col gap-1.5 max-h-[320px] overflow-y-auto">
+              {categories.map((c) => (
+                <div key={c.id} className="flex items-center gap-2 rounded-lg border border-[#27272a] px-3 py-2 hover:bg-[#18181b] transition">
+                  <Folder className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-white truncate">{c.name}</p>
+                    {c.description && <p className="text-[11px] text-[#71717a] truncate">{c.description}</p>}
+                  </div>
+                  <span className="text-[11px] text-[#52525b] shrink-0">排序 {c.sort ?? 0}</span>
+                  <button onClick={() => startEdit(c)} title="编辑"
+                    className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => handleDelete(c)} title="删除" disabled={deleteM.isPending}
+                    className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer disabled:opacity-40">
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

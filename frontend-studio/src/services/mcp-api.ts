@@ -11,27 +11,17 @@ import { apiClient } from '../lib/api-client'
 export type ConnectionStatus = 'connecting' | 'connected' | 'disconnected' | 'error'
 export type McpAuthType = 'none' | 'api_key' | 'bearer_token' | 'basic'
 
-/** 账密型绑定的登录端点配置（仅当用户用 username/password 绑定时用到）。 */
-export interface McpLoginConfig {
-  login_url: string
-  method?: string
-  username_field?: string
-  password_field?: string
-  token_jsonpath?: string
-  session_ttl?: number
-}
-
 export interface McpConnection {
   id: string
   name: string
   description: string
+  category_id: string
   url: string
   protocol: string
   auth_type: McpAuthType
   auth_config: Record<string, string>
   timeout: number
   default_params: Record<string, unknown>
-  login_config: McpLoginConfig | Record<string, never>
   status: ConnectionStatus
   status_message: string
   last_connected_at: string
@@ -43,13 +33,13 @@ export interface McpConnection {
 export interface McpConnectionCreateInput {
   name: string
   description?: string
+  category_id?: string
   url: string
   protocol?: string
   auth_type?: McpAuthType
   auth_config?: Record<string, string>
   timeout?: number
   default_params?: Record<string, unknown>
-  login_config?: McpLoginConfig
 }
 
 export type McpConnectionUpdateInput = McpConnectionCreateInput
@@ -59,6 +49,7 @@ export interface McpConnectionListParams {
   page_size?: number
   name?: string
   status?: ConnectionStatus
+  category_id?: string
 }
 
 export interface McpConnectionListResponse {
@@ -99,6 +90,7 @@ export const mcpApi = {
         page_size: params.page_size ?? 20,
         ...(params.name ? { name: params.name } : {}),
         ...(params.status ? { status: params.status } : {}),
+        ...(params.category_id ? { category_id: params.category_id } : {}),
       },
     })
     return res.data

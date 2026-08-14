@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import {
   Bot, BookOpen, LayoutDashboard, Layers, Key, Server,
   Sun, Moon, MessageSquare, ListTodo, Sparkles, Shield,
-  Wrench, Plug, UserCog, LogOut, ChevronDown, Users,
+  Wrench, Plug, UserCog, LogOut, ChevronDown,
   PanelLeftClose, PanelLeftOpen, Clock, Mic, SlidersHorizontal,
+  Link2,
 } from 'lucide-react';
 import { useAuthStore, REFRESH_TOKEN_KEY } from './stores/auth-store';
 import { useQuery, useQueries } from '@tanstack/react-query';
@@ -36,7 +37,7 @@ import { KnowledgeBasePage } from './components/KnowledgeBasePage';
 import { KbDetailPage } from './components/KbDetailPage';
 import { KbVectorDetailPage } from './components/KbVectorDetailPage';
 import { UserManagement } from './components/UserManagement';
-import { ExternalUsersPage } from './components/ExternalUsersPage';
+import { ExternalAuthPage } from './components/ExternalAuthPage';
 import { SystemSettings } from './components/SystemSettings';
 import { ModelsPage } from './components/ModelsPage';
 import { TriggersPage } from './components/TriggersPage';
@@ -77,7 +78,8 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'mcp', label: '外部工具接入', icon: Plug, permission: 'tool:read' },
   { id: 'skills', label: '技能商店', icon: Sparkles, permission: 'tool:read' },
   { id: 'knowledge', label: '知识库', icon: BookOpen, permission: 'knowledge:read' },
-  { id: 'external-users', label: '外部用户', icon: Users, permission: 'apikey:manage' },
+  // 外部授权：所有登录用户可见；应用管理操作按 application:write 权限在卡片上显示。
+  { id: 'external-auth', label: '外部授权', icon: Link2 },
   { id: 'users', label: '用户权限', icon: Shield, permission: 'user:read' },
   { id: 'settings', label: '系统设置', icon: Key, permission: 'settings:manage' },
 ];
@@ -577,7 +579,7 @@ export default function App() {
           )}
 
           {activeTab === 'users' && <UserManagement />}
-          {activeTab === 'external-users' && <ExternalUsersPage />}
+          {activeTab === 'external-auth' && <ExternalAuthPage />}
 
           {activeTab === 'settings' && <SystemSettings />}
 

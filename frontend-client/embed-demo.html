@@ -42,12 +42,13 @@
   <h2>宿主页（模拟第三方网站）— chat-widget.js 嵌入</h2>
   <div class="bar">
     第三方接入只需一行 <code>&lt;script&gt;</code>：<b>API Key 写在 <code>data-api-key</code></code>。
-    用户点击右下角聊天按钮后，<b>未登录则先输入 Token</b>（widget 内部登录面板），
-    登录后显示聊天界面，顶部有用户名和退出按钮。
+    用户身份通过 cookie（<code>x-mep-token</code>）自动注入，无需登录面板。
+    接入方页面负责把用户 token 写入 cookie，widget 自动读取并传给 iframe。
     <pre>&lt;script src="http://localhost:3001/chat-widget.js"
-        data-chat-url="http://localhost:3001"
+        data-chat-url="http://localhost:3001/client/"
         data-api-key="af_live_xxx"
         data-title="Agent Flow 助手"
+        data-token-cookie="mep-token"
         data-width="680px"&gt;&lt;/script&gt;</pre>
     JS API：<code>AgentFlowChat.open() / .close() / .toggle() / .setToken(token) / .logout()</code>
   </div>
@@ -56,14 +57,34 @@
     <button id="dbgState" class="afc-demo-btn">打印 widget 状态</button>
     <button id="dbgLogout" class="afc-demo-btn secondary">退出登录</button>
   </div>
-  <p class="filler">↓ 点击右下角浮动按钮，未登录时会弹出 Token 输入面板，输入后进入聊天。</p>
+  <p class="filler">↓ 点击右下角浮动按钮开始对话。用户 token 通过 cookie x-mep-token 自动注入。</p>
   <p class="filler">……（正文占位）……</p>
+
+  <!-- 模拟接入方写入用户身份 cookie（生产环境由接入方系统写入） -->
+  <script>
+    // 测试用：每次加载都覆盖写入测试 token（换用户测试时改这里即可）
+    // 生产环境这段代码不需要——接入方系统自己负责写 cookie
+    (function () {
+      var cookieName = 'mep-access-token';
+      // ⚠️ 这里填入接入方发给用户的真实 token；换用户测试时改这里
+      var testToken = '888b8fc5-a31c-405a-b7da-3cc48cbd8487';
+      if (testToken && testToken !== 'PASTE_YOUR_TOKEN_HERE') {
+        // 先清旧 cookie 再写入，保证总是以这里的值为准
+        document.cookie = cookieName + '=;path=/;max-age=0;SameSite=Lax';
+        document.cookie = cookieName + '=' + encodeURIComponent(testToken) + ';path=/;max-age=' + (30 * 24 * 60 * 60) + ';SameSite=Lax';
+        console.log('[embed-demo] 已写入测试 cookie: ' + cookieName + ' = ' + testToken);
+      } else {
+        console.warn('[embed-demo] 请在 embed-demo.html 里填入测试 token（搜索 PASTE_YOUR_TOKEN_HERE）');
+      }
+    })();
+  </script>
 
   <!-- 第三方接入的全部：一行 script + data-api-key，脚本自动初始化 -->
   <script src="chat-widget.js"
-          data-chat-url="http://localhost:3001"
+          data-chat-url="http://localhost:3002/client/"
           data-api-key="af_live_mzHE4eQpKaAoVBoLIgOG0ZXz34SA9wG9"
           data-title="Agent Flow 助手"
+          data-token-cookie="x-mep-token"
           data-width="680px"></script>
 
   <!-- 调试脚本 -->

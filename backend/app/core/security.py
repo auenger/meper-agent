@@ -261,6 +261,8 @@ DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
     "workflow:write": {"admin", "developer"},
     "tool:read": {"admin", "developer"},
     "tool:write": {"admin", "developer"},
+    "application:read": {"admin", "developer"},
+    "application:write": {"admin", "developer"},
     "knowledge:read": {"admin", "developer"},
     "knowledge:write": {"admin", "developer"},
     "execution:read:all": {"admin"},

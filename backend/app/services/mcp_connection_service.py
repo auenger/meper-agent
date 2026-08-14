@@ -129,13 +129,13 @@ class McpConnectionService:
             "_id": generate_id("mcp"),
             "name": data["name"],
             "description": data.get("description", ""),
+            "category_id": data.get("category_id", ""),
             "url": data["url"],
             "protocol": data.get("protocol", "streamable-http"),
             "auth_type": data.get("auth_type", "none"),
             "auth_config": _encrypt_auth_config(data.get("auth_config", {})),
             "timeout": data.get("timeout", 30),
             "default_params": data.get("default_params", {}),
-            "login_config": data.get("login_config", {}),
             "status": ConnectionStatus.DISCONNECTED.value,
             "status_message": "",
             "last_connected_at": "",
@@ -173,6 +173,7 @@ class McpConnectionService:
         page_size: int = 20,
         name: str | None = None,
         status: str | None = None,
+        category_id: str | None = None,
     ) -> tuple[list[dict], int]:
         """List MCP connections with pagination and optional filtering.
 
@@ -185,6 +186,8 @@ class McpConnectionService:
             filter_query["name"] = {"$regex": re.escape(name), "$options": "i"}
         if status:
             filter_query["status"] = status
+        if category_id:
+            filter_query["category_id"] = category_id
 
         total = await col.count_documents(filter_query)
         cursor = (
@@ -235,6 +238,7 @@ class McpConnectionService:
         set_fields = {
             "name": data.get("name", existing["name"]),
             "description": data.get("description", existing.get("description", "")),
+            "category_id": data.get("category_id", existing.get("category_id", "")),
             "url": data.get("url", existing["url"]),
             "protocol": data.get("protocol", existing.get("protocol", "streamable-http")),
             "auth_type": data.get("auth_type", existing.get("auth_type", "none")),
@@ -248,7 +252,6 @@ class McpConnectionService:
             ),
             "timeout": data.get("timeout", existing.get("timeout", 30)),
             "default_params": data.get("default_params", existing.get("default_params", {})),
-            "login_config": data.get("login_config", existing.get("login_config", {})),
             "updated_at": now_iso,
         }
 

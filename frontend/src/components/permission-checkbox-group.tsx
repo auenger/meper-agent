@@ -5,7 +5,6 @@
  * with group-level select-all/deselect-all functionality.
  */
 import { Checkbox, Collapse } from 'antd'
-import type { CheckboxGroupProps } from 'antd/es/checkbox'
 import { PERMISSION_GROUPS } from '../types/permission'
 
 interface PermissionCheckboxGroupProps {
@@ -19,8 +18,21 @@ export function PermissionCheckboxGroup({
   onChange,
   disabled = false,
 }: PermissionCheckboxGroupProps) {
-  const handleChange: CheckboxGroupProps['onChange'] = (checkedValues) => {
-    onChange?.(checkedValues as string[])
+  // antd Checkbox.Group 的 onChange 只返回"本 Group 内"勾选的项——
+  // 每个 Collapse 面板里是一个独立的 Group，只渲染自己模块的权限。
+  // 直接把 checkedValues 当全量 value 用会丢掉其他模块的勾选，
+  // 所以这里按"本模块替换、其他模块保留"合并。
+  const makeGroupChangeHandler = (groupPerms: string[]) => {
+    return (checkedValues: (string | number | boolean)[]) => {
+      const checkedSet = new Set(checkedValues.map(String))
+      const next = [
+        // 其他模块已勾选的项保持不变
+        ...value.filter((p) => !groupPerms.includes(p)),
+        // 本模块按最新勾选状态替换
+        ...groupPerms.filter((p) => checkedSet.has(p)),
+      ]
+      onChange?.(next)
+    }
   }
 
   const handleGroupToggle = (groupPerms: string[], checked: boolean) => {
@@ -59,7 +71,7 @@ export function PermissionCheckboxGroup({
         children: (
           <Checkbox.Group
             value={value}
-            onChange={handleChange}
+            onChange={makeGroupChangeHandler(perms)}
             disabled={disabled}
             className="flex flex-col gap-2"
           >

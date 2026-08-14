@@ -52,13 +52,13 @@ def _doc_to_response(doc: dict) -> McpConnectionResponse:
         id=doc["_id"],
         name=doc["name"],
         description=doc.get("description", ""),
+        category_id=doc.get("category_id", ""),
         url=doc["url"],
         protocol=doc.get("protocol", "streamable-http"),
         auth_type=doc.get("auth_type", "none"),
         auth_config=_mask_auth_config(doc.get("auth_config", {})),
         timeout=doc.get("timeout", 30),
         default_params=_mask_default_params(doc.get("default_params", {})),
-        login_config=doc.get("login_config", {}),
         status=ConnectionStatus(doc.get("status", ConnectionStatus.DISCONNECTED.value)),
         status_message=doc.get("status_message", ""),
         last_connected_at=doc.get("last_connected_at", ""),
@@ -95,6 +95,7 @@ async def list_connections(
     page_size: int = Query(20, ge=1, le=200),
     name: str | None = Query(None, description="Filter by name (substring)"),
     status: ConnectionStatus | None = Query(None, description="Filter by status"),
+    category_id: str | None = Query(None, description="Filter by category id"),
     _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
 ) -> McpConnectionListResponse:
     """List MCP connections with pagination and optional filtering."""
@@ -103,6 +104,7 @@ async def list_connections(
         page_size=page_size,
         name=name,
         status=status.value if status else None,
+        category_id=category_id,
     )
     return McpConnectionListResponse(
         items=[_doc_to_response(d) for d in items],

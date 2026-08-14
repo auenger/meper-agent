@@ -68,6 +68,7 @@ ALL_PERMISSION_KEYS: list[str] = [
     "agent:read", "agent:write", "agent:invoke",
     "workflow:read", "workflow:write",
     "tool:read", "tool:write",
+    "application:read", "application:write",
     "mcp:read", "mcp:write",
     "skill:read", "skill:write",
     "task:read", "task:write", "task:invoke",

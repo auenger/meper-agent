@@ -242,24 +242,24 @@ async def _user_token_interceptor(
       ToolException → tool_wrapper → ToolMessage(status=error) → on_tool_end，
       前端能按 tool_call_id 正确配对（不卡在"执行中"）。
     """
-    record_id = get_token_record_id_context()
+    platform_user_id = get_token_record_id_context()
 
     # ① 内部路径：不介入，透传到 handler，用 connection 静态 auth_config
-    if not record_id or _resolver is None:
+    if not platform_user_id or _resolver is None:
         return await handler(request)
 
     # ② 外部路径：兑换该用户绑定的凭证
     server_name = getattr(request, "server_name", "") or ""
     try:
-        cred = await _resolver.resolve(record_id, server_name)
+        cred = await _resolver.resolve(platform_user_id, server_name)
     except Exception as exc:
         # resolver 异常（DB 不可用、登录失败等）→ 返回错误结果（不抛异常）
         return _make_error_result(f"MCP 凭证兑换失败({server_name}): {exc}")
 
     if cred is None:
-        # 未绑定 → 返回错误结果（外部路径不允许降级）
+        # 未绑定 / MCP 不在任何组 → 返回错误结果
         return _make_error_result(
-            f"用户未绑定该 MCP 服务({server_name})，请联系 admin 绑定凭证。"
+            f"用户未绑定该 MCP 服务({server_name})，请在设置页绑定凭证。"
         )
 
     # 按 auth_type 构造 header（bearer/api_key/basic）

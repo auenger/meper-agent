@@ -13,9 +13,12 @@ interface AuthState {
   extUserName: string
   initialized: boolean
   theme: 'light' | 'dark'
+  /** apikey 模式下的身份验证错误类型（401 时设置） */
+  authError: string | null
   setSession: (bundle: TokenResponse) => void
   setInitialized: (value: boolean) => void
   setExtUserName: (name: string) => void
+  setAuthError: (code: string | null) => void
   clear: () => void
   toggleTheme: () => void
 }
@@ -33,6 +36,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   extUserName: '',
   initialized: false,
   theme: storedTheme(),
+  authError: null,
   setSession: (bundle) => {
     localStorage.setItem(REFRESH_TOKEN_KEY, bundle.refresh_token)
     set({
@@ -43,6 +47,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
   setInitialized: (value) => set({ initialized: value }),
   setExtUserName: (name) => set({ extUserName: name }),
+  setAuthError: (code) => set({ authError: code }),
   clear: () => {
     localStorage.removeItem(REFRESH_TOKEN_KEY)
     set({

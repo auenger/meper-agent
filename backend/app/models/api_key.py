@@ -52,6 +52,8 @@ class ApiKey(BaseModel):
     bindings: ApiKeyBindings = Field(default_factory=ApiKeyBindings)
     rate_limit: int = Field(default=60, ge=1, le=10000)
     status: ApiKeyStatus = Field(default=ApiKeyStatus.ACTIVE)
+    introspect_url: str | None = Field(default=None, description="接入方 token introspection 端点（RFC 7662）")
+    app_id: str = Field(default="", description="绑定的应用 ID（接入方系统 = 应用，身份 sub 的命名空间）")
     expires_at: str | None = Field(default=None)
     last_used_at: str | None = Field(default=None)
     created_at: str = Field(default_factory=lambda: utc_now().isoformat())

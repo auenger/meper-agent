@@ -24,6 +24,7 @@ export const PERMISSION_GROUPS: Record<string, string[]> = {
   'Agent 管理': ['agent:read', 'agent:write', 'agent:invoke'],
   '工作流': ['workflow:read', 'workflow:write'],
   '工具': ['tool:read', 'tool:write'],
+  '应用': ['application:read', 'application:write'],
   'MCP': ['mcp:read', 'mcp:write'],
   'Skill': ['skill:read', 'skill:write'],
   '任务': ['task:read', 'task:write', 'task:invoke'],

@@ -11,6 +11,7 @@ class McpConnectionBase(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=100, description="连接名称")
     description: str = Field(default="", max_length=500, description="连接描述")
+    category_id: str = Field(default="", description="所属分组 ID，空为未分组")
     url: str = Field(..., min_length=1, max_length=500, description="MCP 服务地址")
     protocol: str = Field(
         default="streamable-http",
@@ -25,15 +26,6 @@ class McpConnectionBase(BaseModel):
     default_params: dict = Field(
         default_factory=dict,
         description="工具调用时自动注入的默认参数（如 token, api_key）",
-    )
-    login_config: dict = Field(
-        default_factory=dict,
-        description=(
-            "账密型绑定的登录端点配置。字段：login_url/method(默认POST)/"
-            "body_template(用 {{username}}/{{password}} 占位)/"
-            "token_jsonpath(从响应取 session 的路径)/session_ttl(缓存秒，默认3600)。"
-            "仅当用户用 username/password 绑定该 MCP 时用到。"
-        ),
     )
 
 
@@ -55,13 +47,13 @@ class McpConnectionResponse(BaseModel):
     id: str
     name: str
     description: str
+    category_id: str = ""
     url: str
     protocol: str
     auth_type: AuthType
     auth_config: dict
     timeout: int
     default_params: dict
-    login_config: dict = Field(default_factory=dict)
     status: ConnectionStatus
     status_message: str
     last_connected_at: str

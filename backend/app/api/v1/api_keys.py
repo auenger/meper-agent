@@ -36,6 +36,8 @@ def _doc_to_response(doc: dict) -> ApiKeyResponse:
         bindings=doc["bindings"],
         rate_limit=doc["rate_limit"],
         status=doc["status"],
+        introspect_url=doc.get("introspect_url"),
+        app_id=doc.get("app_id", ""),
         expires_at=doc.get("expires_at"),
         last_used_at=doc.get("last_used_at"),
         created_at=doc["created_at"],
@@ -60,6 +62,8 @@ async def create_api_key(
         scopes=body.scopes,
         bindings=body.bindings.model_dump(),
         rate_limit=body.rate_limit,
+        introspect_url=body.introspect_url,
+        app_id=body.app_id,
         expires_at=body.expires_at,
     )
     return ApiKeyCreateResponse(
@@ -72,6 +76,8 @@ async def create_api_key(
         bindings=doc["bindings"],
         rate_limit=doc["rate_limit"],
         status=doc["status"],
+        introspect_url=doc.get("introspect_url"),
+        app_id=doc.get("app_id", ""),
         expires_at=doc.get("expires_at"),
         created_at=doc["created_at"],
     )
@@ -132,6 +138,8 @@ async def update_api_key(
         scopes=body.scopes,
         bindings=body.bindings.model_dump() if body.bindings else None,
         rate_limit=body.rate_limit,
+        introspect_url=body.introspect_url,
+        app_id=body.app_id,
         expires_at=body.expires_at,
     )
     if doc is None:

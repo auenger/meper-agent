@@ -1,142 +1,123 @@
 /**
- * API Keys service — wraps backend /api-keys endpoints (对外接入 Key).
+ * API Key management service — wraps backend /api-keys endpoints.
  *
- * An API Key is the credential third parties use to call the /ext surface
- * (embedded chat / iframe). It carries: scopes (permissions), resource
- * bindings (which agents/workflows it may touch) and a per-minute rate limit.
- *
- * The raw key is returned exactly once on create (ApiKeyCreateResponse.key);
- * afterwards only `key_prefix` is ever exposed.
- *
- * Uses the shared apiClient (auto auth header + 401 refresh). Response fields
- * are snake_case per backend contract (see app/schemas/api_key.py).
+ * Uses the shared apiClient instance (auto auth header + 401 refresh).
+ * Response fields are snake_case per backend contract.
  */
 import { apiClient } from '../lib/api-client'
 
-/* ─── Enums / constants (mirror backend ApiKeyScope / ApiKeyStatus) ─── */
-
-export type ApiKeyScope =
-  | 'agents:read'
-  | 'agents:invoke'
-  | 'workflows:read'
-  | 'workflows:invoke'
-  | 'executions:read'
-
-export const ALL_API_KEY_SCOPES: ApiKeyScope[] = [
-  'agents:read',
-  'agents:invoke',
-  'workflows:read',
-  'workflows:invoke',
-  'executions:read',
-]
-
-/** Human-readable scope labels for the create-form checkboxes. */
-export const SCOPE_LABELS: Record<ApiKeyScope, string> = {
-  'agents:read': '智能体·读取',
-  'agents:invoke': '智能体·调用',
-  'workflows:read': '工作流·读取',
-  'workflows:invoke': '工作流·调用',
-  'executions:read': '执行记录·读取',
-}
+/* ─── Types (snake_case, matches backend schemas) ─── */
 
 export type ApiKeyStatus = 'active' | 'revoked'
-
-/* ─── Types (snake_case, matches backend schemas) ─── */
 
 export interface ApiKeyBindings {
   agents: string[]
   workflows: string[]
 }
 
-export interface ApiKeyItem {
+export interface ApiKey {
   id: string
   name: string
   key_prefix: string
   owner_user_id: string
-  scopes: ApiKeyScope[]
+  scopes: string[]
   bindings: ApiKeyBindings
   rate_limit: number
   status: ApiKeyStatus
   expires_at: string | null
   last_used_at: string | null
+  /** 接入方 token 校验端点（RFC 7662）。API 调用需携带 X-User-Token，平台按此端点校验终端用户身份。 */
+  introspect_url: string
+  app_id: string
   created_at: string
   updated_at: string
 }
 
-export interface ApiKeyCreateResponse extends Omit<ApiKeyItem, 'last_used_at' | 'updated_at'> {
-  /** Raw key, returned exactly once on creation (e.g. af_live_xxx). */
+/** Returned only once at creation time — includes the raw key. */
+export interface ApiKeyCreated extends Omit<ApiKey, 'updated_at'> {
   key: string
 }
 
-export interface ApiKeyCreatePayload {
+export interface ApiKeyCreateInput {
   name: string
-  scopes: ApiKeyScope[]
+  scopes: string[]
   bindings?: ApiKeyBindings
   rate_limit?: number
-  /** ISO datetime or null (null = never expires). Defaults to null. */
   expires_at?: string | null
+  introspect_url?: string | null
+  app_id?: string
 }
 
-/**
- * Partial-update payload (mirror of backend ApiKeyUpdate — all fields optional).
- * Used by the edit dialog to PATCH an existing key.
- */
-export interface ApiKeyUpdatePayload {
+export interface ApiKeyUpdateInput {
   name?: string
-  scopes?: ApiKeyScope[]
+  scopes?: string[]
   bindings?: ApiKeyBindings
   rate_limit?: number
   expires_at?: string | null
+  introspect_url?: string | null
+  app_id?: string
+}
+
+export interface ApiKeyListParams {
+  page?: number
+  page_size?: number
 }
 
 export interface ApiKeyListResponse {
-  items: ApiKeyItem[]
+  items: ApiKey[]
   total: number
   page: number
   page_size: number
 }
 
-/* ─── API methods ─── */
+/* ─── All available scopes ─── */
 
-export const apiKeysApi = {
-  /**
-   * List API Keys owned by the current user.
-   * GET /api/v1/api-keys
-   */
-  async list(page = 1, pageSize = 50): Promise<ApiKeyListResponse> {
+export const ALL_API_KEY_SCOPES = [
+  'agents:read',
+  'agents:invoke',
+  'workflows:read',
+  'workflows:invoke',
+  'executions:read',
+] as const
+
+export const SCOPE_LABELS: Record<string, string> = {
+  'agents:read': 'Agent 查看',
+  'agents:invoke': 'Agent 调用',
+  'workflows:read': '工作流 查看',
+  'workflows:invoke': '工作流 调用',
+  'executions:read': '执行 查看',
+}
+
+/* ─── API ─── */
+
+export const apiKeyApi = {
+  async list(params: ApiKeyListParams = {}): Promise<ApiKeyListResponse> {
     const res = await apiClient.get<ApiKeyListResponse>('/api/v1/api-keys', {
-      params: { page, page_size: pageSize },
+      params: {
+        page: params.page ?? 1,
+        page_size: params.page_size ?? 20,
+      },
     })
     return res.data
   },
 
-  /**
-   * Create a new API Key. The response includes the raw key once.
-   * POST /api/v1/api-keys
-   */
-  async create(payload: ApiKeyCreatePayload): Promise<ApiKeyCreateResponse> {
-    const res = await apiClient.post<ApiKeyCreateResponse>('/api/v1/api-keys', payload)
+  async get(id: string): Promise<ApiKey> {
+    const res = await apiClient.get<ApiKey>(`/api/v1/api-keys/${id}`)
     return res.data
   },
 
-  /**
-   * Revoke (soft-delete) an API Key. Outstanding requests with it will fail.
-   * DELETE /api/v1/api-keys/{id}
-   */
-  async revoke(apiKeyId: string): Promise<void> {
-    await apiClient.delete(`/api/v1/api-keys/${encodeURIComponent(apiKeyId)}`)
+  async create(input: ApiKeyCreateInput): Promise<ApiKeyCreated> {
+    const res = await apiClient.post<ApiKeyCreated>('/api/v1/api-keys', input)
+    return res.data
   },
 
-  /**
-   * Update an existing API Key (partial update — all fields optional).
-   * PUT /api/v1/api-keys/{id}
-   */
-  async update(apiKeyId: string, payload: ApiKeyUpdatePayload): Promise<ApiKeyItem> {
-    const res = await apiClient.put<ApiKeyItem>(
-      `/api/v1/api-keys/${encodeURIComponent(apiKeyId)}`,
-      payload,
-    )
+  async update(id: string, input: ApiKeyUpdateInput): Promise<ApiKey> {
+    const res = await apiClient.put<ApiKey>(`/api/v1/api-keys/${id}`, input)
     return res.data
+  },
+
+  async revoke(id: string): Promise<void> {
+    await apiClient.delete(`/api/v1/api-keys/${id}`)
   },
 }
 
@@ -145,6 +126,7 @@ export const apiKeysApi = {
 export const apiKeyKeys = {
   all: ['api-keys'] as const,
   lists: () => [...apiKeyKeys.all, 'list'] as const,
-  list: () => [...apiKeyKeys.lists()] as const,
-  detail: (id: string) => [...apiKeyKeys.all, 'detail', id] as const,
+  list: (params: ApiKeyListParams) => [...apiKeyKeys.lists(), params] as const,
+  details: () => [...apiKeyKeys.all, 'detail'] as const,
+  detail: (id: string) => [...apiKeyKeys.details(), id] as const,
 }

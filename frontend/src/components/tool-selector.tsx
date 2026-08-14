@@ -25,9 +25,13 @@ import {
   ToolOutlined,
   LockOutlined,
   PlusOutlined,
+  FolderOutlined,
+  DownOutlined,
+  RightOutlined,
 } from '@ant-design/icons'
 import { toolsApi, toolKeys } from '../services/tools-api'
 import { mcpApi, mcpKeys } from '../services/mcp-api'
+import { mcpCategoryApi, mcpCategoryKeys, type McpCategory } from '../services/mcp-category-api'
 import { workflowsApi, workflowKeys } from '../services/workflows-api'
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api'
 import type { CustomToolBinding } from '../services/agent-api'
@@ -106,6 +110,11 @@ export default function ToolSelector({
     queryFn: () => mcpApi.list({ page: 1, page_size: 100 }),
   })
 
+  const { data: mcpCategoryData } = useQuery({
+    queryKey: mcpCategoryKeys.lists(),
+    queryFn: () => mcpCategoryApi.list(),
+  })
+
   const { data: wfData, isLoading: wfLoading, isError: wfError } = useQuery({
     queryKey: workflowKeys.list({ page: 1, page_size: 100, status: 'published' }),
     queryFn: () => workflowsApi.list({ page: 1, page_size: 100, status: 'published' }),
@@ -117,9 +126,35 @@ export default function ToolSelector({
   })
 
   const availableSkills = skillsData?.items ?? []
-  const availableMcpConnections = mcpData?.items ?? []
+  const availableMcpConnections = useMemo(() => mcpData?.items ?? [], [mcpData])
   const availableWorkflows = wfData?.items ?? []
   const availableKbs = kbData?.items ?? []
+
+  /* MCP 分组：按 category_id 分桶，分组按 sort 升序，未分组排最后 */
+  const UNGROUPED_KEY = '__ungrouped__'
+  const mcpBuckets = useMemo(() => {
+    const cats = mcpCategoryData?.items ?? []
+    // 收集所有出现过的 category_id（含未分组），保持分组 sort 顺序
+    const byCat = new Map<string, typeof availableMcpConnections>()
+    for (const conn of availableMcpConnections) {
+      const key = conn.category_id || UNGROUPED_KEY
+      if (!byCat.has(key)) byCat.set(key, [])
+      byCat.get(key)!.push(conn)
+    }
+    // 组装成有序列表：有分组的按 sort 升序，未分组排最后
+    const result: { key: string; category: McpCategory | undefined; conns: typeof availableMcpConnections }[] = []
+    const grouped = cats
+      .filter((c) => byCat.has(c.id))
+      .sort((a, b) => (a.sort ?? 0) - (b.sort ?? 0))
+    for (const c of grouped) {
+      result.push({ key: c.id, category: c, conns: byCat.get(c.id)! })
+    }
+    if (byCat.has(UNGROUPED_KEY)) {
+      result.push({ key: UNGROUPED_KEY, category: undefined, conns: byCat.get(UNGROUPED_KEY)! })
+    }
+    return result
+  }, [availableMcpConnections, mcpCategoryData])
+  const [mcpCollapsed, setMcpCollapsed] = useState<Record<string, boolean>>({})
 
   /* Built-in 工具拆分:可配的文件类 vs 始终开启的能力型 */
   const allBuiltins = builtinsData ?? []
@@ -239,7 +274,7 @@ export default function ToolSelector({
         )}
       </div>
 
-      {/* ────────── MCP 连接 ────────── */}
+      {/* ────────── MCP 连接（按分组折叠 + 组内全选） ────────── */}
       <div>
         <div className="flex items-center gap-2 mb-2">
           <ApiOutlined className="text-[#10B981] text-base" />
@@ -255,42 +290,123 @@ export default function ToolSelector({
         ) : mcpLoading ? (
           <Skeleton active paragraph={{ rows: 2 }} />
         ) : (
-          <div className="max-h-[180px] overflow-y-auto border border-[#E2E8F0] rounded-lg divide-y divide-[#E2E8F0]">
+          <div className="max-h-[240px] overflow-y-auto border border-[#E2E8F0] rounded-lg flex flex-col">
             {availableMcpConnections.length === 0 ? (
               <div className="px-3 py-3 text-center text-[11px] text-[#94A3B8]">
                 暂无 MCP 连接，请先在 MCP 页面配置
               </div>
-            ) : availableMcpConnections.map((c) => {
-              const enabled = value.mcp_connection_ids.includes(c.id)
-              const statusLabel = MCP_STATUS_LABELS[c.status] ?? c.status
-              return (
-                <div
-                  key={c.id}
-                  className="flex items-center justify-between px-3 py-2 hover:bg-[#F8FAFC] transition-colors"
-                >
-                  <div className="flex items-center gap-2 min-w-0 pr-2">
-                    <span className="text-sm text-[#0F172A] truncate">{c.name}</span>
-                    <span className={`text-[11px] shrink-0 ${
-                      c.status === 'connected' ? 'text-[#10B981]' :
-                      c.status === 'error' ? 'text-[#EF4444]' :
-                      'text-[#94A3B8]'
-                    }`}>
-                      {statusLabel}
-                    </span>
+            ) : mcpBuckets.length === 1 ? (
+              /* 只有一个桶（必然是未分组）→ 沿用平铺渲染，不显示分组标题 */
+              <div className="divide-y divide-[#E2E8F0]">
+                {mcpBuckets[0].conns.map((c) => {
+                  const enabled = value.mcp_connection_ids.includes(c.id)
+                  const statusLabel = MCP_STATUS_LABELS[c.status] ?? c.status
+                  return (
+                    <div
+                      key={c.id}
+                      className="flex items-center justify-between px-3 py-2 hover:bg-[#F8FAFC] transition-colors"
+                    >
+                      <div className="flex items-center gap-2 min-w-0 pr-2">
+                        <span className="text-sm text-[#0F172A] truncate">{c.name}</span>
+                        <span className={`text-[11px] shrink-0 ${
+                          c.status === 'connected' ? 'text-[#10B981]' :
+                          c.status === 'error' ? 'text-[#EF4444]' :
+                          'text-[#94A3B8]'
+                        }`}>
+                          {statusLabel}
+                        </span>
+                      </div>
+                      <Switch
+                        size="small"
+                        checked={enabled}
+                        onChange={(checked) => {
+                          const next = checked
+                            ? [...value.mcp_connection_ids, c.id]
+                            : value.mcp_connection_ids.filter((id) => id !== c.id)
+                          onChange?.(mergeValue(value, { mcp_connection_ids: next }))
+                        }}
+                      />
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              /* 多个桶 → 分组折叠 + 组内全选 */
+              mcpBuckets.map((bucket) => {
+                const collapsed = mcpCollapsed[bucket.key]
+                const groupIds = bucket.conns.map((c) => c.id)
+                const selectedInGroup = groupIds.filter((id) => value.mcp_connection_ids.includes(id))
+                const allSelected = selectedInGroup.length === groupIds.length
+                const groupName = bucket.category?.name ?? '未分组'
+                return (
+                  <div key={bucket.key} className="flex flex-col border-b border-[#E2E8F0] last:border-b-0">
+                    {/* 分组标题行 */}
+                    <div className="flex items-center justify-between px-2.5 py-1.5 bg-[#F8FAFC]">
+                      <button
+                        type="button"
+                        onClick={() => setMcpCollapsed((s) => ({ ...s, [bucket.key]: !s[bucket.key] }))}
+                        className="flex items-center gap-1.5 text-[#0F172A] hover:text-[#2563EB] transition-colors"
+                      >
+                        {collapsed ? <RightOutlined className="text-[10px]" /> : <DownOutlined className="text-[10px]" />}
+                        <FolderOutlined className="text-[#3B82F6] text-xs" />
+                        <Text strong className="text-xs">{groupName}</Text>
+                        <Text className="text-[10px] text-[#94A3B8]">
+                          （{selectedInGroup.length}/{groupIds.length}）
+                        </Text>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = allSelected
+                            ? value.mcp_connection_ids.filter((id) => !groupIds.includes(id))
+                            : Array.from(new Set([...value.mcp_connection_ids, ...groupIds]))
+                          onChange?.(mergeValue(value, { mcp_connection_ids: next }))
+                        }}
+                        className="text-[10px] text-[#2563EB] hover:underline"
+                      >
+                        {allSelected ? '取消全选' : '全选'}
+                      </button>
+                    </div>
+                    {/* 组内连接列表 */}
+                    {!collapsed && (
+                      <div className="divide-y divide-[#F1F5F9]">
+                        {bucket.conns.map((c) => {
+                          const enabled = value.mcp_connection_ids.includes(c.id)
+                          const statusLabel = MCP_STATUS_LABELS[c.status] ?? c.status
+                          return (
+                            <div
+                              key={c.id}
+                              className="flex items-center justify-between px-3 py-2 hover:bg-[#F8FAFC] transition-colors"
+                            >
+                              <div className="flex items-center gap-2 min-w-0 pr-2">
+                                <span className="text-sm text-[#0F172A] truncate">{c.name}</span>
+                                <span className={`text-[11px] shrink-0 ${
+                                  c.status === 'connected' ? 'text-[#10B981]' :
+                                  c.status === 'error' ? 'text-[#EF4444]' :
+                                  'text-[#94A3B8]'
+                                }`}>
+                                  {statusLabel}
+                                </span>
+                              </div>
+                              <Switch
+                                size="small"
+                                checked={enabled}
+                                onChange={(checked) => {
+                                  const next = checked
+                                    ? [...value.mcp_connection_ids, c.id]
+                                    : value.mcp_connection_ids.filter((id) => id !== c.id)
+                                  onChange?.(mergeValue(value, { mcp_connection_ids: next }))
+                                }}
+                              />
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <Switch
-                    size="small"
-                    checked={enabled}
-                    onChange={(checked) => {
-                      const next = checked
-                        ? [...value.mcp_connection_ids, c.id]
-                        : value.mcp_connection_ids.filter((id) => id !== c.id)
-                      onChange?.(mergeValue(value, { mcp_connection_ids: next }))
-                    }}
-                  />
-                </div>
-              )
-            })}
+                )
+              })
+            )}
           </div>
         )}
       </div>

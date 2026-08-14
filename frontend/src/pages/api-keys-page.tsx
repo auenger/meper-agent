@@ -12,6 +12,7 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Checkbox, DatePicker, Input, InputNumber, Modal, Select, Spin, Switch, Tag, Tooltip, message } from 'antd'
+import { applicationApi, applicationKeys } from '../services/application-api'
 import {
   PlusOutlined,
   KeyOutlined,
@@ -75,7 +76,8 @@ export default function ApiKeysPage() {
   const [formWorkflowBindings, setFormWorkflowBindings] = useState<string[]>([])
   const [formRateLimit, setFormRateLimit] = useState(60)
   const [formExpiresAt, setFormExpiresAt] = useState<string | null>(null)
-  const [formUserInfoUrl, setFormUserInfoUrl] = useState<string>('')
+  const [formIntrospectUrl, setFormIntrospectUrl] = useState<string>('')
+  const [formAppId, setFormAppId] = useState<string>('')
   const [revealedKey, setRevealedKey] = useState<{ name: string; key: string } | null>(null)
 
   const { data: agentsData } = useQuery({
@@ -88,13 +90,20 @@ export default function ApiKeysPage() {
     queryFn: () => workflowsApi.list({ page_size: 200, status: 'published' }),
     enabled: formMode !== null,
   })
+  const { data: appsData } = useQuery({
+    queryKey: applicationKeys.lists(),
+    queryFn: () => applicationApi.list(),
+    enabled: formMode !== null,
+  })
   const agents = agentsData?.items ?? []
   const workflows = workflowsData?.items ?? []
+  const apps = appsData?.items ?? []
 
   const resetForm = () => {
     setFormName(''); setFormScopes([]); setFormAgentBindings([])
     setFormWorkflowBindings([]); setFormRateLimit(60); setFormExpiresAt(null)
-    setFormUserInfoUrl('')
+    setFormIntrospectUrl('')
+    setFormAppId('')
   }
 
   const handleCreateKey = () => {
@@ -110,7 +119,8 @@ export default function ApiKeysPage() {
     setFormWorkflowBindings(key.bindings.workflows)
     setFormRateLimit(key.rate_limit)
     setFormExpiresAt(key.expires_at)
-    setFormUserInfoUrl(key.user_info_url ?? '')
+    setFormIntrospectUrl(key.introspect_url ?? '')
+    setFormAppId(key.app_id ?? '')
     setEditingId(key.id)
     setFormMode('edit')
   }
@@ -132,7 +142,8 @@ export default function ApiKeysPage() {
           bindings: { agents: formAgentBindings, workflows: formWorkflowBindings },
           rate_limit: formRateLimit,
           expires_at: formExpiresAt,
-          user_info_url: formUserInfoUrl.trim() || null,
+          introspect_url: formIntrospectUrl.trim() || null,
+          app_id: formAppId,
         })
         message.success('API Key 创建成功')
         queryClient.invalidateQueries({ queryKey: apiKeyKeys.lists() })
@@ -146,7 +157,8 @@ export default function ApiKeysPage() {
           rate_limit: formRateLimit,
           expires_at: formExpiresAt,
           // 空串显式传 null 清除配置（后端 Omit None 语义下需要明确传值）
-          user_info_url: formUserInfoUrl.trim() || '',
+          introspect_url: formIntrospectUrl.trim() || '',
+          app_id: formAppId,
         })
         message.success('API Key 已更新')
         queryClient.invalidateQueries({ queryKey: apiKeyKeys.lists() })
@@ -299,16 +311,23 @@ export default function ApiKeysPage() {
                         {apiKey.key_prefix}...
                       </span>
                       <span>限速 {apiKey.rate_limit}/min</span>
-                      {apiKey.user_info_url ? (
-                        <Tooltip title={apiKey.user_info_url}>
+                      {apiKey.introspect_url ? (
+                        <Tooltip title={apiKey.introspect_url}>
                           <Tag className="!m-0 !px-1.5 !py-0 !text-[10px] !rounded" style={{ color: '#7C3AED', background: '#F3E8FF', borderColor: 'transparent' }}>
                             回调验证
                           </Tag>
                         </Tooltip>
-                      ) : (
-                        <Tag className="!m-0 !px-1.5 !py-0 !text-[10px] !rounded" style={{ color: '#94A3B8', background: '#F8FAFC', borderColor: 'transparent' }}>
-                          兼容模式
+                      ) : null}
+                      {apiKey.app_id ? (
+                        <Tag className="!m-0 !px-1.5 !py-0 !text-[10px] !rounded" style={{ color: '#2563EB', background: '#DBEAFE', borderColor: 'transparent' }}>
+                          {apps.find(a => a.id === apiKey.app_id)?.name ?? '应用'}
                         </Tag>
+                      ) : (
+                        !apiKey.introspect_url ? (
+                          <Tag className="!m-0 !px-1.5 !py-0 !text-[10px] !rounded" style={{ color: '#94A3B8', background: '#F8FAFC', borderColor: 'transparent' }}>
+                            兼容模式
+                          </Tag>
+                        ) : null
                       )}
                     </div>
                     {apiKey.bindings.agents.length > 0 && (
@@ -499,13 +518,31 @@ export default function ApiKeysPage() {
               用户认证 Introspection URL
             </label>
             <Input
-              value={formUserInfoUrl}
-              onChange={e => setFormUserInfoUrl(e.target.value)}
+              value={formIntrospectUrl}
+              onChange={e => setFormIntrospectUrl(e.target.value)}
               placeholder="https://partner.example.com/oauth/introspect"
               maxLength={500}
             />
             <div className="text-[10px] text-[#94A3B8] mt-1">
-              空 = 兼容模式（用 visitor_id 做会话隔离）；填入 URL = 回调验证模式（强制请求带 <code className="font-mono">X-User-Token</code>，按 RFC 7662 校验用户）
+              接入方 token 校验端点（RFC 7662）。API 调用需携带 <code className="font-mono">X-User-Token</code>，平台按此端点校验终端用户身份
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[#374151] mb-1">
+              绑定应用
+            </label>
+            <Select
+              value={formAppId || undefined}
+              onChange={v => setFormAppId(v ?? '')}
+              className="w-full"
+              placeholder="选择该接入方对应的应用"
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              options={apps.map(a => ({ value: a.id, label: a.name }))}
+            />
+            <div className="text-[10px] text-[#94A3B8] mt-1">
+              配置用户身份校验时必填——接入方系统与应用一一对应，外部用户身份按应用命名空间隔离
             </div>
           </div>
         </div>

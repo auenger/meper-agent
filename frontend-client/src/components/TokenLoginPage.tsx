@@ -1,89 +1,80 @@
-import { KeyOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons'
-import { Alert, Button, Form, Input, Typography } from 'antd'
-import { useState } from 'react'
+import { ExclamationCircleOutlined, MoonOutlined, SunOutlined } from '@ant-design/icons'
+import { Button } from 'antd'
 
-import { setUserToken } from '../api/client'
 import { useAuthStore } from '../store/auth'
 
-interface TokenValues {
-  token: string
+export type AuthErrorType = 'no_token' | 'token_invalid' | 'not_bound' | 'not_configured'
+
+const ERROR_MESSAGES: Record<AuthErrorType, { title: string; desc: string }> = {
+  no_token: {
+    title: '无法获取你的身份',
+    desc: '未能从接入方获取身份信息，请通过接入方系统的正常入口访问。如果你的身份信息已更新，刷新页面重试。',
+  },
+  token_invalid: {
+    title: '身份已过期',
+    desc: '你的登录凭证已失效，请返回接入方系统重新登录后再试。',
+  },
+  not_bound: {
+    title: '未绑定平台授权',
+    desc: '你的身份尚未绑定平台 MCP 授权，请在管理后台的「外部授权」页面完成凭证绑定后再使用。',
+  },
+  not_configured: {
+    title: '服务未配置',
+    desc: '接入方的身份验证服务尚未配置，请联系管理员检查 API Key 的 introspection 端点配置。',
+  },
 }
 
 /**
- * Token 登录页 —— apikey 模式下，独立部署（非 iframe）时让用户输入通用 token。
- * 提交后 setUserToken 存内存，触发外层重新渲染进入 ClientApp。
+ * 身份错误页 —— apikey 模式下的身份验证失败提示。
+ *
+ * 不再让用户手动输入 token（v3 方案中 token 由接入方通过 cookie 自动注入）。
+ * 根据不同的失败原因显示对应的提示信息。
  */
-export function TokenLoginPage({ onSuccess }: { onSuccess: () => void }) {
+export function TokenLoginPage({ errorType = 'no_token' }: { errorType?: AuthErrorType; onSuccess?: () => void }) {
   const theme = useAuthStore((state) => state.theme)
   const toggleTheme = useAuthStore((state) => state.toggleTheme)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const submit = (values: TokenValues) => {
-    const token = values.token.trim()
-    if (!token) {
-      setError('请输入 Token')
-      return
-    }
-    setSubmitting(true)
-    setError(null)
-    // 存内存，触发外层重渲染
-    setUserToken(token)
-    onSuccess()
-    setSubmitting(false)
-  }
+  const isDark = theme === 'dark'
+  const msg = ERROR_MESSAGES[errorType]
 
   return (
-    <main className="login-page">
+    <div style={{
+      minHeight: '100vh', display: 'flex', flexDirection: 'column',
+      alignItems: 'center', justifyContent: 'center', gap: 20, padding: 24,
+      background: isDark ? '#0f172a' : '#f8fafc',
+    }}>
       <Button
-        className="theme-button"
         type="text"
-        icon={theme === 'dark' ? <SunOutlined /> : <MoonOutlined />}
+        icon={isDark ? <SunOutlined /> : <MoonOutlined />}
         onClick={toggleTheme}
-        aria-label="切换主题"
+        style={{ position: 'absolute', top: 16, right: 16 }}
       />
-      <section className="login-panel" aria-labelledby="token-login-title">
-        <div className="login-brand">
-          <img src="/AFLogo.png" alt="Agent Flow" />
-          <div>
-            <Typography.Title id="token-login-title" level={2}>
-              Agent Flow
-            </Typography.Title>
-            <Typography.Text type="secondary">
-              输入您的 Token 开始对话
-            </Typography.Text>
-          </div>
-        </div>
-
-        <Form<TokenValues>
-          layout="vertical"
-          requiredMark={false}
-          onFinish={submit}
-          size="large"
-        >
-          <Form.Item
-            label="通用 Token"
-            name="token"
-            rules={[{ required: true, message: '请输入 Token' }]}
-          >
-            <Input.Password
-              prefix={<KeyOutlined />}
-              placeholder="meper_xxxxxxxx"
-              autoComplete="off"
-              autoFocus
-            />
-          </Form.Item>
-          {error ? (
-            <Alert className="login-error" type="error" showIcon message={error} />
-          ) : null}
-          <Button type="primary" htmlType="submit" block loading={submitting}>
-            进入
-          </Button>
-        </Form>
-        <Typography.Text className="login-footnote" type="secondary">
-          Token 由管理员分配，用于标识您的身份
-        </Typography.Text>
-      </section>
-    </main>
+      <div style={{
+        width: 56, height: 56, borderRadius: '50%',
+        display: 'grid', placeItems: 'center',
+        background: isDark ? '#7f1d1d33' : '#fef2f2',
+        color: '#ef4444', fontSize: 28,
+      }}>
+        <ExclamationCircleOutlined />
+      </div>
+      <div style={{ textAlign: 'center', maxWidth: 360 }}>
+        <h3 style={{
+          margin: '0 0 8px', fontSize: 17, fontWeight: 600,
+          color: isDark ? '#f1f5f9' : '#1e293b',
+        }}>
+          {msg.title}
+        </h3>
+        <p style={{
+          margin: 0, fontSize: 13, lineHeight: 1.7,
+          color: isDark ? '#94a3b8' : '#64748b',
+        }}>
+          {msg.desc}
+        </p>
+      </div>
+      {errorType === 'no_token' && (
+        <Button onClick={() => window.location.reload()} size="large">
+          刷新重试
+        </Button>
+      )}
+    </div>
   )
 }

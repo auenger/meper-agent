@@ -6,7 +6,7 @@
  *
  * Powered by TanStack Query + mcp-api.ts service.
  */
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   Button, Tag, Select, Tooltip, message, Spin, Modal, Empty, Tabs,
@@ -23,6 +23,7 @@ import {
   ApiOutlined,
   InfoCircleOutlined,
   ThunderboltOutlined,
+  FolderOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
 import {
@@ -31,8 +32,12 @@ import {
   type McpConnection,
   type ConnectionStatus,
   type McpAuthType,
-  type McpLoginConfig,
 } from '../services/mcp-api'
+import {
+  mcpCategoryApi,
+  mcpCategoryKeys,
+  type McpCategory,
+} from '../services/mcp-category-api'
 import { toolsApi, type Tool } from '../services/tools-api'
 import { agentKeys } from '../services/agent-api'
 
@@ -73,7 +78,14 @@ export default function McpPage() {
   /* ─── Filter state ─── */
   const [searchInput, setSearchInput] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const [categoryFilter, setCategoryFilter] = useState<string>('all')
   const debouncedSearch = useDebouncedValue(searchInput, 300)
+
+  /* ─── Category modal state ─── */
+  const [categoryModalOpen, setCategoryModalOpen] = useState(false)
+
+  /* ─── MCP form category state ─── */
+  const [formCategoryId, setFormCategoryId] = useState('')
 
   /* ─── Tool list modal state ─── */
   const [toolListModalOpen, setToolListModalOpen] = useState(false)
@@ -100,13 +112,18 @@ export default function McpPage() {
   const [formAuthPassword, setFormAuthPassword] = useState('')     // basic
   const [formDefaultParams, setFormDefaultParams] = useState('')
   const [formTimeout, setFormTimeout] = useState(30)
-  // 账密型绑定的登录端点配置（login_config）
-  const [formLoginUrl, setFormLoginUrl] = useState('')
-  const [formLoginMethod, setFormLoginMethod] = useState('POST')
-  const [formUsernameField, setFormUsernameField] = useState('username')
-  const [formPasswordField, setFormPasswordField] = useState('password')
-  const [formLoginTokenPath, setFormLoginTokenPath] = useState('data.token')
-  const [formLoginTtl, setFormLoginTtl] = useState(3600)
+
+  /* ─── Query: category list (for filter / form / table display) ─── */
+  const { data: categoryData } = useQuery({
+    queryKey: mcpCategoryKeys.lists(),
+    queryFn: () => mcpCategoryApi.list(),
+  })
+  const categories = categoryData?.items ?? []
+  const categoryMap = useMemo(() => {
+    const m = new Map<string, McpCategory>()
+    for (const c of categoryData?.items ?? []) m.set(c.id, c)
+    return m
+  }, [categoryData])
 
   /* ─── Query: connection list ─── */
   const queryParams = {
@@ -114,6 +131,7 @@ export default function McpPage() {
     page_size: 50,
     ...(debouncedSearch ? { name: debouncedSearch } : {}),
     ...(statusFilter !== 'all' ? { status: statusFilter as ConnectionStatus } : {}),
+    ...(categoryFilter !== 'all' ? { category_id: categoryFilter } : {}),
   }
 
   const {
@@ -184,6 +202,7 @@ export default function McpPage() {
     setModalMode('create')
     setFormName('')
     setFormDescription('')
+    setFormCategoryId('')
     setFormUrl('')
     setFormProtocol('streamable-http')
     setFormAuthType('none')
@@ -194,8 +213,6 @@ export default function McpPage() {
     setFormAuthPassword('')
     setFormDefaultParams('')
     setFormTimeout(30)
-    setFormLoginUrl(''); setFormLoginMethod('POST'); setFormUsernameField('username'); setFormPasswordField('password')
-    setFormLoginTokenPath('data.token'); setFormLoginTtl(3600)
     setModalOpen(true)
   }
 
@@ -204,6 +221,7 @@ export default function McpPage() {
     setModalMode('edit')
     setFormName(conn.name)
     setFormDescription(conn.description || '')
+    setFormCategoryId(conn.category_id || '')
     setFormUrl(conn.url)
     setFormProtocol(conn.protocol)
     setFormAuthType(conn.auth_type)
@@ -216,13 +234,6 @@ export default function McpPage() {
     setFormAuthPassword(ac.password && ac.password !== '***' ? ac.password : '')
     setFormDefaultParams(conn.default_params && Object.keys(conn.default_params).length > 0 ? JSON.stringify(conn.default_params) : '')
     setFormTimeout(conn.timeout)
-    const lc = (conn as unknown as Record<string, unknown>).login_config as McpLoginConfig | undefined
-    setFormLoginUrl(lc?.login_url ?? '')
-    setFormLoginMethod(lc?.method ?? 'POST')
-    setFormUsernameField(lc?.username_field ?? 'username')
-    setFormPasswordField(lc?.password_field ?? 'password')
-    setFormLoginTokenPath(lc?.token_jsonpath ?? 'data.token')
-    setFormLoginTtl(lc?.session_ttl ?? 3600)
     setModalOpen(true)
   }
 
@@ -260,27 +271,15 @@ export default function McpPage() {
       }
     }
 
-    // login_config：仅当填了 login_url 才提交（账密型绑定时用于换 session）
-    const loginConfig = formLoginUrl.trim()
-      ? {
-          login_url: formLoginUrl.trim(),
-          method: formLoginMethod || 'POST',
-          username_field: formUsernameField.trim() || 'username',
-          password_field: formPasswordField.trim() || 'password',
-          token_jsonpath: formLoginTokenPath.trim() || 'data.token',
-          session_ttl: formLoginTtl || 3600,
-        }
-      : undefined
-
     const input = {
       name: formName.trim(),
       description: formDescription.trim(),
+      category_id: formCategoryId || '',
       url: formUrl.trim(),
       protocol: formProtocol || 'streamable-http',
       auth_type: formAuthType,
       auth_config: authConfig,
       default_params: defaultParams,
-      login_config: loginConfig,
       timeout: formTimeout || 30,
     }
 
@@ -395,14 +394,32 @@ export default function McpPage() {
               { value: 'error', label: '错误' },
             ]}
           />
+          <Select
+            value={categoryFilter}
+            onChange={setCategoryFilter}
+            className="w-36"
+            options={[
+              { value: 'all', label: '全部分组' },
+              { value: '', label: '未分组' },
+              ...categories.map((c) => ({ value: c.id, label: c.name })),
+            ]}
+          />
         </div>
-        <Button
-          type="primary"
-          icon={<PlusOutlined />}
-          onClick={openCreateModal}
-        >
-          添加 MCP 连接
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            icon={<FolderOutlined />}
+            onClick={() => setCategoryModalOpen(true)}
+          >
+            分组管理
+          </Button>
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={openCreateModal}
+          >
+            添加 MCP 连接
+          </Button>
+        </div>
       </div>
 
       {/* Loading state */}
@@ -432,9 +449,10 @@ export default function McpPage() {
       {!isLoading && !isError && connections.length > 0 && (
         <div className="rounded-xl border border-gray-200 bg-white">
           {/* Table header */}
-          <div className="grid grid-cols-[1.2fr_1.5fr_100px_110px_90px_70px_170px] gap-4 px-5 py-3 bg-[#F8FAFC] border-b border-gray-100 text-xs font-medium text-[#64748B] items-center">
+          <div className="grid grid-cols-[1.2fr_1.4fr_90px_90px_100px_90px_70px_170px] gap-4 px-5 py-3 bg-[#F8FAFC] border-b border-gray-100 text-xs font-medium text-[#64748B] items-center">
             <span>连接名称</span>
             <span>URL</span>
+            <span>分组</span>
             <span>协议</span>
             <span>状态</span>
             <span>上次连接</span>
@@ -448,7 +466,7 @@ export default function McpPage() {
             return (
               <div
                 key={conn.id}
-                className={`grid grid-cols-[1.2fr_1.5fr_100px_110px_90px_70px_170px] gap-4 px-5 py-3.5 items-center hover:bg-[#F8FAFC] transition-colors duration-150 ${i > 0 ? 'border-t border-gray-50' : ''}`}
+                className={`grid grid-cols-[1.2fr_1.4fr_90px_90px_100px_90px_70px_170px] gap-4 px-5 py-3.5 items-center hover:bg-[#F8FAFC] transition-colors duration-150 ${i > 0 ? 'border-t border-gray-50' : ''}`}
               >
                 {/* Name */}
                 <div className="flex items-center gap-2 min-w-0">
@@ -465,6 +483,17 @@ export default function McpPage() {
 
                 {/* URL */}
                 <code className="text-xs font-mono text-[#64748B] truncate">{conn.url}</code>
+
+                {/* Category */}
+                <span className="text-xs">
+                  {conn.category_id && categoryMap.has(conn.category_id) ? (
+                    <Tag className="!m-0 !px-2 !py-0.5 !text-[11px] !rounded" color="blue">
+                      {categoryMap.get(conn.category_id)?.name}
+                    </Tag>
+                  ) : (
+                    <span className="text-[#CBD5E1]">—</span>
+                  )}
+                </span>
 
                 {/* Protocol */}
                 <span className="text-xs text-[#64748B]">{conn.protocol}</span>
@@ -577,6 +606,21 @@ export default function McpPage() {
                     <Input value={formUrl} onChange={(e) => setFormUrl(e.target.value)} placeholder="如：http://localhost:8080/mcp" />
                   </div>
 
+                  <div>
+                    <label className="block text-xs font-medium text-[#374151] mb-1">分组</label>
+                    <Select
+                      value={formCategoryId}
+                      onChange={setFormCategoryId}
+                      className="w-full"
+                      placeholder="选择分组（可选）"
+                      allowClear
+                      options={[
+                        { value: '', label: '未分组' },
+                        ...categories.map((c) => ({ value: c.id, label: c.name })),
+                      ]}
+                    />
+                  </div>
+
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block text-xs font-medium text-[#374151] mb-1">传输协议</label>
@@ -639,48 +683,6 @@ export default function McpPage() {
                     <label className="block text-xs font-medium text-[#374151] mb-1">默认参数（JSON）</label>
                     <Input.TextArea value={formDefaultParams} onChange={(e) => setFormDefaultParams(e.target.value)} placeholder='如：{"token": "xxx"}' rows={2} />
                     <div className="text-[10px] text-[#94A3B8] mt-1">工具调用时自动注入的参数，LLM 同名参数会覆盖</div>
-                  </div>
-                </div>
-              ),
-            },
-            {
-              key: 'login',
-              label: '账密登录配置',
-              children: (
-                <div className="flex flex-col gap-3.5 pt-1">
-                  <div className="text-[11px] text-[#94A3B8] -mt-1 mb-1">
-                    当终端用户用「用户名+密码」绑定此 MCP 时，平台会调此端点登录换取 session token。
-                    token 型绑定（直传 token）不需要配置此页。
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-[#374151] mb-1">登录端点 URL</label>
-                    <Input value={formLoginUrl} onChange={(e) => setFormLoginUrl(e.target.value)} placeholder="如 https://oa.example.com/api/login（留空 = 不启用）" />
-                  </div>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-[#374151] mb-1">请求方法</label>
-                      <Input value={formLoginMethod} onChange={(e) => setFormLoginMethod(e.target.value)} placeholder="POST" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-[#374151] mb-1">Token 路径</label>
-                      <Input value={formLoginTokenPath} onChange={(e) => setFormLoginTokenPath(e.target.value)} placeholder="data.token" />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-[#374151] mb-1">缓存秒数</label>
-                      <InputNumber value={formLoginTtl} onChange={(v) => setFormLoginTtl(v ?? 3600)} min={60} className="w-full" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-medium text-[#374151] mb-1">用户名字段名</label>
-                      <Input value={formUsernameField} onChange={(e) => setFormUsernameField(e.target.value)} placeholder="username" />
-                      <div className="text-[10px] text-[#94A3B8] mt-1">登录接口请求体里用户名的字段名，如 username / name / account</div>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-[#374151] mb-1">密码字段名</label>
-                      <Input value={formPasswordField} onChange={(e) => setFormPasswordField(e.target.value)} placeholder="password" />
-                      <div className="text-[10px] text-[#94A3B8] mt-1">密码的字段名，通常不用改</div>
-                    </div>
                   </div>
                 </div>
               ),
@@ -759,6 +761,198 @@ export default function McpPage() {
           </div>
         )}
       </Modal>
+
+      {/* Category manage Modal */}
+      <McpCategoryModal open={categoryModalOpen} onClose={() => setCategoryModalOpen(false)} />
     </div>
+  )
+}
+
+/* ─── MCP 分组管理 Modal ─── */
+
+function McpCategoryModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const queryClient = useQueryClient()
+  const [editId, setEditId] = useState<string | null>(null)
+  const [formName, setFormName] = useState('')
+  const [formDescription, setFormDescription] = useState('')
+  const [formSort, setFormSort] = useState(0)
+
+  const { data, isLoading } = useQuery({
+    queryKey: mcpCategoryKeys.lists(),
+    queryFn: () => mcpCategoryApi.list(),
+    enabled: open,
+  })
+  const categories = data?.items ?? []
+
+  const createM = useMutation({
+    mutationFn: (input: Parameters<typeof mcpCategoryApi.create>[0]) => mcpCategoryApi.create(input),
+    onSuccess: () => {
+      message.success('分组创建成功')
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all })
+      resetForm()
+    },
+    onError: (e: unknown) => {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (((e as { response?: { data?: { message?: string } } }).response?.data?.message) ?? '创建失败')
+        : '创建失败'
+      message.error(msg)
+    },
+  })
+
+  const updateM = useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Parameters<typeof mcpCategoryApi.update>[1] }) =>
+      mcpCategoryApi.update(id, input),
+    onSuccess: () => {
+      message.success('分组已更新')
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all })
+      resetForm()
+    },
+    onError: (e: unknown) => {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (((e as { response?: { data?: { message?: string } } }).response?.data?.message) ?? '更新失败')
+        : '更新失败'
+      message.error(msg)
+    },
+  })
+
+  const deleteM = useMutation({
+    mutationFn: mcpCategoryApi.remove,
+    onSuccess: () => {
+      message.success('分组已删除')
+      queryClient.invalidateQueries({ queryKey: mcpCategoryKeys.all })
+    },
+    onError: (e: unknown) => {
+      const msg = e && typeof e === 'object' && 'response' in e
+        ? (((e as { response?: { data?: { message?: string } } }).response?.data?.message) ?? '删除失败')
+        : '删除失败'
+      message.error(msg)
+    },
+  })
+
+  function resetForm() {
+    setEditId(null)
+    setFormName('')
+    setFormDescription('')
+    setFormSort(0)
+  }
+
+  function startEdit(c: McpCategory) {
+    setEditId(c.id)
+    setFormName(c.name)
+    setFormDescription(c.description || '')
+    setFormSort(c.sort ?? 0)
+  }
+
+  function handleSubmit() {
+    if (!formName.trim()) {
+      message.warning('请填写分组名称')
+      return
+    }
+    const input = {
+      name: formName.trim(),
+      description: formDescription.trim(),
+      sort: formSort ?? 0,
+    }
+    if (editId) {
+      updateM.mutate({ id: editId, input })
+    } else {
+      createM.mutate(input)
+    }
+  }
+
+  function handleDelete(c: McpCategory) {
+    Modal.confirm({
+      title: '确认删除分组',
+      content: `确定要删除分组「${c.name}」吗？若分组下仍有 MCP 连接将无法删除。`,
+      okText: '删除',
+      okButtonProps: { danger: true },
+      cancelText: '取消',
+      onOk: () => deleteM.mutate(c.id),
+    })
+  }
+
+  return (
+    <Modal
+      title="MCP 分组管理"
+      open={open}
+      onCancel={() => { resetForm(); onClose() }}
+      footer={null}
+      destroyOnClose
+      width={520}
+    >
+      <div className="rounded-lg border border-gray-200 bg-[#F8FAFC] p-3 mb-4">
+        <div className="text-xs font-medium text-[#374151] mb-2">
+          {editId ? '编辑分组' : '新增分组'}
+        </div>
+        <div className="flex flex-col gap-2.5">
+          <div className="grid grid-cols-[1fr_90px] gap-2">
+            <div>
+              <label className="block text-[11px] text-[#64748B] mb-1">分组名称 *</label>
+              <Input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="如：飞书" maxLength={50} size="small" />
+            </div>
+            <div>
+              <label className="block text-[11px] text-[#64748B] mb-1">排序</label>
+              <InputNumber value={formSort} onChange={(v) => setFormSort(v ?? 0)} min={0} className="w-full" size="small" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-[11px] text-[#64748B] mb-1">描述</label>
+            <Input value={formDescription} onChange={(e) => setFormDescription(e.target.value)} placeholder="分组描述（可选）" maxLength={200} size="small" />
+          </div>
+          <div className="flex items-center gap-2 justify-end">
+            {editId && (
+              <Button size="small" onClick={resetForm}>取消编辑</Button>
+            )}
+            <Button
+              type="primary"
+              size="small"
+              loading={createM.isPending || updateM.isPending}
+              onClick={handleSubmit}
+            >
+              {editId ? '保存' : '新增'}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* 分组列表 */}
+      {isLoading ? (
+        <div className="flex justify-center py-6"><Spin size="small" /></div>
+      ) : categories.length === 0 ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分组" className="py-6" />
+      ) : (
+        <div className="flex flex-col gap-1.5 max-h-[320px] overflow-y-auto">
+          {categories.map((c) => (
+            <div key={c.id} className="flex items-center gap-2 rounded-lg border border-gray-100 px-3 py-2 hover:bg-[#F8FAFC] transition-colors">
+              <FolderOutlined className="text-[#3B82F6] text-sm shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-[#0F172A] truncate">{c.name}</div>
+                {c.description && (
+                  <div className="text-[11px] text-[#94A3B8] truncate">{c.description}</div>
+                )}
+              </div>
+              <span className="text-[11px] text-[#CBD5E1] shrink-0">排序 {c.sort ?? 0}</span>
+              <Tooltip title="编辑">
+                <button
+                  onClick={() => startEdit(c)}
+                  className="border-0 bg-transparent w-6 h-6 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-100 transition-colors text-xs"
+                >
+                  <EditOutlined />
+                </button>
+              </Tooltip>
+              <Tooltip title="删除">
+                <button
+                  onClick={() => handleDelete(c)}
+                  disabled={deleteM.isPending}
+                  className="border-0 bg-transparent w-6 h-6 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-100 transition-colors text-xs disabled:opacity-40"
+                >
+                  <DeleteOutlined />
+                </button>
+              </Tooltip>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   )
 }

@@ -113,17 +113,18 @@ async def get_api_key_principal(
 ) -> ApiKeyPrincipal:
     """FastAPI dependency: authenticate via API Key.
 
-    终端用户身份校验：X-User-Token 必填，必须是 MEPER 签发的通用 token
-    （``meper_`` 前缀），本地校验后解出 token 记录 id（= user_id =
-    token_record_id，供 MCP 兑换器查绑定）。
+    终端用户身份校验（v4）：X-User-Token 通过接入方 introspection 端点验证，
+    ApiKey 绑定的 app_id 提供身份命名空间，sub = {app_id}:{username} 查
+    external_identities 反查 platform_user_id。该 platform_user_id 作为
+    user_id = token_record_id，供 MCP 凭证兑换器查 app_bindings。
 
     Raises:
-        UnauthorizedError: Missing/invalid API Key, missing/invalid X-User-Token.
+        UnauthorizedError: Missing/invalid API Key, ApiKey not bound to
+            an application, unknown application, missing/invalid
+            X-User-Token, introspection failure, or user has not
+            authorized the application.
     """
     from app.services.api_key_service import ApiKeyService
-    from app.services.mcp_token_credential_service import (
-        McpTokenCredentialService,
-    )
 
     if not authorization or not authorization.startswith("Bearer "):
         raise UnauthorizedError(
@@ -154,22 +155,68 @@ async def get_api_key_principal(
         rate_limit=doc.get("rate_limit", 60),
     )
 
-    # 终端用户身份校验（通用 token，本地校验）。
+    # 终端用户身份校验（introspection + 应用命名空间 + external_identities）。
     user_token = _extract_bearer_token(request.headers.get("X-User-Token"))
     if not user_token:
         raise UnauthorizedError(
             code="EXT_USER_TOKEN_MISSING",
             message="X-User-Token header is required.",
         )
-    record = await McpTokenCredentialService.verify_token(user_token)
-    if record is None:
+
+    # ② 应用上下文（绑定在 ApiKey 上——接入方系统与应用一一对应）
+    app_id = doc.get("app_id") or ""
+    if not app_id:
+        raise UnauthorizedError(
+            code="APP_ID_MISSING",
+            message="API Key 未绑定应用",
+        )
+
+    from app.services.application_service import ApplicationService
+
+    application = await ApplicationService.get_application(app_id)
+    if application is None:
+        raise UnauthorizedError(
+            code="APP_NOT_FOUND",
+            message=f"API Key 绑定的应用 {app_id} 不存在",
+        )
+
+    # ③ introspection（替代 v1 的本地 verify_token）
+    from app.services.user_auth_service import UserAuthService
+
+    introspect_url = doc.get("introspect_url")
+    if not introspect_url:
+        raise UnauthorizedError(
+            code="INTROSPECT_URL_NOT_CONFIGURED",
+            message="API Key 未配置 introspection 端点",
+        )
+
+    result = await UserAuthService.introspect(introspect_url, user_token)
+    if not result.active:
         raise UnauthorizedError(
             code="EXT_USER_TOKEN_INVALID",
             message="User token is invalid, expired, or revoked.",
         )
-    # user_id = token_record_id = mcp_token_credentials._id，兑换器用它查绑定。
-    principal.user_id = record["_id"]
-    principal.token_record_id = record["_id"]
+    if not result.username:
+        raise UnauthorizedError(
+            code="EXT_USER_TOKEN_INVALID",
+            message="Introspection result has no username.",
+        )
+
+    # ④ 组合 sub（{app_id}:{username}）+ ⑤ 查 external_identities
+    from app.models.external_identity import compose_sub
+    from app.services.external_identity_service import ExternalIdentityService
+
+    sub = compose_sub(app_id, result.username)
+    identity = await ExternalIdentityService.find_by_sub(sub)
+    if identity is None:
+        raise UnauthorizedError(
+            code="EXT_USER_NOT_BOUND",
+            message="未授权该应用，请先在外部授权页完成授权",
+        )
+
+    # ⑥ 设身份（platform_user_id 替代 mcptok_ id）
+    principal.user_id = identity["platform_user_id"]
+    principal.token_record_id = identity["platform_user_id"]
     principal.user_token = user_token
 
     return principal

@@ -1,6 +1,7 @@
 """API Key business logic — CRUD, key generation, verification."""
 from __future__ import annotations
 
+import re
 import secrets
 from datetime import UTC
 
@@ -16,6 +17,44 @@ from app.core.errors import ConflictError, ValidationError
 from app.db.mongodb import get_database
 from app.models.api_key import ALL_SCOPES, ApiKey, ApiKeyBindings, ApiKeyStatus
 from app.models.base import utc_now
+
+# introspect_url 必须是 http/https URL
+_URL_PATTERN = re.compile(r"^https?://[^\s]+$")
+
+
+async def _validate_app_binding(app_id: str | None, introspect_url: str | None) -> None:
+    """校验回调配置与应用绑定的配套关系及存在性。
+
+    规则：
+    - 回调验证模式（introspect_url 非空）时 app_id 必填——外部用户身份需要
+      应用命名空间
+    - app_id 非空时必须真实存在（防止配错导致运行时 401）
+    - introspect_url 非空时必须是合法 http/https URL
+
+    Raises:
+        ValidationError: 配置不合法或应用不存在。
+    """
+    if introspect_url:
+        if not _URL_PATTERN.match(introspect_url):
+            raise ValidationError(
+                code="APIKEY_INVALID_INTROSPECT_URL",
+                message="introspect_url 必须是合法的 http/https URL",
+            )
+        if not app_id:
+            raise ValidationError(
+                code="APIKEY_APP_REQUIRED",
+                message="配置回调验证（introspect_url）时必须绑定应用",
+            )
+    if app_id:
+        from app.services.application_service import ApplicationService
+
+        application = await ApplicationService.get_application(app_id)
+        if application is None:
+            raise ValidationError(
+                code="APIKEY_APP_NOT_FOUND",
+                message=f"绑定的应用 {app_id} 不存在",
+            )
+
 
 # ---------------------------------------------------------------------------
 # Key generation
@@ -86,6 +125,8 @@ class ApiKeyService:
         scopes: list[str],
         bindings: dict | None = None,
         rate_limit: int = 60,
+        introspect_url: str | None = None,
+        app_id: str = "",
         expires_at: str | None = None,
     ) -> tuple[dict, str]:
         """Create a new API Key.
@@ -106,6 +147,9 @@ class ApiKeyService:
                 message=f"无效的权限: {', '.join(sorted(invalid))}",
                 details={"invalid_scopes": sorted(invalid)},
             )
+
+        # 校验回调配置 + 应用绑定
+        await _validate_app_binding(app_id, introspect_url)
 
         # Name uniqueness per owner
         col = ApiKeyService._collection()
@@ -136,6 +180,8 @@ class ApiKeyService:
             scopes=scopes,
             bindings=bindings_model,
             rate_limit=rate_limit,
+            introspect_url=introspect_url,
+            app_id=app_id,
             expires_at=expires_at,
         )
 
@@ -149,6 +195,8 @@ class ApiKeyService:
             "bindings": api_key.bindings.model_dump(),
             "rate_limit": api_key.rate_limit,
             "status": api_key.status.value,
+            "introspect_url": api_key.introspect_url,
+            "app_id": api_key.app_id,
             "expires_at": api_key.expires_at,
             "last_used_at": api_key.last_used_at,
             "created_at": api_key.created_at,
@@ -219,6 +267,8 @@ class ApiKeyService:
         scopes: list[str] | None = None,
         bindings: dict | None = None,
         rate_limit: int | None = None,
+        introspect_url: str | None = None,
+        app_id: str | None = None,
         expires_at: str | None = None,
     ) -> dict | None:
         """Update an API Key's configuration.
@@ -266,6 +316,17 @@ class ApiKeyService:
 
         if rate_limit is not None:
             set_fields["rate_limit"] = rate_limit
+
+        if introspect_url is not None:
+            set_fields["introspect_url"] = introspect_url
+
+        if app_id is not None:
+            set_fields["app_id"] = app_id
+
+        # 校验回调配置 + 应用绑定（按更新后的最终状态）
+        final_introspect = set_fields.get("introspect_url", doc.get("introspect_url"))
+        final_app_id = set_fields.get("app_id", doc.get("app_id", ""))
+        await _validate_app_binding(final_app_id, final_introspect)
 
         if expires_at is not None:
             set_fields["expires_at"] = expires_at

@@ -1,26 +1,39 @@
 import { App as AntApp, ConfigProvider, Spin, theme as antTheme } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
 import { XProvider } from '@ant-design/x'
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { AUTH_MODE, bootstrapAuth, getUserToken } from './api/client'
+import { AUTH_MODE, bootstrapAuth, getUserToken, setAuthErrorHandler } from './api/client'
 import { ClientApp } from './ClientApp'
 import { LoginPage } from './components/LoginPage'
-import { TokenLoginPage } from './components/TokenLoginPage'
+import { TokenLoginPage, type AuthErrorType } from './components/TokenLoginPage'
 import { useParentToken } from './hooks/use-parent-token'
 import { useAuthStore } from './store/auth'
 import './styles.css'
 
+/** 后端 401 错误码 → 前端错误类型映射。 */
+function mapAuthError(code: string): AuthErrorType {
+  if (code === 'EXT_USER_NOT_BOUND') return 'not_bound'
+  if (code === 'INTROSPECT_URL_NOT_CONFIGURED') return 'not_configured'
+  if (code === 'EXT_USER_TOKEN_MISSING') return 'no_token'
+  return 'token_invalid' // EXT_USER_TOKEN_INVALID / 其他
+}
+
 function Root() {
   const initialized = useAuthStore((state) => state.initialized)
   const accessToken = useAuthStore((state) => state.accessToken)
-  const extUserName = useAuthStore((state) => state.extUserName)
   const theme = useAuthStore((state) => state.theme)
-  // TokenLoginPage 提交后 setUserToken，用此 state 触发重渲染切到主界面
-  const [tokenEntered, setTokenEntered] = useState(false)
-  // iframe 嵌入时向宿主页请求终端用户 token（callback 模式）；apikey 模式才生效。
+  const authError = useAuthStore((state) => state.authError)
+  const setAuthError = useAuthStore((state) => state.setAuthError)
+  // iframe 嵌入时向宿主页请求终端用户 token（apikey 模式才生效）。
   useParentToken()
+
+  // 注册 401 错误回调 → 写入 auth store 触发重渲染
+  useEffect(() => {
+    setAuthErrorHandler((code) => setAuthError(code))
+    return () => setAuthErrorHandler(null)
+  }, [setAuthError])
 
   useEffect(() => {
     void bootstrapAuth()
@@ -33,9 +46,16 @@ function Root() {
 
   // 判定主界面显示条件：
   // - jwt 模式：有 accessToken
-  // - apikey 模式：有 userToken（getUserToken 非空 或 tokenEntered 标记）
-  const hasUserToken = getUserToken() !== null || tokenEntered
-  const canEnterApp = AUTH_MODE === 'apikey' ? hasUserToken : !!accessToken
+  // - apikey 模式：有 userToken（cookie 注入或 postMessage 注入）且无身份错误
+  const hasUserToken = getUserToken() !== null
+  const canEnterApp = AUTH_MODE === 'apikey'
+    ? (hasUserToken && !authError)
+    : !!accessToken
+
+  // apikey 模式下的错误类型
+  const errorType: AuthErrorType = authError
+    ? mapAuthError(authError)
+    : 'no_token'
 
   return (
     <ConfigProvider
@@ -62,8 +82,7 @@ function Root() {
           ) : canEnterApp ? (
             <ClientApp />
           ) : AUTH_MODE === 'apikey' ? (
-            // apikey 模式但无 userToken → token 输入页
-            <TokenLoginPage onSuccess={() => setTokenEntered(true)} />
+            <TokenLoginPage errorType={errorType} />
           ) : (
             <LoginPage />
           )}

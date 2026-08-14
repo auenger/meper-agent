@@ -38,6 +38,7 @@ class McpConnection(BaseModel):
     id: str = Field(default_factory=lambda: generate_id("mcp"), alias="_id")
     name: str = Field(..., min_length=1, max_length=100)
     description: str = Field(default="", max_length=500)
+    category_id: str = Field(default="", description="所属分组 ID，空为未分组")
     url: str = Field(..., min_length=1, max_length=500)
     protocol: str = Field(default="streamable-http", description="sse / streamable-http")
     auth_type: AuthType = Field(default=AuthType.NONE)
@@ -49,14 +50,6 @@ class McpConnection(BaseModel):
     default_params: dict = Field(
         default_factory=dict,
         description="工具调用时自动注入的默认参数（如 token, api_key），LLM 传入的同名参数会覆盖",
-    )
-    login_config: dict = Field(
-        default_factory=dict,
-        description=(
-            "账密型绑定的登录端点配置（仅当用户用 username/password 绑定时用到）。"
-            "含 login_url/method/body_template/token_jsonpath/session_ttl。"
-            "详见 docs/planning-artifacts/mcp-credential-broker-design.md。"
-        ),
     )
     status: ConnectionStatus = Field(default=ConnectionStatus.DISCONNECTED)
     status_message: str = Field(default="", description="状态详情/错误信息")

@@ -11,7 +11,7 @@ export const PATHS = {
   MODELS: '/models',
   SKILLS: '/skills',
   MCP: '/mcp',
-  MCP_TOKENS: '/mcp-tokens',
+  EXTERNAL_AUTH: '/external-auth',
   TASKS: '/tasks',
   WORKFLOWS: '/workflows',
   TOOLS: '/tools',

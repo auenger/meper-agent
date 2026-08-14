@@ -56,6 +56,12 @@ export function apikeyLogout(): void {
   }
 }
 
+/** apikey 模式 401 时的错误码回调（由 main.tsx 注册，写入 auth store）。 */
+let onAuthError: ((code: string) => void) | null = null
+export function setAuthErrorHandler(handler: ((code: string) => void) | null) {
+  onAuthError = handler
+}
+
 let refreshPromise: Promise<string | null> | null = null
 
 export class ApiError extends Error {
@@ -160,8 +166,7 @@ export async function ensureAccessToken(): Promise<string | null> {
 }
 
 /** apikey 模式：附加 API Key +（若有）用户 token（X-User-Token header）。
- * 访客 ID（visitor_id）由调用方按后端约定放进 query 或 body。
- * 后端按 API Key 的 user_info_url 自动选用 legacy(visitor_id) / callback(user_token)。 */
+ * 应用上下文（app_id）绑定在 ApiKey 上，后端自动解析，client 无需传递。 */
 export function applyApiKeyHeaders(headers: Headers): void {
   headers.set('Authorization', `Bearer ${effectiveApiKey()}`)
   const token = getUserToken()
@@ -188,9 +193,16 @@ export async function apiRequest<T>(
     const nextToken = await refreshAccessToken()
     if (nextToken) return apiRequest<T>(path, init, false)
   }
-  // apikey 模式收到 401 = token 无效/过期 → 通知 widget（父页）显示登录面板
-  if (response.status === 401 && AUTH_MODE === 'apikey' && inIframe()) {
-    try { window.parent.postMessage({ type: 'agentflow:token_invalid' }, '*') } catch { /* ignore */ }
+  // apikey 模式收到 401 → 通过回调通知上层 + 通知 widget
+  if (response.status === 401 && AUTH_MODE === 'apikey') {
+    const err = await readError(response)
+    // 通过注册的回调通知上层（main.tsx 会把错误码写入 auth store）
+    if (onAuthError) onAuthError(err.code ?? 'EXT_USER_TOKEN_INVALID')
+    // 同时通知 widget（父页）清 cookie
+    if (inIframe()) {
+      try { window.parent.postMessage({ type: 'agentflow:token_invalid' }, '*') } catch { /* ignore */ }
+    }
+    throw err
   }
   if (!response.ok) throw await readError(response)
   if (response.status === 204) return undefined as T
@@ -212,7 +224,7 @@ export function inIframe(): boolean {
 let resolveEmbedReady: (() => void) | null = null
 
 /** 父页（chat-widget.js）经 postMessage 注入嵌入配置时调用。
- * apiKey 必填；userToken 可选（callback 模式）。 */
+ * apiKey 必填；userToken 可选。 */
 export function applyEmbedConfig(apiKey: string, userToken?: string | null): void {
   if (apiKey) setEmbedApiKey(apiKey)
   setAuthMode('apikey')

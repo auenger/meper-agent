@@ -1,535 +1,683 @@
-# MCP 凭证绑定与兑换（User-MCP Credential Broker）设计
+# MCP 凭证经纪设计（Credential Broker v3 — 平台用户归一方案）
 
-> 对应能力：终端用户身份由 MEPER 统一托管；用户在各 MCP 服务的凭证绑定、运行时兑换。
-> 日期：2026-08-07
+> 日期：2026-08-13（v3 重构）
 > 状态：方案已确认，待实施
-> 关联文档：[`external-user-auth-design.md`](./external-user-auth-design.md)（本方案实施后**归档废弃**）、[`implementation-artifacts/5-3-mcp-connection-management.md`](../implementation-artifacts/5-3-mcp-connection-management.md)
+> 关联：[`agent-access-hub.html`](./agent-access-hub.html)（用户授权页 Mock）
 
 ---
 
-## 0. 文档目的与范围
+## 0. 文档目的
 
-本文档定义 **MEPER 平台如何统一托管终端用户在各个 MCP 服务的身份凭证**，以及运行时 agent 调用 MCP 时如何**按当前用户兑换出正确的凭证**。
+定义外部用户通过 Agent 访问 MCP 服务时的**身份识别**、**凭证解析**与**跨域穿透**机制。
 
-**适用读者**：
-- MEPER 后端开发者（实施兑换器、token 管理、认证改造）
-- 平台 admin（理解通用 token 的创建与下发流程）
-
-**不包含**：部门/多租户隔离、MCP server 端的改造（本方案要求 MCP server **零改造**）、平台用户自身的登录（已有 JWT 体系）。
+核心目标：
+- **身份归一**——不管用户从哪个接入方进来，都能识别为同一个平台用户
+- **跨域 MCP 穿透**——从 A 服务进来，也能访问 B 服务的 MCP（只要用户绑了 B 的凭证）
+- **绑定自服务**——用户自己在平台设置页绑凭证，绑定时自动建立身份映射
+- **系统不关心域判定**——所有 MCP 都必须在组里，没有降级，没有 fallback token
 
 ---
 
-## 1. 背景与核心问题
+## 1. 核心问题与方案
 
-### 1.1 现状链路的缺口
+### 1.1 v1/v2 的问题
 
-agent-flow 当前的 MCP 调用链路（`backend/packages/harness/src/agent_flow_harness/mcp/loader.py:196-212` 的 `_user_token_interceptor`）：
-
-```
-client ──API Key──> MEPER ──resolve MCP tools──> StructuredTool[]
-                                                      │
-              调用时 interceptor 直接透传 user_token（覆盖静态 auth_config）
-                                                      ▼
-                                                  MCP server
-```
-
-**缺口**：
-1. **每个 MCP 服务有独立的用户管理系统，凭证互不通**。现有 interceptor 把 `X-User-Token` 原样透传给所有 MCP（`loader.py:211` 硬编码 `Authorization: Bearer {user_token}`），这个 token 只对一个 MCP 有效，调别的 MCP 必失败。
-2. **终端用户身份依赖外部 introspection 回调**（`external-user-auth-design.md` 的 RFC 7662 模式），MEPER 不是身份的源，无法自主签发与验证终端用户身份。
-3. **用户无法把"自己在各 MCP 的身份"托管给 MEPER**，MEPER 也就无从兑换。
-
-### 1.2 目标（用户确认的模型）
-
-1. **admin 在 MEPER 创建通用 token**：填用户名称 + 绑定 N 个 MCP；绑每个 MCP 时填入该 MCP 的 **token** 或 **用户名+密码**。
-2. **外部用户拿通用 token 通过 client 调 agent**（client 仍带 API Key 作为接入方凭证）。
-3. **agent 调 MCP 前，MEPER 拿通用 token 查绑定凭证，替换 MCP 调用的凭证**。
-4. **内部测试（studio 后台，平台 JWT 路径）不经过兑换**，直接用 MCP connection 的静态凭证调，方便测试。
-5. **MCP server 零改造**——仍认自己原来的 token / 账密。
-
-### 1.3 立场转变
-
-| | 旧（external-user-auth-design.md） | 新（本方案） |
+| 版本 | 机制 | 核心缺陷 |
 |---|---|---|
-| 终端用户身份源 | 接入方系统（MEPER 回调 introspection） | **MEPER 自己**（签发 + 本地校验通用 token） |
-| X-User-Token 语义 | 接入方系统的用户 token | **MEPER 派发的通用 token** |
-| MCP 调用凭证 | 透传同一个 user_token | **按目标 MCP 兑换该用户绑定的凭证** |
+| v1（MEPER 自签 token） | 本地查 `mcp_token_credentials` | admin 手工代绑，不可规模化；user_id 绑死在 token 上 |
+| v2（`owner:sub` 拼接） | introspection → `user_id = owner:sub` | **跨域身份碎片化**：从 A 进来 user_id=`owner:alice_a`，从 B 进来 user_id=`owner:alice_b`，同一个人绑定关系断裂 |
+
+### 1.2 v3 方案：平台用户归一
+
+**核心思路：引入 `external_identities` 映射表，把各接入方的 sub 归一到同一个平台用户。**
+
+```
+同一物理人 alice：
+  在 A 服务的 sub = "zhangsan:1001"  ──┐
+  在 B 服务的 sub = "zs:1001"        ──┼──→  platform_user_id = "user_001"
+                                       │
+  user_001 名下持有所有组的凭证 ←──────┘
+
+无论从 A 还是 B 进来，都归一到 user_001，凭证都能查到。
+```
+
+**sub 的来源不是用户手填，而是绑账密时从 `login_url` 响应自动提取：**
+
+```
+introspection 响应：{ active, sub: "1001", username: "zhangsan", exp }
+login_url 响应：    { token: "xxx", userId: "1001", userName: "zhangsan" }
+
+两边都含用户 ID + 用户名 → 按固定规则组合（如 "username:userId" = "zhangsan:1001"）
+→ 写入 external_identities
+```
 
 ---
 
-## 2. 架构总览
+## 2. 数据模型
 
-### 2.1 两条路径天然分流（关键设计）
+### 2.1 `external_identities`（新建）
 
-兑换逻辑的触发条件是 **`token_record_id` ContextVar 是否有值**。内部路径不设它，天然免兑换；外部路径才设它、才走兑换。
-
-```
-【内部路径 — studio 后台测试】（现状不变，方便测试）
-
-admin/developer ──平台 JWT──> /v1/agents/*/invoke
-   → get_current_user（平台用户，security.py:170）
-   → resolve_harness_context：不设 token_record_id ContextVar
-   → interceptor：ContextVar 为空 → 不调兑换器 → 用 MCP connection 静态 auth_config 调 ✓
-
-【外部路径 — client 调用】（新机制）
-
-admin ──studio──> 创建 mcp_token_credentials 记录
-                   (name + mcp_bindings + 通用 token = meper_xxx)
-                                          │
-用户 <──通用 token── (admin 发给用户)      │
-   │                                      │
-client ──Authorization: Bearer af_live_xxx ──────┐
-       ──X-User-Token:  meper_xxx ───────────────┴──> /api/v1/ext/*
-                                                          │
-                       get_api_key_principal:             │   (auth_apikey.py:115)
-                         ① API Key 验证 + scope + bindings ✓（接入方维度，不变）
-                         ② X-User-Token 必填 → 本地查 mcp_token_credentials
-                            命中 active → principal.user_id = 记录_id
-                                          principal.token_record_id = 记录_id
-                            缺失/未命中/禁用 → 401           ← 不再回调外部
-                                                          │
-                       resolve_harness_context:           │   (context.py:265)
-                         set token_record_id ContextVar = 记录_id
-                                                          │
-agent 调 mcp__{server}__{tool}                             │
-  ↓                                                       │
-harness _user_token_interceptor:                          │   (loader.py:196)
-  record_id = get_token_record_id_context()  ← 有值（外部路径）
-  cred = await resolver.resolve(record_id, connection_config)
-    ↓ (app 层 UserCredentialResolver)
-    查 mcp_token_credentials.mcp_bindings[conn_id]
-      token 型  → 解密直返
-      账密型    → Redis 查 session；miss 则 POST login_url 换 session，缓存
-  → 按 auth_type 构造 header → request.override(headers=...)   ← 覆盖静态凭证
-  未绑定 → 抛错（外部路径不允许降级）
-  ↓                                                       │
-真正 MCP server（拿到的是该用户绑定的本系统真实凭证）
-```
-
-### 2.2 设计要点
-
-- **通用 token 是查绑定的 key**：token → 记录 id → mcp_bindings，无中间 user_id 映射。
-- **一张表**：`mcp_token_credentials`，admin 每创建一个通用 token = 一条记录，直接挂该用户的全部 MCP 绑定。
-- **两类凭证形态**：token 型（直传）、账密型（调 MCP 的 login_url 换 session，缓存复用）。
-- **harness 保持可独立发布**：通过 `CredentialResolver` Protocol 注入实现，harness 不依赖 app 的 DB 层。
-
----
-
-## 3. 详细设计
-
-### 3.1 数据模型：`mcp_token_credentials`（新建）
-
-**集合名**：`mcp_token_credentials`
-
-admin 每创建一个通用 token = 一条记录。
+外部身份 → 平台用户的映射。绑账密时自动生成。
 
 | 字段 | 类型 | 说明 |
-|------|------|------|
-| `_id` | str | `mcptok_xxx`（ULID） |
-| `name` | str | admin 填的用户名称（如"张三"） |
-| `token` | str | MEPER 生成的通用 token，随机不透明串，`meper_` 前缀，**全局唯一索引** |
-| `api_key_id` | str | 归属接入方 API Key（可选，用于隔离/审计） |
-| `status` | str | `active` / `disabled` |
-| `mcp_bindings` | dict | key = `mcp_connection_id`，value = 绑定凭证对象（见下） |
-| `created_at` / `updated_at` | str | ISO 时间 |
-| `created_by` | str | 创建该记录的平台 admin user_id |
-
-**mcp_bindings 的两种形态**：
-
-```jsonc
-// token 型：用户填的是目标 MCP 的 token，运行时直传
-{
-  "credential_type": "token",
-  "auth_type": "bearer",          // bearer / api_key / basic —— 决定怎么进 header
-  "token": "enc:xxxxxx"           // enc: 前缀 AES-256-GCM 加密
-}
-
-// 账密型：用户填的是账密，运行时先 POST login_url 换 session
-{
-  "credential_type": "password",
-  "auth_type": "bearer",          // 换来的 session 用什么形态注入
-  "username": "enc:xxxxxx",
-  "password": "enc:xxxxxx"
-}
-```
-
-**加密**：凭证值统一用 `enc:` 前缀 + AES-256-GCM（复用 `app/core/crypto.py` 的 `encrypt_secret` / `decrypt_secret`）。这套 `enc:` 前缀模式参考自 `backend/app/engine/harness_integration/context.py:46-67` 的 `_decrypt_user_args`，是项目里最成熟的"加密存 + 运行时解密注入"套路。
-
-**`auth_type` 的作用**：决定兑换出的凭证怎么放进 HTTP 头，复用 `backend/app/engine/tool/mcp_client.py` 的 `_build_headers` 已有逻辑（bearer → `Authorization: Bearer`，api_key → `X-API-Key`，basic → `Authorization: Basic`）。
-
-**唯一约束**：
-- `token` 全局唯一（数据库索引）
-- `(记录_id, mcp_connection_id)` 隐含在 dict key 唯一，即"一个用户对一个 MCP 只绑一份凭证"
-
-### 3.2 MCP connection 扩展：`login_config`
-
-**改动文件**：`backend/app/models/mcp_connection.py`
-
-`McpConnection` 新增可选字段 `login_config`（仅账密型绑定用到，token 型不用）：
-
-| 字段 | 默认值 | 说明 |
-|------|--------|------|
-| `login_url` | — | 账密型 MCP 的登录端点 URL |
-| `method` | `"POST"` | 登录请求方法 |
-| `body_template` | — | 请求体模板，支持 `{{username}}` / `{{password}}` 占位 |
-| `token_jsonpath` | — | 从登录响应 JSON 取 session token 的路径，如 `data.access_token` |
-| `session_ttl` | `3600` | session 缓存秒数 |
-
-示例配置（某账密型 MCP）：
-```jsonc
-{
-  "login_url": "https://oa.example.com/api/login",
-  "method": "POST",
-  "body_template": "{\"username\":\"{{username}}\",\"password\":\"{{password}}\"}",
-  "token_jsonpath": "data.token",
-  "session_ttl": 7200
-}
-```
-
-### 3.3 终端用户认证改造（外部路径，删 + 改）
-
-> **重要**：本节改动**只影响 `/api/v1/ext/*` 外部路径**。内部路径 `/v1/agents/*` 走 `get_current_user`（平台 JWT，`security.py:170`），完全不碰这套，自然不受影响。
-
-#### (a) 废弃外部 introspection 回调
-
-| 要废弃的代码 | 位置 | 处理 |
 |---|---|---|
-| `ApiKey.user_info_url` 字段 | `models/api_key.py:57-64` | 删除字段（破坏性，需数据迁移说明） |
-| `UserAuthService.introspect` | `services/user_auth_service.py` | 整文件废弃 |
-| introspection 缓存层 | `core/introspection_cache.py` | 整文件废弃 |
-| `is_introspect_stale` / `user_auth_state` | `core/user_auth_state.py` | 废弃（`ext/__init__.py:187` 的 stale header 逻辑一并删） |
-| `visitor_id` 兼容模式 | `ext/__init__.py:24-40` `resolve_user_id` 的 legacy 分支 | 删除 |
-| 设计文档 | `external-user-auth-design.md` | 标记 deprecated 并归档 |
+| `_id` | str | `extid_xxx` |
+| `sub` | str | 用户标识组合（`username:userId`），全局唯一 |
+| `platform_user_id` | str | 关联平台 User 的 `_id`（`user_xxx`） |
+| `created_at` / `updated_at` | str | ISO 时间 |
 
-#### (b) 改造 `get_api_key_principal`（`backend/app/core/auth_apikey.py:115`）
+**唯一索引**：`sub`（sub 跨用户全局唯一，靠 userId+username 组合保证）
 
-**保留**（接入方维度不变）：
-- API Key 验证（`af_live_` 前缀 + bcrypt 比对，`auth_apikey.py:141-152`）
-- `scopes` / `bindings` 资源白名单（`ApiKeyPrincipal:47-83`）
+**sub 组合规则**（代码写死，暂不做可配置）：
+- introspection 返回 `sub`（= userId）+ `username`
+- login_url 返回 `userId` + `userName`
+- 两边组合格式一致：`f"{username}:{userId}"`
 
-**改造**（X-User-Token 处理，`auth_apikey.py:163-184`）：
+### 2.2 `user_mcp_credentials`（改造，原 `mcp_token_credentials`）
+
+用户自绑的跨域凭证。**按平台用户存，一个用户一条记录。**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `_id` | str | `usermcp_xxx` |
+| `platform_user_id` | str | 平台用户 `_id` |
+| `group_bindings` | dict | key = `mcp_group_id`，value = 凭证对象 |
+| `created_at` / `updated_at` | str | ISO 时间 |
+
+**group_bindings 结构**（只有账密）：
+
+```jsonc
+{
+  "mcpgrp_aaa": {
+    "username": "enc:xxxxxx",    // AES-256-GCM 加密
+    "password": "enc:xxxxxx"
+  }
+}
+```
+
+**唯一索引**：`platform_user_id`
+
+**与 v1 的差异**：
+- 删除 `token`（不再自签通用 token）
+- 删除 `api_key_id`（凭证跟平台用户走）
+- 删除 `credential_type`（只有账密）
+- `mcp_bindings`（per-MCP）→ `group_bindings`（per-Group）
+- 查询 key 从 `token` 改为 `platform_user_id`
+
+### 2.3 `mcp_groups`（复用现有 `mcp_categories` 扩展）
+
+在现有 `McpCategory`（UI 分组）基础上，增加凭证相关字段，让它同时承担"身份域分组 + 共享登录配置"的职责。
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `_id` | str | `mcpgrp_xxx`（现 `mcpc_xxx`，前缀可保留或迁移） |
+| `name` | str | 组名（现有） |
+| `description` | str | 描述（现有） |
+| `sort` | int | 排序权重（现有） |
+| `login_config` | dict | **新增**：共享登录配置 |
+| `auth_type` | str | **新增**：session 注入方式 `bearer_token` / `api_key` / `basic` |
+| `header_name` | str | **新增**：`api_key` 型的自定义 header 名，默认 `X-API-Key` |
+| `created_at` / `updated_at` | str | 现有 |
+
+**MCP 与组的关联**：通过 `McpConnection.category_id` 反查（一个 MCP 属于一个组）。**所有 MCP 都必须在组里**——不在任何组的 MCP 被调用时返回错误（配置不完整）。
+
+**login_config 结构**：
+
+```jsonc
+{
+  "login_url": "https://factory.example.com/api/login",
+  "method": "POST",
+  "username_field": "username",       // 请求体字段名（默认 username）
+  "password_field": "password",       // 请求体字段名（默认 password）
+  "token_jsonpath": "data.token",     // 从响应取 session token 的 JSONPath
+  "userid_jsonpath": "userId",        // 从响应取 userId 的 JSONPath（用于组合 sub）
+  "username_jsonpath": "userName",    // 从响应取 userName 的 JSONPath（用于组合 sub）
+  "session_ttl": 7200                 // session 缓存秒数
+}
+```
+
+> **与现有 McpConnection.login_config 的关系**：McpConnection 上现有的 `login_config` 迁移到 McpGroup。McpConnection 不再持有 login_config。
+
+### 2.4 `McpConnection` 变更
+
+| 字段 | 处理 |
+|---|---|
+| `category_id` | **保留**（现有，指向所属组） |
+| `login_config` | **迁移到 McpGroup**（数据迁移） |
+| 其他字段 | 不变（内部路径仍用 `auth_config` 静态凭证） |
+
+### 2.5 `ApiKey` 扩展
+
+新增 introspection 端点配置：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `introspect_url` | str \| None | 接入方的 token introspection 端点 |
+
+> 不需要 `introspect_token`。旧版实现（`user_auth_service.py`）是裸调 introspection 端点（POST form-encoded `token=xxx`，无 Authorization 头），新版沿用。
+
+introspection 请求（复用旧版 `UserAuthService`，RFC 7662 简化版）：
+
+```
+POST {introspect_url}
+Content-Type: application/x-www-form-urlencoded
+
+token={接入方token}
+```
+
+响应：
+
+```json
+{
+  "active": true,
+  "sub": "1001",
+  "username": "zhangsan",
+  "exp": 1693440000
+}
+```
+
+> `sub`（接入方用户 ID）+ `username` 组合为 `f"{username}:{sub}"`，用于查 `external_identities`。
+
+---
+
+## 3. 完整调用链路
+
+### 3.1 配置阶段（用户在平台设置页，一次性操作）
+
+```
+用户登录平台（平台 JWT，user_001）
+  │
+  设置页 → 绑 group_b 的账密：
+    填 username: "zs001", password: "yyy"
+    │
+    系统调 group_b.login_url：
+      POST login_url { username: "zs001", password: "yyy" }
+      │
+      ├─ 登录失败 → 报错，不保存
+      └─ 登录成功，响应：
+           { token: "session_xxx", userId: "1001", userName: "zhangsan", ... }
+           │
+           ├─ ① 提取 userId + userName → 组合 sub = "zhangsan:1001"
+           │   → external_identities 写入 { sub, platform_user_id: "user_001" }
+           │     （如果已存在相同 sub → 不重复写入）
+           │
+           └─ ② 账密加密存入
+                 user_mcp_credentials.group_bindings["group_b"]
+                 = { username: enc("zs001"), password: enc("yyy") }
+```
+
+### 3.2 运行时：从 client 发起到 MCP 调用
+
+```
+[浏览器宿主页]
+  chat-widget.js: resolveUserToken()
+    → 读 cookie "x-mep-token" → 接入方 token
+    ↓ postMessage(agentflow:config, { apiKey: "af_live_xxx", userToken: <接入方token> })
+
+[iframe: frontend-client]
+  发请求 header：
+    Authorization: Bearer af_live_xxx       ← 接入方 API Key
+    X-User-Token: <接入方token>              ← 用户在接入方的 token
+  POST /api/v1/ext/agents/{agent_id}/invoke/stream
+
+[backend — 鉴权阶段]
+  get_api_key_principal（auth_apikey.py）
+    │
+    ├─ ① 校验 API Key → owner_user_id
+    │
+    ├─ ② introspection（★ 改造：替代本地 verify_token）
+    │    POST ApiKey.introspect_url, form: token=<接入方token>
+    │    → { active: true, sub: "1001", username: "zhangsan" }
+    │    → 组合 sub = "zhangsan:1001"
+    │
+    ├─ ③ 登录时检查（★ 新增）
+    │    external_identities.findOne({ sub: "zhangsan:1001" })
+    │    ├─ 不存在 → 401 "未绑定平台身份，请先在设置页绑定 MCP 凭证"
+    │    └─ 存在 → platform_user_id = "user_001"
+    │
+    └─ principal.user_id = "user_001"
+       principal.token_record_id = "user_001"
+       principal.user_token = <接入方token>     ← 保留原始 token
+
+[backend — Agent 执行]
+  AgentExecutionService.stream(agent_id, user_id="user_001", user_token=<接入方token>)
+    │
+    ↓ resolve_harness_context（context.py）
+      set_user_token_context(<接入方token>)
+      set_token_record_id_context("user_001")     ← 平台用户 ID
+      加载 Agent 配置的 MCP 工具（interceptor 已挂载）
+
+[backend — LLM 调 MCP，interceptor 拦截]
+  _user_token_interceptor（loader.py）
+    record_id = get_token_record_id_context()  → "user_001"（非空 = 外部路径）
+    server_name = request.server_name          → "B服务MCP"
+    │
+    └─ cred = await _resolver.resolve("user_001", "B服务MCP")
+
+[backend — 凭证解析 resolve（★ 改造重点）]
+  UserCredentialResolver.resolve(platform_user_id, server_name)
+    │
+    ├─ ① server_name → conn_id（按 name 查 mcp_connections）
+    │
+    ├─ ② conn_id → 属于哪个组（查 mcp_categories，category_id 匹配）
+    │    ├─ 不在任何组 → 返回 None（配置不完整 → isError）
+    │    └─ 找到组 group_b → 继续
+    │
+    ├─ ③ 查用户对该组的绑定
+    │    user_mcp_credentials.findOne({ platform_user_id: "user_001" })
+    │    → group_bindings["group_b"]
+    │    ├─ 没绑定 → 返回 None（interceptor 生成 isError 结果给 Agent）
+    │    └─ 有绑定 → 解密账密 → 继续
+    │
+    ├─ ④ 查/换 session（Redis 缓存）
+    │    cache_key = "mcp:session:user_001:group_b"
+    │    ├─ Redis 命中 → 用缓存 session
+    │    └─ miss → 用 group_b.login_config + 账密 POST login_url 换 session
+    │              → 写 Redis（TTL = session_ttl）
+    │
+    └─ return { auth_type: group_b.auth_type, token: session, header_name: group_b.header_name }
+
+[backend — 凭证注入 MCP 请求]
+  _cred_to_headers(cred)
+    bearer_token → { "Authorization": "Bearer <session>" }
+    api_key      → { "<header_name>": "<session>" }
+  request.override(headers=headers) → handler(overridden)
+
+[MCP server] 收到带 session 的请求 → 认证 → 返回结果
+  ↓ 结果回流 → ToolMessage → SSE → iframe 渲染
+```
+
+### 3.3 两种"未绑定"的处理（关键区别）
+
+| | 登录时检查 | 执行 MCP 时检查 |
+|---|---|---|
+| **位置** | `get_api_key_principal`（鉴权阶段） | `_user_token_interceptor` → `resolve` |
+| **检查什么** | 当前 sub 有没有身份映射 | 用户有没有绑这个组的凭证 |
+| **查什么表** | `external_identities` | `user_mcp_credentials.group_bindings` |
+| **不通过时** | **401 拒绝整个请求** | 返回 isError 的 CallToolResult 给 Agent |
+| **影响范围** | 整个会话进不来 | 单个 MCP 工具调用失败，**不阻断对话** |
+| **原因** | 没有 platform_user_id，后续全断 | 只是一个工具没权限，其他工具不受影响 |
+
+---
+
+## 4. 身份识别（Introspection 回调）
+
+### 4.1 流程
+
+```
+client 请求 (Authorization: af_live_xxx, X-User-Token: <接入方token>)
+  │
+  ├─ API Key 校验 → owner_user_id + introspect_url
+  │
+  ├─ introspection(X-User-Token)
+  │   ├─ Redis 缓存（复用旧版 introspection_cache，两级缓存 fresh + stale）
+  │   └─ miss → POST introspect_url → { active, sub, username, exp } → 缓存
+  │
+  ├─ active=false → 401
+  ├─ active=true → sub + username → 组合 → "zhangsan:1001"
+  │
+  └─ 查 external_identities["zhangsan:1001"]
+      ├─ 不存在 → 401
+      └─ 存在 → platform_user_id
+```
+
+### 4.2 复用旧版基础设施
+
+| 组件 | 状态 | 说明 |
+|---|---|---|
+| `UserAuthService`（`user_auth_service.py`） | **恢复使用** | RFC 7662 introspection 客户端，含 stale fallback |
+| `introspection_cache`（`introspection_cache.py`） | **恢复使用** | 两级 Redis 缓存（fresh + stale），减少回调 |
+| `McpTokenCredentialService.verify_token` | **废弃** | 本地 meper_token 校验，被 introspection 替代 |
+| `get_api_key_principal` 中的本地校验 | **替换** | 改为 introspection + external_identities 查询 |
+
+### 4.3 `get_api_key_principal` 改造（`auth_apikey.py`）
 
 ```python
-# 原：根据 user_info_url 决定走 legacy / 回调验证
-# 新：X-User-Token 必填，本地校验通用 token
+# ① API Key 验证（不变）
+doc = await ApiKeyService.verify_key(full_key)
+
+# ② X-User-Token → introspection（替代 v1 的本地 token 校验）
 user_token = _extract_bearer_token(request.headers.get("X-User-Token"))
 if not user_token:
+    raise UnauthorizedError(code="EXT_USER_TOKEN_MISSING")
+
+introspect_url = doc.get("introspect_url")
+if not introspect_url:
+    raise UnauthorizedError(code="INTROSPECT_URL_NOT_CONFIGURED")
+
+result = await UserAuthService.introspect(introspect_url, user_token)
+if not result.active:
+    raise UnauthorizedError(code="EXT_USER_TOKEN_INVALID")
+
+# ③ 组合 sub
+sub = f"{result.username}:{result.sub}"
+
+# ④ 登录时检查：查 external_identities
+identity = await ExternalIdentityService.find_by_sub(sub)
+if identity is None:
     raise UnauthorizedError(
-        code="EXT_USER_TOKEN_MISSING",
-        message="X-User-Token header is required.",
+        code="EXT_USER_NOT_BOUND",
+        message="未绑定平台身份，请先在设置页绑定 MCP 凭证",
     )
 
-# 本地查 mcp_token_credentials（替代外部 introspection 回调）
-record = await McpTokenCredentialService.verify_token(user_token)
-if record is None:
-    raise UnauthorizedError(
-        code="EXT_USER_TOKEN_INVALID",
-        message="User token is invalid, expired, or revoked.",
-    )
-
-principal.user_id = record["_id"]              # 记录 id 当 user_id
-principal.token_record_id = record["_id"]      # 兑换器查绑定的 key
-principal.user_token = user_token              # 保留（标识用途）
+# ⑤ 设身份
+principal.user_id = identity["platform_user_id"]
+principal.token_record_id = identity["platform_user_id"]
+principal.user_token = user_token  # 保留原始 token
 ```
 
-`ApiKeyPrincipal`（`auth_apikey.py:21`）新增字段：
+---
+
+## 5. 凭证解析流程
+
+### 5.1 核心逻辑
+
 ```python
-token_record_id: str | None = None   # MCP 兑换器查绑定的 key
+async def resolve(platform_user_id, server_name):
+    """Agent 调 MCP 前的凭证解析。"""
+
+    # 1. server_name → mcp_connection_id
+    conn_id = await get_connection_id_by_name(server_name)
+
+    # 2. 查 MCP-X 属于哪个组（通过 category_id 反查）
+    group = await find_group_by_connection(conn_id)
+
+    # 3. 没有组 → 配置不完整，返回 None（interceptor 生成 isError 给 Agent）
+    if group is None:
+        return None
+
+    # 4. 查用户对该组的绑定
+    binding = await UserMcpCredentialService.get_binding(platform_user_id, group.id)
+
+    # 5. 没绑定 → 返回 None（interceptor 生成 isError 给 Agent）
+    if binding is None:
+        return None
+
+    # 6. 有绑定 → Redis 查 session
+    cache_key = f"mcp:session:{platform_user_id}:{group.id}"
+    session = await redis.get(cache_key)
+
+    if session is None:
+        # 7. miss → 用 username/password 换 session
+        session = await exchange_session(group.login_config, binding)
+        await redis.setex(cache_key, group.login_config["session_ttl"], session)
+
+    # 8. 按 group.auth_type 注入
+    return {"auth_type": group.auth_type, "token": session,
+            "header_name": group.header_name}
 ```
-并移除 `user_info_url` 字段（随 ApiKey 模型一起删）。
 
-#### (c) `resolve_user_id` 简化（`ext/__init__.py:24-40`）
+### 5.2 harness 层改造
 
-删掉 legacy 分支，统一返回 `principal.user_id`：
-```python
-def resolve_user_id(principal, visitor_id=None) -> str:
-    return principal.user_id  # 即 mcp_token_credentials._id
-```
-`visitor_id` 参数保留签名但不再使用（过渡期），后续可彻底移除。
-
-### 3.4 MCP 凭证兑换器（核心）
-
-#### (a) harness 新建 `CredentialResolver` Protocol
-
-**新文件**：`backend/packages/harness/src/agent_flow_harness/mcp/credential_resolver.py`
+#### CredentialResolver Protocol 改参数名
 
 ```python
-from typing import Any, Protocol
-
+# packages/harness/.../credential_resolver.py
 class CredentialResolver(Protocol):
-    """凭证解析器接口 —— 由 app 层实现并注入。
-
-    harness 调 MCP 工具前调 resolve()，拿当前用户在该 MCP 的绑定凭证。
-    返回 None 表示该用户未绑定该 MCP（由 interceptor 决定降级/报错）。
-    """
-
     async def resolve(
         self,
-        token_record_id: str,        # mcp_token_credentials._id
-        connection_config: dict[str, Any],  # 目标 MCP connection 配置（含 name/url/login_config 等）
+        platform_user_id: str,    # 平台用户 ID（原 token_record_id，只改名）
+        server_name: str,         # MCP 连接名
     ) -> dict[str, Any] | None:
-        """返回 {"auth_type": ..., **凭证字段} 如：
-        - {"auth_type":"bearer","token":"xxx"}
-        - {"auth_type":"basic","username":"u","password":"p"}
-        返回 None = 未绑定。"""
         ...
 ```
 
-**harness 不 import 任何 app 模块**，保持可独立发布。app 层实现此接口并注入。
+> 现状签名是 `resolve(token_record_id, server_name)`，只改第一个参数名为 `platform_user_id`。不加 fallback_token，不需要降级。
 
-#### (b) harness 改造 `_user_token_interceptor`（`loader.py:196`）
-
-**新增 ContextVar**：`backend/packages/harness/src/agent_flow_harness/mcp/user_token_context.py` 新增 `token_record_id`：
-
-```python
-_token_record_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
-    "mcp_token_record_id", default=None
-)
-def set_token_record_id_context(record_id): return _token_record_id_ctx.set(record_id)
-def reset_token_record_id_context(token): _token_record_id_ctx.reset(token)
-def get_token_record_id_context() -> str | None: return _token_record_id_ctx.get()
-```
-
-**模块级注入点**（`loader.py`）：
-```python
-_resolver: CredentialResolver | None = None
-
-def set_credential_resolver(r: CredentialResolver) -> None:
-    global _resolver
-    _resolver = r
-```
-
-**改造 interceptor**（`loader.py:196-212`）—— 关键的分流逻辑：
+#### interceptor 改造（`loader.py`）
 
 ```python
 async def _user_token_interceptor(request, handler):
-    record_id = get_token_record_id_context()
+    platform_user_id = get_token_record_id_context()
 
-    # ① 内部路径（record_id 为空）：不介入，透传，用 connection 静态 auth_config
-    if not record_id or _resolver is None:
+    # 内部路径（platform_user_id 为空）→ 不介入
+    if not platform_user_id or _resolver is None:
         return await handler(request)
 
-    # ② 外部路径（record_id 有值）：兑换该用户绑定的凭证
-    connection_config = _extract_connection_config(request)  # 从 request/工具名提取
-    cred = await _resolver.resolve(record_id, connection_config)
+    server_name = getattr(request, "server_name", "") or ""
+    cred = await _resolver.resolve(platform_user_id, server_name)
 
     if cred is None:
-        # 未绑定 → 报错（外部路径不允许降级，区别于内部路径）
-        raise PermissionError(
-            f"用户未绑定该 MCP 服务({connection_config.get('name')})，"
-            f"请联系 admin 绑定凭证。"
-        )
+        # 未绑定 / MCP 不在任何组 → 返回 isError 给 Agent（不阻断对话）
+        return _make_error_result(f"用户未绑定该 MCP 服务({server_name})，请在设置页绑定")
 
-    # 按 auth_type 构造 header（复用 _build_auth_headers 逻辑）
     headers = _cred_to_headers(cred)
+    if not headers:
+        return await handler(request)
+
     overridden = request.override(headers=headers)
     return await handler(overridden)
 ```
 
-`_cred_to_headers` 复用 `loader.py:160-178` 的 `_build_auth_headers` 已有逻辑（bearer/api_key/basic 三种）。
+> **关键变化**：
+> - `fallback_token` 从 ContextVar 取（`get_user_token_context`），作为参数传入
+> - 未绑定返回 isError（现状已是此行为，不变）
+> - MCP 不在任何组时用 fallback_token（新增降级逻辑，在 resolve 内部处理）
 
-#### (c) app 新建 `UserCredentialResolver`
+### 5.3 session 缓存
 
-**新文件**：`backend/app/engine/mcp/user_credential_resolver.py`
+| 维度 | 值 |
+|---|---|
+| Redis key | `mcp:session:{platform_user_id}:{mcp_group_id}` |
+| TTL | `group.login_config.session_ttl` |
+| 失效时机 | 用户改绑 / admin 改组 login_config |
+| 清理 | service 层在 update/delete 时联动清缓存（SCAN `{platform_user_id}:*`） |
 
-```python
-class UserCredentialResolver:
-    """app 层实现：查 mcp_token_credentials，解密，账密型换 session。"""
+---
 
-    async def resolve(self, token_record_id, connection_config) -> dict | None:
-        # 1. 查记录
-        record = await McpTokenCredentialService.get_record(token_record_id)
-        if not record:
-            return None
-        conn_id = connection_config["id"]
-        binding = record["mcp_bindings"].get(conn_id)
-        if not binding:
-            return None  # 未绑定该 MCP
+## 6. sub 组合规则（代码写死）
 
-        # 2. 按形态兑换
-        if binding["credential_type"] == "token":
-            return self._resolve_token(binding)           # 解密直返
-        elif binding["credential_type"] == "password":
-            return await self._resolve_password(          # 换 session（带缓存）
-                token_record_id, conn_id, binding, connection_config
-            )
-```
-
-**`_resolve_password` 逻辑**（账密型，带 Redis 缓存）：
-```
-1. cache_key = f"mcp:session:{record_id}:{conn_id}"
-2. cached = redis.get(cache_key)；命中 → 返回 {"auth_type":..., "token":cached}
-3. miss → 取 connection.login_config + 解密后的 username/password
-   → POST login_url（body_template 渲染占位）
-   → 按 token_jsonpath 从响应取 session token
-   → redis.setex(cache_key, session_ttl, session_token)
-   → 返回 {"auth_type":..., "token":session_token}
-4. 登录失败 → 透传错误给用户（"MCP 登录失败：<目标系统返回>"）
-```
-
-**启动注入**（`app/main.py` 或 `context.py` 初始化处）：
-```python
-from agent_flow_harness.mcp.loader import set_credential_resolver
-from app.engine.mcp.user_credential_resolver import UserCredentialResolver
-
-set_credential_resolver(UserCredentialResolver())  # 应用启动调用一次
-```
-
-#### (d) `resolve_harness_context` 改造（`context.py:265-`）
-
-现状（`context.py:400-402`）：`set_user_token_context(user_token)`。
-
-改造：外部路径额外 set `token_record_id`；内部路径（无 user_token）不 set：
+introspection 和 login_url 返回的用户信息按固定规则组合成 sub，确保两边对上：
 
 ```python
-if user_token:
-    set_user_token_context(user_token)
-    # user_id 在外部路径 = principal.user_id = mcp_token_credentials._id
-    set_token_record_id_context(state.get("user_id"))
-# 内部路径：user_token 为 None，不 set record_id → interceptor 自动降级静态凭证
+# 固定组合规则（代码写死，不做可配置）
+def compose_sub(username: str, user_id: str) -> str:
+    return f"{username}:{user_id}"
 ```
 
-### 3.5 Workflow 路径打通（断点 A/B/C）
+**introspection 响应 → sub**：
+```python
+result = await UserAuthService.introspect(introspect_url, user_token)
+sub = compose_sub(result.username, result.sub)
+```
 
-当前 Workflow 触发路径有三处断点（详见探索结论）：
+**login_url 响应 → sub**（绑账密时）：
+```python
+login_resp = await do_login(group.login_config, username, password)
+user_id = extract_jsonpath(login_resp, group.login_config["userid_jsonpath"])
+user_name = extract_jsonpath(login_resp, group.login_config["username_jsonpath"])
+sub = compose_sub(user_name, user_id)
+```
 
-| 断点 | 位置 | 问题 | 修复 |
-|---|---|---|---|
-| **A** | `ext/workflows.py:168` + `task_service.py` | 外部触发 Workflow 时 `created_by = owner_user_id`，丢弃了 user_token / 记录 id | 把 `principal.user_token` + `principal.token_record_id` 透传到 task 文档 → Celery worker |
-| **B** | `node_executor.py:427` AgentNodeExecutor | 调 `invoke()` 时没传 user_token（对比 Agent 会话路径 `ext/agents.py:156` 有传） | 从 task 取出 user_token + record_id，传入 `invoke` / `stream` |
-| **C** | `mcp_tool_cache.py` vs `loader.py` | app 版 `mcp_tool_cache.py`（Workflow 用）无 interceptor；harness 版 `loader.py`（Agent 会话用）有 | **废弃 `mcp_tool_cache.py`**，`context.py:_resolve_mcp_tools` 改走 harness `McpToolLoader`，统一两套实现 |
+两边组合规则一致 → 同一个用户在同一次绑定时建立的 sub，和运行时 introspection 返回的组合结果相同。
 
-**内部触发的 Workflow**（studio 测试）：task 无 user_token → 不 set ContextVar → 走静态凭证，与内部 Agent 测试一致。
+---
 
-### 3.6 admin 管理 API（新建）
+## 7. API 设计
 
-**路由**：`/api/v1/mcp-tokens`，平台 JWT 鉴权（`require_permission`，admin only）。
+### 7.1 admin API — MCP 分组管理（`/api/v1/mcp-categories`，平台 JWT）
+
+> 复用已实现的 `mcp_categories` API，扩展 `login_config` / `auth_type` / `header_name` 字段的 CRUD。
+
+### 7.2 用户自服务 API — 凭证绑定（`/api/v1/my-mcp-credentials`）
+
+用户登录平台后，自行管理跨域 MCP 组的凭证绑定。**绑定时自动建立 external_identities 映射。**
 
 | 方法 | 路径 | 作用 |
 |---|---|---|
-| `POST` | `/mcp-tokens` | 创建（name + mcp_bindings），**通用 token 仅此一次明文返回** |
-| `GET` | `/mcp-tokens` | 列表（分页，凭证字段 mask `***`） |
-| `GET` | `/mcp-tokens/{id}` | 详情（凭证 mask） |
-| `PUT` | `/mcp-tokens/{id}` | 改 name / status / 增删改 mcp_bindings |
-| `DELETE` | `/mcp-tokens/{id}` | 吊销删除 |
-| `POST` | `/mcp-tokens/{id}/rotate` | 轮换 token 值（旧 token 立即失效） |
+| GET | `/my-mcp-credentials` | 查看自己已绑定的组（凭证 mask） |
+| GET | `/my-mcp-credentials/available-groups` | 查看可绑定的 MCP 组列表 |
+| PUT | `/my-mcp-credentials/{group_id}` | 绑定/更新某组的账密（★ 调 login_url 验证 + 提取 sub + 写映射） |
+| DELETE | `/my-mcp-credentials/{group_id}` | 解绑某组（★ 同时删 external_identities 对应 sub） |
 
-**凭证 mask**：响应里 `enc:` 字段返回 `***`（参考 `mcp_connection_service.py` 的 `_mask_auth_config`）。
+**鉴权**：平台 JWT（`get_current_user`），`user.id` = `platform_user_id`。
 
-**副作用**：改绑 / 轮换 token / 禁用记录时，清相关缓存：
-- Redis `mcp:session:{record_id}:{conn_id}`（账密型 session）
-- MCP 工具缓存（`loader.py` 的 `McpToolLoader.invalidate`）
+**PUT 绑定时内部流程**：
+```
+1. 从 group 拿 login_config
+2. 调 login_url（验证账密）
+3. 失败 → 返回错误
+4. 成功 → 提取 userId + userName → 组合 sub
+5. 写 external_identities（sub → platform_user_id）
+6. 加密账密 → 写 user_mcp_credentials.group_bindings[group_id]
+7. 清该组的 session 缓存
+```
 
----
+### 7.3 admin API — 用户凭证代管（`/api/v1/mcp-credentials`，平台 JWT，admin only）
 
-## 4. 复用 / 新建 / 废弃 总表
+admin 可代用户绑定凭证（批量上线场景）。
 
-| 能力 | 现状 | 处理 |
+| 方法 | 路径 | 作用 |
 |---|---|---|
-| 内部路径 `/v1/agents/*` + 平台 JWT | `get_current_user` | **完全不变**（studio 测试不受影响） |
-| 外部路径 `/ext/*` + API Key + scope + bindings | `get_api_key_principal` | **复用**（接入方维度不变） |
-| MCP header 构造（bearer/api_key/basic） | `mcp_client.py:_build_headers` | **复用** |
-| 凭证加解密 | `app/core/crypto.py` + `enc:` 前缀模式 | **复用** |
-| user_token → MCP 管道（ContextVar + interceptor） | `user_token_context.py` + `loader.py:196` | **复用管道，改 interceptor**（加 record_id 分流） |
-| 外部 introspection 回调 | `user_info_url` / `UserAuthService` / `introspection_cache` | **废弃** |
-| `visitor_id` 兼容模式 | `resolve_user_id` legacy 分支 | **废弃** |
-| (用户 × MCP) 绑定存储 | 不存在 | **新建** `mcp_token_credentials` |
-| 通用 token 签发 + 本地校验 | 不存在 | **新建** |
-| 账密登录换 session | 不存在 | **新建**（`login_config` + Redis 缓存） |
-| admin token 管理 API | 不存在 | **新建** `/v1/mcp-tokens` |
-| 两套 MCP 加载实现 | app 版 `mcp_tool_cache.py` / harness 版 `loader.py` 分裂 | **统一到 harness 版** |
+| GET | `/mcp-credentials?platform_user_id=xxx` | 查看某用户的绑定 |
+| PUT | `/mcp-credentials/{platform_user_id}/{group_id}` | 代用户绑定（同样调 login_url 验证） |
+| DELETE | `/mcp-credentials/{platform_user_id}/{group_id}` | 代用户解绑 |
 
 ---
 
-## 5. 分阶段任务拆解
+## 8. 前端变更
 
-### 阶段 1：终端用户认证改造 + token 型兑换（外部 `/ext` 路径）
+### 8.1 `chat-widget.js` — 删除登录面板
 
-1. **新建 `mcp_token_credentials` 模型 + service**
-   - 模型 `models/mcp_token_credential.py`、service `services/mcp_token_credential_service.py`
-   - 实现：CRUD、凭证加解密（`enc:`）、mask、通用 token 生成（`secrets.token_urlsafe` + `meper_` 前缀）、`verify_token(token) -> record | None`（本地校验）
-2. **新建 admin API `/v1/mcp-tokens`**（含 mask、rotate）
-3. **改造 `get_api_key_principal`**（`auth_apikey.py:163-184`）：删 introspection 回调分支，改本地查 token
-4. **`resolve_user_id` 删 legacy 分支**（`ext/__init__.py:24-40`）
-5. **删/废弃**：`user_info_url` 字段、`UserAuthService.introspect`、`introspection_cache`、`user_auth_state`、`visitor_id` 分支
-6. **harness 新建 `CredentialResolver` Protocol**（`credential_resolver.py`）
-7. **harness 改造 `_user_token_interceptor`**（`loader.py:196`）：加 `token_record_id` ContextVar + 分流逻辑 + `set_credential_resolver` 注入点
-8. **harness 新增 `token_record_id` ContextVar**（`user_token_context.py`）
-9. **app 新建 `UserCredentialResolver`（token 型）**（`engine/mcp/user_credential_resolver.py`）+ 启动注入
-10. **`resolve_harness_context` 改造**（`context.py:400`）：外部路径 set `token_record_id`
-11. **归档 `external-user-auth-design.md`**
-12. **验收 1（内部）**：studio 后台测 agent 调 MCP → 仍用静态 auth_config，行为不变 ✓
-13. **验收 2（外部）**：admin 建 token + 绑 token 型 MCP → 用户用 token 调 agent → MCP 收到的是绑定 token；调未绑定的 MCP → 报错提示绑定 ✓
+回到纯 cookie 方案：
+- 删除 `loginPanel` / `loginInput` / `loginButton` 相关逻辑
+- `resolveUserToken()`：只读 cookie `x-mep-token`
+- 清理 `config.userToken` 注入渠道 + `token_invalid` 消息监听联动
+- 用户零操作
 
-### 阶段 2：账密型 + session 缓存
+### 8.2 frontend-studio — MCP 凭证设置页
 
-14. **`McpConnection` 加 `login_config` 字段**（`models/mcp_connection.py`）+ studio UI 配置入口
-15. **`UserCredentialResolver` 加账密分支**：Redis session 缓存 + POST login_url + token_jsonpath 提取 + 错误透传
-16. **验收**：admin 绑账密型 MCP → 用户调 agent → 自动登录换 session → MCP 调通；session 过期后自动重登 ✓
-
-### 阶段 3：Workflow 路径 + 实现统一
-
-17. **废弃 `mcp_tool_cache.py`**，`context.py:_resolve_mcp_tools` 改走 harness `McpToolLoader`（统一 + 让 Workflow 支持兑换）
-18. **修断点 A**：`ext/workflows.py` + `task_service.py` 把 user_token + token_record_id 透传到 task → worker
-19. **修断点 B**：`node_executor.py:427` AgentNodeExecutor 从 task 取 user_token 传入 `invoke`/`stream`
-20. **验收**：外部触发 Workflow → 用绑定凭证调 MCP；内部触发 Workflow → 用静态凭证 ✓
-
-### 阶段 4（前端，可选）
-
-21. studio token 管理 UI（admin 创建/绑定/轮换）
-22. client 端通用 token 填写
+参考 [`agent-access-hub.html`](./agent-access-hub.html) Mock，新增设置页：
+- **路由**：`/settings/mcp-credentials`
+- **功能**：
+  - 展示可用的 MCP 组卡片（组名、包含的 MCP、认证方式）
+  - 用户点击组卡片 → 弹窗填 username/password → 绑定
+  - 绑定时前端调 PUT `/my-mcp-credentials/{group_id}`
+  - 已绑定的组显示状态 + "重新认证" / "解绑" 按钮
+- **数据源**：`GET /my-mcp-credentials/available-groups` + `GET /my-mcp-credentials`
 
 ---
 
-## 6. 默认决策（可调整）
+## 9. 复用 / 新建 / 废弃 总表
+
+| 能力 | 处理 |
+|---|---|
+| 内部路径 `/v1/agents/*` + 平台 JWT | **不变** |
+| 外部路径 `/ext/*` + API Key | **复用**（接入方维度不变） |
+| MCP header 构造（bearer/api_key/basic） | **复用** `loader.py:_cred_to_headers` |
+| 凭证加解密 `enc:` + AES-256-GCM | **复用** `app/core/crypto.py` |
+| ContextVar + interceptor 管道 | **复用管道，改 interceptor 参数名（token_record_id → platform_user_id）** |
+| 旧版 `UserAuthService` + `introspection_cache` | **恢复使用**（v1 废弃了，v3 重新启用） |
+| v1 的 `meper_xxx` 自签 token | **废弃** |
+| v1 的 `mcp_token_credentials` 模型 | **改造**为 `user_mcp_credentials`（改 group_bindings，查询 key 改 platform_user_id） |
+| v1 的 `verify_token` 本地校验 | **废弃**（被 introspection 替代） |
+| v1 的 `McpTokenCredentialService` | **改造**为 `UserMcpCredentialService` |
+| McpConnection 的 `login_config` | **迁移到 McpGroup** |
+| 现有 `McpCategory`（mcp_categories） | **扩展**（加 login_config/auth_type/header_name，承担 MCP 组职责） |
+| `external_identities` | **新建**（sub → platform_user_id 映射） |
+| `ApiKey.introspect_url` | **新增** |
+| 用户自服务绑定 API `/my-mcp-credentials` | **新建** |
+| `chat-widget.js` 登录面板 | **删除**（回到纯 cookie） |
+| studio 凭证设置页 | **新建** |
+
+---
+
+## 10. 分阶段任务拆解
+
+### 阶段 1：身份识别 + 基础模型
+
+1. **`external_identities` 模型 + service**
+   - `models/external_identity.py`、`services/external_identity_service.py`
+   - `find_by_sub(sub)` → 返回 platform_user_id
+2. **`ApiKey` 加 `introspect_url`**
+3. **恢复 `UserAuthService` + introspection_cache 到主链路**
+4. **`get_api_key_principal` 改造**：verify_token → introspection → sub 组合 → external_identities 查询
+   - **登录时检查**：映射不存在 → 401
+5. **sub 组合规则函数**（代码写死 `compose_sub`）
+6. **验收**：外部请求 → introspection → sub → external_identities → platform_user_id 正确解析
+
+### 阶段 2：MCP 组 + 凭证模型
+
+7. **`McpCategory` 扩展**（加 login_config / auth_type / header_name）
+8. **McpConnection.login_config 迁移到 McpGroup**（数据迁移）
+9. **`user_mcp_credentials` 模型改造**
+   - 原 `mcp_token_credentials` → `group_bindings`（per-Group）+ `platform_user_id` 查询键
+10. **`UserMcpCredentialService`**
+    - `get_binding(platform_user_id, group_id)`
+    - 绑定时调 login_url 验证 + 提取 sub + 写 external_identities
+11. **验收**：用户绑组凭证 → login_url 验证成功 → external_identities 自动生成
+
+### 阶段 3：凭证解析器
+
+12. **harness `CredentialResolver` 改参数**（加 `fallback_token`）
+13. **harness interceptor 改**（取 fallback_token，MCP 不在组时降级）
+14. **app `UserCredentialResolver` 改造**
+    - server_name → conn_id → category_id → group → group_bindings
+    - 不在任何组 → 用 fallback_token
+    - 在组里没绑 → 返回 None（interceptor 生成 isError）
+    - 在组里绑了 → 换 session（Redis 缓存 + group.login_config）
+15. **验收 1**：同域 MCP（不在组里）→ 接入方 token 直传 ✓
+16. **验收 2**：跨域 MCP（在组里）+ 用户已绑 → session 换取 ✓
+17. **验收 3**：跨域 MCP（在组里）+ 用户未绑 → isError 给 Agent ✓
+18. **验收 4**：从 A 进来调 B 的 MCP → 跨域穿透 ✓
+
+### 阶段 4：前端
+
+19. **`chat-widget.js` 删登录面板**
+20. **studio MCP 凭证设置页**（参考 agent-access-hub.html）
+21. **用户自服务 API** `/api/v1/my-mcp-credentials`
+22. **验收**：用户在设置页绑组 → 调 agent → 跨域 MCP 可访问 ✓
+
+### 阶段 5：Workflow 路径打通
+
+23. Workflow 节点执行时 `token_record_id_context` 注入适配（platform_user_id）
+24. **验收**：外部触发 Workflow → 凭证解析正常 ✓
+
+---
+
+## 11. 默认决策
 
 | 决策点 | 选择 | 理由 |
 |---|---|---|
-| 通用 token 形态 | 随机不透明串 + 本地校验 | 符合"身份标识"定位；不走 JWT，无需密钥分发；DB 查询可接受（可加进程内短 TTL 缓存） |
-| 兑换触发条件 | `token_record_id` ContextVar 有值 | 内部路径天然不触发，无需给 agent 打"内部/外部"标签 |
-| 外部路径未绑定 | 报错（不降级） | 外部用户必须显式绑定；区别于内部路径的宽松 |
-| 内部路径凭证 | 永远用 connection 静态 auth_config | 测试体验不变 |
-| session 缓存 | Redis，key=`mcp:session:{record_id}:{conn_id}` | 避免每次调用都重登；TTL 从 `login_config.session_ttl` |
-| 一张表 vs 两张表 | 一张表 `mcp_token_credentials` | 通用 token 直接挂绑定，无中间映射，符合需求 |
-| 部门/租户 | 不涉及 | 本方案不含 |
+| 身份识别 | introspection 回调 | 用户零操作，接入方已有 token |
+| 身份归一 | external_identities（sub → platform_user_id） | 跨域穿透的核心 |
+| sub 来源 | 绑账密时从 login_url 响应自动提取 | 用户不手填 sub |
+| sub 组合规则 | `username:userId`（代码写死） | introspection 和 login_url 两边对上 |
+| sub 唯一性 | 唯一索引兜底 | userId+username 组合保证跨用户不撞名 |
+| 凭证类型 | 只有账密 | 用账密换 session 调 MCP |
+| 凭证归属 | `platform_user_id` | 跟平台用户走，跨域穿透 |
+| 凭证粒度 | per-Group | 同身份域 MCP 归一组，一次绑定整组通用 |
+| MCP 组 | 复用 McpCategory 扩展 | 避免两套分组概念打架 |
+| 未绑定（登录时） | 401 拒绝 | 没有 platform_user_id 后续全断 |
+| 未绑定（执行 MCP 时） | isError 给 Agent | 单个工具失败，不阻断对话 |
+| 不在任何组的 MCP | isError（配置不完整） | 所有 MCP 都必须在组里，没有降级 |
+| session 缓存 | Redis per platform_user per group | 避免每次调用都重登 |
+| introspection 缓存 | Redis fresh + stale fallback（复用旧版） | 减少回调压力 + 容灾 |
+| 绑定操作 | 用户自服务（平台设置页） | 不依赖 admin 代绑 |
 
 ---
 
-## 7. 风险与权衡
+## 12. 风险与权衡
 
-### 7.1 破坏性变更与迁移
-- **废弃 introspection 回调是破坏性的**。现有依赖 `user_info_url` 的接入方必须迁移到通用 token 模式（admin 为其终端用户创建 `mcp_token_credentials` 记录并下发 token）。
-- **迁移说明**（写入实施文档）：对每个现有 `api_keys.user_info_url` 非空的接入方，admin 需为其终端用户在 MEPER 建通用 token 记录，绑定对应 MCP 凭证，把下发的 `meper_xxx` token 交给前端填入 `X-User-Token`。
+### 12.1 introspection 可用性
+- 接入方 introspection 端点不可用 → 外部请求全部 401
+- **缓解**：Redis 两级缓存（fresh + stale fallback，复用旧版 `introspection_cache`）
 
-### 7.2 安全
-- 凭证 AES-256-GCM 加密存储（`enc:` 前缀），运行时仅在内存，**不入日志**（参考 `user_token_context.py` 的注释原则）。
-- 通用 token 仅创建时明文返回一次，后续只存哈希/只比对原文（实施时决定：存 token 原文用于本地校验，还是存哈希 + 校验时比对——倾向存原文因为要当查询 key，但 DB 访问受限环境需评估）。
-- 支持轮换（`/rotate`，旧 token 立即失效）与吊销（`DELETE` / `status=disabled`）。
+### 12.2 sub 组合一致性
+- introspection 和 login_url 返回的字段名可能不同 → 组合不出同一个 sub
+- **缓解**：`login_config` 上配 `userid_jsonpath` / `username_jsonpath`，指定从哪个路径取；组合规则代码写死保证一致
 
-### 7.3 向后兼容
-- **现有 MCP connection 零改造**：内部路径仍用静态 `auth_config`。
-- **现有外部 introspection 接入方**：需迁移（见 7.1），但有明确路径。
+### 12.3 安全
+- 凭证 AES-256-GCM 加密存储（`enc:` 前缀），**不入日志**
+- 接入方原始 token 仅内存传递，不落库
+- introspection 通过 HTTPS
 
-### 7.4 harness 独立性
-- 通过 `CredentialResolver` Protocol 注入，harness 不 import 任何 app 模块，**保持可独立发布**。
+### 12.4 session 缓存一致性
+- 用户改绑 / admin 改组 login_config 时，必须清 Redis session
+- service 层在 update/delete 时联动清缓存
 
-### 7.5 session 缓存一致性
-- 账密改绑、`login_config` 变更、token 轮换/禁用时，必须清相关 Redis session 缓存（service 层在 update/delete/rotate 时联动）。
-
-### 7.6 interceptor 拿目标 connection 标识（实施时首步验证）
-- `_user_token_interceptor` 需从 `request` 提取目标 MCP 的 connection 标识（server name / id）才能查绑定。
-- **待验证**：`langchain-mcp-adapters` 的 interceptor `request` 对象能否暴露当前工具名 / 连接名。
-- **降级方案**：若拿不到，则把 `connection_config`（含 id/name/login_config）在工具加载时绑定进 resolver 的调用上下文，或通过额外 ContextVar 传递当前 conn_id。
-
-### 7.7 性能
-- **外部路径**：每次 MCP 调用 +1 次 DB 查询（绑定）+ 可能 +1 次 Redis 查询（账密型 session）。
-- **内部路径**：零额外开销。
-- 可优化：进程内短 TTL 缓存绑定查询结果（key=`record_id:conn_id`，TTL 如 30s，改绑时主动清）。
-
----
-
-## 8. 待实施时确认的技术细节（不阻塞本方案）
-
-1. `langchain-mcp-adapters` interceptor request 结构（见 7.6）。
-2. Workflow task 里存 `user_token` / `token_record_id` 的安全考量：task 文档是否需要加密该字段，还是只在执行期内存传递（倾向后者：存到 task 的 `ext_metadata`，执行完即用即弃）。
-3. 通用 token 在 `mcp_token_credentials` 是存原文还是哈希：存原文便于当查询 key，但泄露风险更高；存哈希则需额外的"token → record_id"索引。实施时权衡。
-4. `server_name` 与 `mcp_connection_id` 的关系：interceptor 拿到的是工具名 `mcp__{server}__{tool}` 里的 server（= connection name），而绑定 key 是 `mcp_connection_id`。需在 connection 加载时建立 name → id 的映射，或绑定也按 name 存（实施时定）。
+### 12.5 向后兼容
+- v1 的 `mcp_token_credentials` 需迁移为 `user_mcp_credentials`
+- v1 的 `meper_xxx` token 机制废弃，外部鉴权全面切换到 introspection
+- **迁移前提**：接入方已提供 introspection 端点；否则外部路径会 401
+- McpConnection 的 `login_config` 需迁移到 McpGroup

@@ -39,6 +39,11 @@ class ApiKeyCreate(BaseModel):
         le=10000,
         description="每分钟请求上限",
     )
+    introspect_url: str | None = Field(
+        default=None,
+        description="接入方 token introspection 端点（RFC 7662），用于外部用户身份识别",
+    )
+    app_id: str = Field(default="", description="绑定的应用 ID")
     expires_at: str | None = Field(
         default=None,
         description="过期时间（ISO 格式），null 表示永不过期",
@@ -52,6 +57,8 @@ class ApiKeyUpdate(BaseModel):
     scopes: list[str] | None = None
     bindings: ApiKeyBindingsSchema | None = None
     rate_limit: int | None = Field(default=None, ge=1, le=10000)
+    introspect_url: str | None = None
+    app_id: str | None = None
     expires_at: str | None = None
 
 
@@ -66,6 +73,8 @@ class ApiKeyResponse(BaseModel):
     bindings: ApiKeyBindingsSchema
     rate_limit: int
     status: ApiKeyStatus
+    introspect_url: str | None = None
+    app_id: str = ""
     expires_at: str | None
     last_used_at: str | None
     created_at: str
@@ -84,6 +93,8 @@ class ApiKeyCreateResponse(BaseModel):
     bindings: ApiKeyBindingsSchema
     rate_limit: int
     status: ApiKeyStatus
+    introspect_url: str | None = None
+    app_id: str = ""
     expires_at: str | None
     created_at: str
 

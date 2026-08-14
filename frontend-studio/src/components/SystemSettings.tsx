@@ -8,20 +8,23 @@ import {
 import { agentApi } from '../services/agent-api';
 import { workflowsApi } from '../services/workflows-api';
 import {
-  apiKeysApi, apiKeyKeys, ALL_API_KEY_SCOPES, SCOPE_LABELS,
-  type ApiKeyItem, type ApiKeyScope,
-  type ApiKeyCreatePayload, type ApiKeyCreateResponse, type ApiKeyUpdatePayload,
+  apiKeyApi, apiKeyKeys, ALL_API_KEY_SCOPES, SCOPE_LABELS,
+  type ApiKey,
+  type ApiKeyCreateInput, type ApiKeyCreated, type ApiKeyUpdateInput,
 } from '../services/api-keys-api';
+import { applicationApi, applicationKeys } from '../services/application-api';
 import { getErrorMessage } from '../lib/api-client';
 import { copyToClipboard } from '../lib/clipboard';
 
 /** Fields rendered in the detail panel — satisfied by both list items and the create response. */
 type KeyDetailLike = {
-  scopes: ApiKeyScope[];
+  scopes: string[];
   bindings: { agents: string[]; workflows: string[] };
   rate_limit: number;
   expires_at: string | null;
   key_prefix: string;
+  introspect_url?: string;
+  app_id?: string;
   created_at: string;
   last_used_at?: string | null;
   updated_at?: string;
@@ -45,25 +48,25 @@ export function SystemSettings() {
 
   // ── Key list (real backend) ───────────────────────────────
   const { data, isLoading, isFetching } = useQuery({
-    queryKey: apiKeyKeys.list(),
-    queryFn: () => apiKeysApi.list(),
+    queryKey: apiKeyKeys.lists(),
+    queryFn: () => apiKeyApi.list(),
   });
   const apiKeys = data?.items ?? [];
 
   // ── Create form state ─────────────────────────────────────
   const [name, setName] = useState('');
-  const [scopes, setScopes] = useState<Set<ApiKeyScope>>(
-    new Set<ApiKeyScope>(['agents:read', 'agents:invoke']),
-  );
+  const [scopes, setScopes] = useState<Set<string>>(new Set(['agents:read', 'agents:invoke']));
   const [rateLimit, setRateLimit] = useState(60);
   const [boundAgents, setBoundAgents] = useState<Set<string>>(new Set());
   const [boundWorkflows, setBoundWorkflows] = useState<Set<string>>(new Set());
   const [showBindings, setShowBindings] = useState(false);
+  const [formIntrospectUrl, setFormIntrospectUrl] = useState('');
+  const [formAppId, setFormAppId] = useState('');
   const [error, setError] = useState('');
-  const [createdKey, setCreatedKey] = useState<ApiKeyCreateResponse | null>(null);
+  const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const [copiedValue, setCopiedValue] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [editingKey, setEditingKey] = useState<ApiKeyItem | null>(null);
+  const [editingKey, setEditingKey] = useState<ApiKey | null>(null);
 
   // Agent/workflow option lists — always loaded (used by bindings picker AND detail name resolution).
   const { data: agentsData } = useQuery({
@@ -74,9 +77,15 @@ export function SystemSettings() {
     queryKey: ['api-keys', 'workflow-options'],
     queryFn: () => workflowsApi.list({ page: 1, page_size: 100 }),
   });
+  // Application list — used by the app-binding picker AND detail name resolution.
+  const { data: appsData } = useQuery({
+    queryKey: applicationKeys.lists(),
+    queryFn: () => applicationApi.list(),
+  });
 
   const agentName = (id: string) => agentsData?.items.find((a) => a.id === id)?.name ?? id;
   const workflowName = (id: string) => workflowsData?.items.find((w) => w.id === id)?.name ?? id;
+  const appName = (id: string) => appsData?.items.find((a) => a.id === id)?.name ?? id;
 
   const copy = (text: string) => {
     copyToClipboard(text);
@@ -85,22 +94,24 @@ export function SystemSettings() {
   };
 
   const createMutation = useMutation({
-    mutationFn: (payload: ApiKeyCreatePayload) => apiKeysApi.create(payload),
+    mutationFn: (payload: ApiKeyCreateInput) => apiKeyApi.create(payload),
     onSuccess: (res) => {
       setCreatedKey(res);
       qc.invalidateQueries({ queryKey: apiKeyKeys.lists() });
       setName('');
-      setScopes(new Set<ApiKeyScope>(['agents:read', 'agents:invoke']));
+      setScopes(new Set(['agents:read', 'agents:invoke']));
       setRateLimit(60);
       setBoundAgents(new Set());
       setBoundWorkflows(new Set());
+      setFormIntrospectUrl('');
+      setFormAppId('');
       setError('');
     },
     onError: (e) => setError(getErrorMessage(e, '创建失败，请重试')),
   });
 
   const revokeMutation = useMutation({
-    mutationFn: (id: string) => apiKeysApi.revoke(id),
+    mutationFn: (id: string) => apiKeyApi.revoke(id),
     onSuccess: () => qc.invalidateQueries({ queryKey: apiKeyKeys.lists() }),
   });
 
@@ -114,10 +125,12 @@ export function SystemSettings() {
       scopes: [...scopes],
       rate_limit: rateLimit,
       bindings: { agents: [...boundAgents], workflows: [...boundWorkflows] },
+      introspect_url: formIntrospectUrl.trim() || null,
+      app_id: formAppId,
     });
   };
 
-  const handleRevoke = (key: ApiKeyItem) => {
+  const handleRevoke = (key: ApiKey) => {
     if (!window.confirm(`确认撤销 Key「${key.name}」？撤销后该 Key 立即失效，且无法恢复。`)) return;
     revokeMutation.mutate(key.id);
   };
@@ -159,6 +172,9 @@ export function SystemSettings() {
           </div>
         </div>
         {renderRow('限流', `${info.rate_limit} 次/分`)}
+        {info.app_id !== undefined && renderRow('绑定应用', info.app_id ? appName(info.app_id) : '未绑定')}
+        {info.introspect_url !== undefined &&
+          renderRow('身份校验', info.introspect_url || '未配置', !!info.introspect_url)}
         {renderRow('过期时间', info.expires_at ? fmtDate(info.expires_at) : '永不过期')}
         {renderRow('创建时间', fmtDate(info.created_at))}
         {info.updated_at && renderRow('更新时间', fmtDate(info.updated_at))}
@@ -374,6 +390,40 @@ export function SystemSettings() {
               )}
             </div>
 
+            {/* introspection url */}
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#a1a1aa] font-sans">用户认证 Introspection URL</label>
+              <input
+                type="text"
+                value={formIntrospectUrl}
+                onChange={(e) => setFormIntrospectUrl(e.target.value)}
+                placeholder="https://partner.example.com/oauth/introspect"
+                maxLength={500}
+                className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
+              />
+              <p className="text-[10px] text-slate-600 font-sans">
+                接入方 token 校验端点（RFC 7662）。API 调用需携带 X-User-Token，平台按此端点校验终端用户身份
+              </p>
+            </div>
+
+            {/* app binding */}
+            <div className="space-y-1">
+              <label className="text-[11px] text-[#a1a1aa] font-sans">绑定应用</label>
+              <select
+                value={formAppId}
+                onChange={(e) => setFormAppId(e.target.value)}
+                className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans"
+              >
+                <option value="">不绑定</option>
+                {(appsData?.items ?? []).map((a) => (
+                  <option key={a.id} value={a.id}>{a.name}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-600 font-sans">
+                配置用户身份校验时必填——接入方系统与应用一一对应，外部用户身份按应用命名空间隔离
+              </p>
+            </div>
+
             {/* rate limit */}
             <div className="flex items-center gap-3">
               <label className="text-[11px] text-[#a1a1aa] font-sans shrink-0">每分钟请求上限</label>
@@ -575,19 +625,21 @@ export function SystemSettings() {
 /*  layout and amber-dark styling. PUT /api/v1/api-keys/{id}.             */
 /* ─────────────────────────────────────────────────────────────────────── */
 
-function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () => void }) {
+function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKey; onClose: () => void }) {
   const qc = useQueryClient();
 
   // ── form state, initialised from the key being edited ─────────────────
   const [name, setName] = useState(keyItem.name);
-  const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(keyItem.scopes));
+  const [scopes, setScopes] = useState<Set<string>>(new Set(keyItem.scopes));
   const [rateLimit, setRateLimit] = useState(keyItem.rate_limit);
   const [boundAgents, setBoundAgents] = useState<Set<string>>(new Set(keyItem.bindings.agents));
   const [boundWorkflows, setBoundWorkflows] = useState<Set<string>>(new Set(keyItem.bindings.workflows));
   const [showBindings, setShowBindings] = useState(false);
+  const [formIntrospectUrl, setFormIntrospectUrl] = useState(keyItem.introspect_url ?? '');
+  const [formAppId, setFormAppId] = useState(keyItem.app_id ?? '');
   const [error, setError] = useState('');
 
-  // agent / workflow option lists (same sources as the create form)
+  // agent / workflow / application option lists (same sources as the create form)
   const { data: agentsData } = useQuery({
     queryKey: ['api-keys', 'agent-options'],
     queryFn: () => agentApi.list({ page: 1, page_size: 100, status: 'all' }),
@@ -595,6 +647,10 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
   const { data: workflowsData } = useQuery({
     queryKey: ['api-keys', 'workflow-options'],
     queryFn: () => workflowsApi.list({ page: 1, page_size: 100 }),
+  });
+  const { data: appsData } = useQuery({
+    queryKey: applicationKeys.lists(),
+    queryFn: () => applicationApi.list(),
   });
 
   // close on Escape
@@ -607,7 +663,7 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
   }, [onClose]);
 
   const updateMutation = useMutation({
-    mutationFn: (payload: ApiKeyUpdatePayload) => apiKeysApi.update(keyItem.id, payload),
+    mutationFn: (payload: ApiKeyUpdateInput) => apiKeyApi.update(keyItem.id, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: apiKeyKeys.lists() });
       onClose();
@@ -625,6 +681,8 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
       scopes: [...scopes],
       rate_limit: rateLimit,
       bindings: { agents: [...boundAgents], workflows: [...boundWorkflows] },
+      introspect_url: formIntrospectUrl.trim() || null,
+      app_id: formAppId,
     });
   };
 
@@ -759,6 +817,40 @@ function EditKeyModal({ keyItem, onClose }: { keyItem: ApiKeyItem; onClose: () =
                 </div>
               </div>
             )}
+          </div>
+
+          {/* introspection url */}
+          <div className="space-y-1">
+            <label className="text-[11px] text-[#a1a1aa] font-sans">用户认证 Introspection URL</label>
+            <input
+              type="text"
+              value={formIntrospectUrl}
+              onChange={(e) => setFormIntrospectUrl(e.target.value)}
+              placeholder="https://partner.example.com/oauth/introspect"
+              maxLength={500}
+              className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans placeholder-slate-600"
+            />
+            <p className="text-[10px] text-slate-600 font-sans">
+              接入方 token 校验端点（RFC 7662）。API 调用需携带 X-User-Token，平台按此端点校验终端用户身份
+            </p>
+          </div>
+
+          {/* app binding */}
+          <div className="space-y-1">
+            <label className="text-[11px] text-[#a1a1aa] font-sans">绑定应用</label>
+            <select
+              value={formAppId}
+              onChange={(e) => setFormAppId(e.target.value)}
+              className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 text-xs focus:outline-none focus:border-amber-400 transition font-sans"
+            >
+              <option value="">不绑定</option>
+              {(appsData?.items ?? []).map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-slate-600 font-sans">
+              配置用户身份校验时必填——接入方系统与应用一一对应，外部用户身份按应用命名空间隔离
+            </p>
           </div>
 
           {/* rate limit */}
