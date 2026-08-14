@@ -104,9 +104,13 @@ async def list_app_tools(
     configurable (``configurable=false``). They are shown in the tool
     center for discoverability but cannot be toggled off.
     """
+    from app.engine.agent.chart_tool import _CHART_TOOLS
     from app.engine.agent.workflow_executor import _TASK_TOOLS
 
-    return [_basetool_to_response(tool, configurable=False) for tool in _TASK_TOOLS]
+    return [
+        _basetool_to_response(tool, configurable=False)
+        for tool in [*_TASK_TOOLS, *_CHART_TOOLS]
+    ]
 
 
 @router.get(

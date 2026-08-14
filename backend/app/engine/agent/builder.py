@@ -104,7 +104,30 @@ async def build_tool_declaration(agent: dict) -> str:
     task_decl = _build_task_tool_declaration()
     sections.append(task_decl)
 
+    sections.append(_build_chart_tool_declaration())
+
     return "\n".join(sections) if sections else ""
+
+
+def _build_chart_tool_declaration() -> str:
+    """Build the data visualization (render_chart) declaration section."""
+    lines = [
+        "",
+        "## Data Visualization Tools",
+        "",
+        "You have access to the following chart tool. When data would be clearer",
+        "as a picture than as text or a table — comparisons, trends, proportions,",
+        "or scatter correlations — call it instead of printing raw numbers.",
+        "",
+        "- **render_chart(type, data, title?, chart_config?)**: Generate an echarts chart",
+        "  (bar/line/area/pie/scatter) that renders inline in the chat. For pie pass",
+        "  `{names: [...], values: [...]}`; for other types pass",
+        "  `{categories: [...], series: [{name, data: [...]}]}`. The chart renders",
+        "  directly from this tool's result — do NOT write the option JSON to a file",
+        "  or call write_to_output afterwards.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 async def _build_kb_declaration(kb_ids: list[str]) -> str:

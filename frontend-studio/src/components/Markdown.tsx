@@ -1,7 +1,9 @@
-import { memo } from 'react';
+import { isValidElement, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+
+import { EChartBlock } from './EChartBlock';
 
 /**
  * Streaming-aware Markdown renderer for chat bubbles.
@@ -13,6 +15,10 @@ import rehypeHighlight from 'rehype-highlight';
  * incomplete fenced code block (```) will swallow everything after it until
  * the fence closes. `closeIncompleteBlocks` patches that up before parsing
  * so the bubble stays readable while tokens are still arriving.
+ *
+ * ```echarts fenced blocks (render_chart tool or hand-written by the agent)
+ * render as charts via EChartBlock; a partial option shows a
+ * "rendering…" placeholder until the JSON is complete.
  */
 
 export interface MarkdownProps {
@@ -32,6 +38,26 @@ export const Markdown = memo(function Markdown({ content }: MarkdownProps) {
           a: ({ node, ...props }) => (
             <a {...props} target={props.href?.startsWith('http') ? '_blank' : undefined} rel="noreferrer" />
           ),
+          // ```echarts / ```chart fenced block → chart (EChartBlock handles
+          // streaming-partial and malformed options internally).
+          code: ({ className, children, ...props }) => {
+            const language = /language-([^\s]+)/.exec(className ?? '')?.[1];
+            if (language === 'echarts' || language === 'chart') {
+              return <EChartBlock option={String(children).replace(/\n$/, '')} />;
+            }
+            return (
+              <code className={className} {...props}>
+                {children}
+              </code>
+            );
+          },
+          // Unwrap <pre> around chart blocks (EChartBlock brings its own container).
+          pre: ({ children, ...props }) =>
+            isValidElement(children) && children.type === EChartBlock ? (
+              children
+            ) : (
+              <pre {...props}>{children}</pre>
+            ),
         }}
       >
         {safe}
