@@ -24,12 +24,11 @@ import { userApi } from '../services/user-api'
 import { useAuthStore } from '../stores/auth-store'
 import { TASK_STATUS_STYLES } from '../constants/task-status'
 import { TaskBoardCard } from './task/TaskBoardCard'
-import { TaskDetailDrawer } from './task/TaskDetailDrawer'
 import { Modal, Select, Button } from './ui'
 import { confirmDialog } from './ui/confirm'
 import { getErrorMessage } from '../lib/api-client'
 
-export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
+export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light' | 'dark'; onOpenTaskDetail?: (taskId: string) => void }) {
   const qc = useQueryClient()
   const permissions = useAuthStore((s) => s.user?.permissions ?? [])
   const canReadUsers = permissions.includes('user:read')
@@ -45,9 +44,6 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [newTask, setNewTask] = useState<{ entryId: string; input: string }>({ entryId: '', input: '' })
   const [actionError, setActionError] = useState<string | null>(null)
-
-  /* ─── Detail drawer state ─── */
-  const [detailTaskId, setDetailTaskId] = useState<string | null>(null)
 
   /* ─── 6 列并发列表查询（按 status 分桶，刷新由 WS task_status 事件驱动） ─── */
   const boardQueries = useQueries({
@@ -174,7 +170,6 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
       tasksApi.intervene(vars.taskId, { action: vars.action, version: vars.version, comment: vars.comment }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: taskKeys.lists() })
-      if (detailTaskId) qc.invalidateQueries({ queryKey: taskKeys.detail(detailTaskId) })
     },
     onError: (e) => setActionError(`操作失败：${getErrorMessage(e)}`),
   })
@@ -183,7 +178,6 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
     mutationFn: (taskId: string) => tasksApi.remove(taskId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: taskKeys.lists() })
-      if (detailTaskId) qc.invalidateQueries({ queryKey: taskKeys.detail(detailTaskId) })
     },
     onError: (e) => setActionError(`删除失败：${getErrorMessage(e)}`),
   })
@@ -227,20 +221,6 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
     intervene.mutate({ taskId: task.id, action, version: task.version, comment: isCommentEmpty(comment) ? undefined : comment })
   }, [intervene])
 
-  const handleApprove = useCallback((task: TaskSummary | TaskDetail, comment: CommentValue) => {
-    intervene.mutate({ taskId: task.id, action: 'approve', version: task.version, comment: isCommentEmpty(comment) ? undefined : comment })
-  }, [intervene])
-
-  const handleReject = useCallback((task: TaskSummary | TaskDetail, comment: CommentValue) => {
-    intervene.mutate({ taskId: task.id, action: 'reject', version: task.version, comment: isCommentEmpty(comment) ? undefined : comment })
-  }, [intervene])
-
-  // resume：waiting_human 且 checkpoint 无人工决策 options 时，推进继续执行（对齐 legacy-antd）。
-  // 后端 action='resume' → WAITING_HUMAN → RUNNING + resume_task_execution（tasks.py:312-323）。
-  const handleResume = useCallback((task: TaskSummary | TaskDetail) => {
-    intervene.mutate({ taskId: task.id, action: 'resume', version: task.version })
-  }, [intervene])
-
   const handleDelete = useCallback(async (task: TaskSummary | TaskDetail) => {
     const ok = await confirmDialog({
       title: `删除任务「${task.id.slice(-8)}」？`,
@@ -253,8 +233,8 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
   }, [removeTask])
 
   const handleCardClick = useCallback((task: TaskSummary) => {
-    setDetailTaskId(task.id)
-  }, [])
+    onOpenTaskDetail?.(task.id)
+  }, [onOpenTaskDetail])
 
   /* ─── 过滤函数（前端 includes 匹配） ─── */
   const filterTasks = useCallback((tasks: TaskSummary[]) => {
@@ -392,25 +372,6 @@ export function TaskBoard({ theme = 'dark' }: { theme?: 'light' | 'dark' }) {
           })
         )}
       </div>
-
-      {/* ─── 任务详情抽屉 ─── */}
-      <TaskDetailDrawer
-        taskId={detailTaskId}
-        open={!!detailTaskId}
-        onClose={() => setDetailTaskId(null)}
-        workflowNameMap={workflowNameMap}
-        creatorLabel={creatorLabel}
-        theme={theme}
-        resolveTemplateId={resolveTemplateId}
-        onCancel={handleCancel}
-        onRetry={handleRetry}
-        onResume={handleResume}
-        onDelete={handleDelete}
-        onApprove={handleApprove}
-        onReject={handleReject}
-        interveneLoading={intervene.isPending}
-        deleteLoading={removeTask.isPending}
-      />
 
       {/* ─── 新建任务 Modal ─── */}
       <Modal

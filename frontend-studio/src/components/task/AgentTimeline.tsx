@@ -10,6 +10,7 @@
 import { useState, useMemo, type ReactNode } from 'react'
 import { Lightbulb, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import type { NodeTimelineEntry } from '../../services/tasks-api'
+import { Markdown } from '../Markdown'
 
 /* ─── Types ─── */
 
@@ -188,9 +189,10 @@ function EntryCard({ entry, theme }: { entry: TimelineEntry; theme: 'light' | 'd
 
     case 'text':
     default:
+      // agent 最终回答：天然含 Markdown 格式（列表/代码/标题），直接 md 渲染（参考 silieco）。
       return (
         <div className={`rounded-lg border ${t.cardBorder} ${t.card} px-2.5 py-1.5`}>
-          <div className={`text-[12px] leading-relaxed whitespace-pre-wrap ${t.text}`}>{entry.content}</div>
+          <Markdown content={entry.content} />
         </div>
       )
   }
