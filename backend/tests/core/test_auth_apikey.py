@@ -1,5 +1,6 @@
 """Tests for API Key generation, verification, and auth principal."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -180,6 +181,8 @@ class TestGetApiKeyPrincipal:
             "scopes": ["agents:invoke"],
             "bindings": {"agents": [], "workflows": []},
             "rate_limit": 60,
+            "app_id": "app_01",
+            "introspect_url": "https://auth.example.com/introspect",
             "user_info_url": "",  # 保留字段，不再使用
         }
 
@@ -199,18 +202,29 @@ class TestGetApiKeyPrincipal:
         return Request(scope)
 
     async def test_resolves_user_id_from_token_record(self, monkeypatch, api_key_doc):
-        """通用 token 本地校验成功 → user_id = token_record_id = 记录 id。"""
+        """introspection 通过 + external_identities 命中 → user_id = platform_user_id。"""
         from app.services.api_key_service import ApiKeyService
-        from app.services.mcp_token_credential_service import (
-            McpTokenCredentialService,
-        )
+        from app.services.application_service import ApplicationService
+        from app.services.external_identity_service import ExternalIdentityService
+        from app.services.user_auth_service import UserAuthService
 
         monkeypatch.setattr(
             ApiKeyService, "verify_key", AsyncMock(return_value=api_key_doc)
         )
-        record = {"_id": "mcptok_01", "status": "active"}
         monkeypatch.setattr(
-            McpTokenCredentialService, "verify_token", AsyncMock(return_value=record)
+            ApplicationService,
+            "get_application",
+            AsyncMock(return_value={"_id": "app_01", "name": "测试应用"}),
+        )
+        monkeypatch.setattr(
+            UserAuthService,
+            "introspect",
+            AsyncMock(return_value=SimpleNamespace(active=True, username="bob")),
+        )
+        monkeypatch.setattr(
+            ExternalIdentityService,
+            "find_by_sub",
+            AsyncMock(return_value={"platform_user_id": "user_platform_01"}),
         )
         request = self._make_request({"X-User-Token": "Bearer meper_xxx"})
 
@@ -218,8 +232,8 @@ class TestGetApiKeyPrincipal:
             request, authorization="Bearer af_live_test"
         )
 
-        assert principal.user_id == "mcptok_01"
-        assert principal.token_record_id == "mcptok_01"
+        assert principal.user_id == "user_platform_01"
+        assert principal.token_record_id == "user_platform_01"
         assert principal.user_token == "meper_xxx"
 
     async def test_missing_user_token_raises(self, monkeypatch, api_key_doc):
@@ -236,17 +250,23 @@ class TestGetApiKeyPrincipal:
         assert exc.value.code == "EXT_USER_TOKEN_MISSING"
 
     async def test_invalid_user_token_raises(self, monkeypatch, api_key_doc):
-        """通用 token 校验失败（verify_token 返回 None）→ EXT_USER_TOKEN_INVALID。"""
+        """introspection 返回 inactive → EXT_USER_TOKEN_INVALID。"""
         from app.services.api_key_service import ApiKeyService
-        from app.services.mcp_token_credential_service import (
-            McpTokenCredentialService,
-        )
+        from app.services.application_service import ApplicationService
+        from app.services.user_auth_service import UserAuthService
 
         monkeypatch.setattr(
             ApiKeyService, "verify_key", AsyncMock(return_value=api_key_doc)
         )
         monkeypatch.setattr(
-            McpTokenCredentialService, "verify_token", AsyncMock(return_value=None)
+            ApplicationService,
+            "get_application",
+            AsyncMock(return_value={"_id": "app_01", "name": "测试应用"}),
+        )
+        monkeypatch.setattr(
+            UserAuthService,
+            "introspect",
+            AsyncMock(return_value=SimpleNamespace(active=False, username="")),
         )
         request = self._make_request({"X-User-Token": "Bearer meper_bad"})
 

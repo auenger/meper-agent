@@ -103,7 +103,7 @@ def _build_option(args: dict) -> dict[str, Any]:
                 "name": title or "series",
                 "type": "pie",
                 "radius": "60%",
-                "data": [{"name": n, "value": v} for n, v in zip(names, values)],
+                "data": [{"name": n, "value": v} for n, v in zip(names, values, strict=False)],
             }
         ]
         return option
