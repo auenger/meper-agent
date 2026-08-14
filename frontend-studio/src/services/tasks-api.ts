@@ -117,6 +117,7 @@ export interface Checkpoint {
     options?: string[]
     timeout_ms?: number
     timeout_action?: string
+    view?: { sections?: unknown[] }
   }
   timeout_deadline?: string | null
   timeout_action: string

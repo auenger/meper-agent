@@ -139,7 +139,10 @@ export interface TaskFlowTimelineProps {
 
 export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: TaskFlowTimelineProps) {
   const stages = useMemo<NodeStageInfo[]>(() => buildStages(task), [task])
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  // 反转语义：collapsedIds 记录「手动折叠」的节点，默认空 = 全部展开，
+  // 这样打开任务详情即可一次性看清所有节点的结果（参考 silieco 全展开布局）。
+  // 新增节点（任务继续执行）不在折叠集里，自动展开。
+  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set())
 
   // 拉工作流定义取节点名（node_id → label）。与 TaskFlowGraph 共用 workflowKeys.detail 缓存，
   // 同一抽屉内不会额外打请求；拉不到（模板被删/解析失败）则回退到类型名。
@@ -189,7 +192,7 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
       {stages.map((stage) => {
         const state = stage.state
         const meta = STATE_META[state]
-        const isExpanded = expandedIds.has(stage.nodeId)
+        const isExpanded = !collapsedIds.has(stage.nodeId)
         const nodeLabel = nodeNameMap.get(stage.nodeId) || stage.label || (NODE_TYPE_LABEL[stage.nodeType] ?? stage.nodeType)
         const output = task.variables?.[stage.nodeId]
         return (
@@ -205,7 +208,7 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
             {/* 阶段卡片 */}
             <div
               onClick={() =>
-                setExpandedIds((prev) => {
+                setCollapsedIds((prev) => {
                   const next = new Set(prev)
                   if (next.has(stage.nodeId)) next.delete(stage.nodeId)
                   else next.add(stage.nodeId)

@@ -11,7 +11,7 @@ import { useQuery, useQueries } from '@tanstack/react-query';
 import { agentApi, agentKeys, type Agent as BackendAgent } from './services/agent-api';
 import { toStudioAgent } from './services/adapters';
 import { authApi } from './services/auth-api';
-import { tasksApi, taskKeys, type WorkflowRegistryEntry, type TaskStatusValue } from './services/tasks-api';
+import { tasksApi, taskKeys, type TaskStatusValue } from './services/tasks-api';
 import { workflowsApi, workflowKeys } from './services/workflows-api';
 import Login from './components/Login';
 import { AuthInitializer } from './components/AuthInitializer';
@@ -22,7 +22,7 @@ import { ChatHomepage } from './components/ChatHomepage';
 import { VoiceHomepage } from './components/voice/VoiceHomepage';
 import { VoiceConfigPage } from './components/voice/VoiceConfigPage';
 import { TaskBoard } from './components/TaskBoard';
-import { TaskDetailDrawer } from './components/task/TaskDetailDrawer';
+import { TaskDetailPage } from './components/task/TaskDetailPage';
 import { Dashboard } from './components/Dashboard';
 import { AgentSpace } from './components/AgentSpace';
 import { AgentDetailPage } from './components/AgentDetailPage';
@@ -130,9 +130,9 @@ export default function App() {
   const clearAuth = useAuthStore((s) => s.clearAuth);
   const authUser = useAuthStore((s) => s.user);
 
-  // 任务追踪抽屉 view state（通知中心 / Dashboard 触发）：存 task id，
-  // 由 TaskDetailDrawer 内部 useQuery 拉取 GET /tasks/{id} + 5s 轮询。
-  const [activeTraceTaskId, setActiveTraceTaskId] = useState<string | null>(null);
+  // 任务详情全屏 view（看板卡片=full 操作模式；通知中心/Dashboard/Triggers=仅查看）。
+  // 由 TaskDetailPage 内部 useQuery 拉取 GET /tasks/{id}，刷新由 WS invalidate 驱动。
+  const [activeTaskDetail, setActiveTaskDetail] = useState<{ id: string; mode: 'full' | 'view' } | null>(null);
 
   // Live agent list for the ChatHomepage agent picker + count badge.
   const { data: agentsData } = useQuery({
@@ -156,25 +156,6 @@ export default function App() {
     staleTime: 60_000,
   });
   const workflowCount = workflowsData?.total ?? 0;
-
-  // 任务追踪抽屉的工作流名映射：与 TaskBoard 共用 taskKeys.workflows() 缓存，
-  // 把 task.workflow_id（wf_ 模板 / wfr_ 历史 registry）解析成可读工作流名。
-  const { data: wfRegistryData } = useQuery({
-    queryKey: taskKeys.workflows(),
-    queryFn: () => tasksApi.listWorkflows(),
-    enabled: isAuthenticated,
-    staleTime: 60_000,
-  });
-  const workflowNameMap = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const wf of (wfRegistryData?.items ?? []) as WorkflowRegistryEntry[]) {
-      if (wf.name) {
-        map[wf._id] = wf.name;
-        map[wf.workflow_id] = wf.name;
-      }
-    }
-    return map;
-  }, [wfRegistryData]);
 
   // 任务协作看板 badge：聚合“活跃”状态（待执行 + 执行中 + 等待人工）的任务数。
   // 复用与 TaskBoard 相同的 taskKeys.list({status}) 缓存键，列表打开后两侧共享缓存、
@@ -258,10 +239,10 @@ export default function App() {
     }
   }, [visibleNav, activeTab]);
 
-  // 进入工作流编辑器时自动收缩主菜单，给三栏编辑区让出空间（离开不自动恢复）
+  // 进入工作流编辑器 / 任务详情时自动收缩主菜单，给内容区让出空间（离开不自动恢复）
   useEffect(() => {
-    if (openWorkflow) setCollapsed(true);
-  }, [openWorkflow]);
+    if (openWorkflow || activeTaskDetail) setCollapsed(true);
+  }, [openWorkflow, activeTaskDetail]);
 
   // Auth gate: AuthInitializer (mounted in main.tsx) drives the refresh-check
   // window and the initializing spinner; here we only branch on the resolved
@@ -327,7 +308,7 @@ export default function App() {
                   key={item.id}
                   onClick={() => {
                     setActiveTab(item.id);
-                    setActiveTraceTaskId(null);
+                    setActiveTaskDetail(null);
                   }}
                   className={`${collapsed ? 'w-10 px-0 justify-center' : 'w-full px-3 justify-between'} py-2 rounded-md flex items-center font-medium transition-all text-sm cursor-pointer select-none ${
                     isActive
@@ -446,7 +427,15 @@ export default function App() {
 
       {/* 2. MAIN WORKSPACE CONTAINER */}
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-
+        {activeTaskDetail ? (
+          <TaskDetailPage
+            taskId={activeTaskDetail.id}
+            mode={activeTaskDetail.mode}
+            onBack={() => setActiveTaskDetail(null)}
+            theme={theme}
+          />
+        ) : (
+        <>
         <header className={`h-16 border-b flex items-center justify-between px-8 shrink-0 ${
           theme === 'dark' ? 'bg-[#121214] border-[#27272a]' : 'bg-white border-slate-200'
         }`}>
@@ -460,7 +449,7 @@ export default function App() {
           <NotificationCenter
             onNavigateTask={(taskId) => {
               setActiveTab('board');
-              setActiveTraceTaskId(taskId);
+              setActiveTaskDetail({ id: taskId, mode: 'view' });
             }}
           />
         </header>
@@ -484,13 +473,13 @@ export default function App() {
           )}
 
           {activeTab === 'board' && (
-            <TaskBoard theme={theme} />
+            <TaskBoard theme={theme} onOpenTaskDetail={(id) => setActiveTaskDetail({ id, mode: 'full' })} />
           )}
 
           {activeTab === 'dashboard' && (
             <Dashboard
               onSelectTab={setActiveTab}
-              onViewTask={(task) => setActiveTraceTaskId(task.id)}
+              onViewTask={(task) => setActiveTaskDetail({ id: task.id, mode: 'view' })}
             />
           )}
 
@@ -537,7 +526,7 @@ export default function App() {
             <TriggersPage
               onViewTask={(taskId) => {
                 setActiveTab('board');
-                setActiveTraceTaskId(taskId);
+                setActiveTaskDetail({ id: taskId, mode: 'view' });
               }}
             />
           )}
@@ -587,17 +576,9 @@ export default function App() {
             <ProfilePage theme={theme} />
           )}
         </div>
+        </>
+        )}
       </main>
-
-      {/* 任务追踪抽屉：复用 TaskBoard 的 TaskDetailDrawer（无遮罩 + 富渲染），
-          由通知中心 / Dashboard 触发。仅查看模式：不传干预回调，操作栏自适应隐藏。 */}
-      <TaskDetailDrawer
-        taskId={activeTraceTaskId}
-        open={!!activeTraceTaskId}
-        onClose={() => setActiveTraceTaskId(null)}
-        workflowNameMap={workflowNameMap}
-        theme={theme}
-      />
 
       {/* 全局消息提醒：Toast + 统一确认弹窗（内联渲染，继承 theme-${theme} 主题） */}
       <Toaster />

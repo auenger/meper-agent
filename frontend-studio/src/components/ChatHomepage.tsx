@@ -1966,7 +1966,11 @@ function ToolEntryCard({
   }
   const status = entry.toolStatus ?? 'running';
   const cfg = TOOL_STATUS_CFG[status];
-  const [expanded, setExpanded] = useState(false);
+  // render_chart：结果含 ```echarts fenced block → 详情区走 Markdown 自动出图，
+  // 且默认展开（图表是工具的核心产出，不该藏在折叠里）。
+  const isChartResult =
+    entry.toolName === 'render_chart' && /```(?:echarts|chart)\s*\n/i.test(entry.result ?? '');
+  const [expanded, setExpanded] = useState(isChartResult);
   const [resultExpanded, setResultExpanded] = useState(false);
 
   const argsText = formatToolArgs(entry.args);
@@ -2030,9 +2034,14 @@ function ToolEntryCard({
                   <span className="px-1 py-0 rounded bg-[#27272a] text-[9px] opacity-80">JSON</span>
                 )}
               </div>
-              <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-all rounded-lg p-2 bg-[#121214] border border-[#27272a] text-[#a1a1aa] font-mono max-h-64 overflow-y-auto">
-                {shownResult}
-              </pre>
+              {isChartResult ? (
+                // render_chart：走 Markdown 渲染（识别 ```echarts 出图 + 摘要文本）
+                <Markdown content={result.text} />
+              ) : (
+                <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-all rounded-lg p-2 bg-[#121214] border border-[#27272a] text-[#a1a1aa] font-mono max-h-64 overflow-y-auto">
+                  {shownResult}
+                </pre>
+              )}
               {resultTooLong && (
                 <button
                   type="button"
