@@ -84,9 +84,11 @@ def _resolve_builtin_tools(agent: dict) -> list:
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
+    from app.engine.agent.chart_tool import _CHART_TOOLS
     from app.engine.agent.workflow_executor import _TASK_TOOLS
 
     tools = list(_TASK_TOOLS)  # app-level task/workflow 工具始终注入
+    tools += list(_CHART_TOOLS)  # render_chart 图表工具始终注入
 
     builtin_config = set(agent.get("builtin_config") or [])
     if "bash" in builtin_config:
