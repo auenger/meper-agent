@@ -143,6 +143,8 @@ export interface TimelineEntry {
   toolStatus?: ToolStatus;
   /** 折叠态（thinking / tool 详情） */
   expanded?: boolean;
+  /** 用户手动切换过折叠——thinking 流式结束后的自动收起据此让位于用户选择 */
+  userToggled?: boolean;
 }
 
 export interface Message {

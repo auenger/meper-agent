@@ -8,6 +8,9 @@
   /* Animation utilities used across components (animate-fade-in / animate-slide-left) */
   --animate-fade-in: fade-in 0.2s ease-out;
   --animate-slide-left: slide-left 0.25s ease-out;
+  /* 思考流式动效（thinking 卡片：头部脉冲点 + 正文打字光标） */
+  --animate-thinking-dot: thinking-dot 1.2s ease-in-out infinite;
+  --animate-caret-blink: caret-blink 1s step-end infinite;
 }
 
 @keyframes fade-in {
@@ -27,6 +30,26 @@
   to {
     transform: translateX(0);
     opacity: 1;
+  }
+}
+
+@keyframes thinking-dot {
+  0%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-1px);
+  }
+}
+
+@keyframes caret-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
   }
 }
 

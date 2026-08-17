@@ -501,6 +501,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const [rightTab, setRightTab] = useState<'chat' | 'files'>('chat');
 
   const messageEndRef = useRef<HTMLDivElement>(null);
+  // 对话滚动容器：贴底判定用（只有输出贴底时才自动跟随，见 isPinnedToBottom）。
+  const chatScrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const filesPanelRef = useRef<SessionFilesPanelHandle>(null);
@@ -520,6 +522,15 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const rafIdRef = useRef<number | null>(null);
   const textEntryIdRef = useRef<string | null>(null);
   const textStartedRef = useRef(false);
+
+  /** 输出是否贴底（距底部 120px 内）。自动跟随滚动只在贴底时发生——
+   *  用户上翻阅读历史、或点开工具/思考详情时，即使 liveMessages 变化
+   *  （流式输出/展开收起）也不会把视口拽到底部。 */
+  const isPinnedToBottom = useCallback((): boolean => {
+    const el = chatScrollRef.current;
+    if (!el) return true;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  }, []);
 
   /** 把累积的 delta flush 进 agent 消息的 timeline（追加到当前 text entry 或新建）。 */
   const flushDelta = useCallback(() => {
@@ -556,8 +567,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         return { ...m, timeline: tl };
       }),
     );
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
+    if (isPinnedToBottom()) {
+      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [isPinnedToBottom]);
 
   /** 累积 text_delta 进 buffer，调度 RAF flush（一帧一次）。 */
   const appendDelta = useCallback(
@@ -674,8 +687,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   }, [activeSessionId]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [liveMessages]);
+    // 仅贴底时跟随（流式输出滚屏）；用户上翻或展开详情时不打扰。
+    if (isPinnedToBottom()) {
+      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [liveMessages, isPinnedToBottom]);
 
   const refreshSessions = useCallback(() => {
     qc.invalidateQueries({ queryKey: sessionKeys.lists() });
@@ -864,6 +880,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
       }
       return [...prev, userMsg, agentMsg];
     });
+    // 用户主动发消息：无条件滚到底部跟随新回复（贴底守卫仅约束流式/展开场景）。
+    requestAnimationFrame(() => {
+      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    });
     pendingInterruptRef.current = null;
     setIsStreaming(true);
 
@@ -902,9 +922,13 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
 
       // 累积流式过程中 agent 产出的 output 文件路径，挂到 agent 消息上内联预览。
       const streamedAttachments: ChatAttachment[] = [];
-      // 当前 LLM 轮的 thinking 累积（delta 追加 / 完整事件覆盖），写进 timeline
-      // thinking entry；工具轮次开始时重置（见 tool_call_start / tool_call）。
+      // 当前 LLM 轮的 thinking 累积与 entry 定位。轮次边界是 thinking 完整事件
+      // （on_chat_model_end）——注意 tool_call_start 在流式期间先于它到达，不能
+      // 作为边界，否则 final 会在 tool entry 之后另起新卡片，把本轮思考重复一遍。
+      // 同轮交错思考块（thinking→text→thinking）归并进同一个 entry，与后端
+      // 持久化结构（final 合并全部块）一致。
       let thinkingText = '';
+      let thinkingEntryId: string | null = null;
 
       for await (const evt of parseSSEStream(res)) {
         if (controller.signal.aborted) break;
@@ -914,6 +938,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         if (!('type' in evt)) {
           // Stream finished — refresh sessions so persisted messages/timeline load,
           // and reload generated files so any new outputs appear immediately.
+          // 无预建会话直接开聊时，后端在首个请求时创建了会话——此处绑定
+          // session_id，否则 activeSession 一直为空，空状态提示会压在消息上方。
+          if (!activeSessionId && evt.session_id) {
+            setActiveSessionId(evt.session_id);
+          }
           refreshSessions();
           filesPanelRef.current?.refresh();
           // 收敛残留 pending/running 的 tool entry 为 success（跳过 ask_clarification/
@@ -939,20 +968,32 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
           case 'thinking':
           case 'thinking_delta': {
             // thinking = on_chat_model_end 的权威全文 → 覆盖；thinking_delta = 增量 → 追加。
-            // 后端先发增量、结束时再发一次全文，若把 thinking 也当增量追加会整段翻倍。
-            thinkingText = evt.type === 'thinking' ? evt.content : thinkingText + evt.content;
+            // 按 thinkingEntryId 定位本轮 entry（可能不在末尾——text 已插入），
+            // final 到达即本轮结束：写入全文、收起、清空累积。
+            const isFinal = evt.type === 'thinking';
+            thinkingText = isFinal ? evt.content : thinkingText + evt.content;
             const text = thinkingText;
+            // id 在 setState 外生成（updater 需保持纯函数，StrictMode 下可能双调）。
+            const pushId = thinkingEntryId
+              ?? `${agentMsgId}-think-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            thinkingEntryId = pushId;
+            if (isFinal) {
+              thinkingText = '';
+              thinkingEntryId = null;
+            }
             setLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
-                // 更新最后一个 thinking entry，没有就 push（id 带时间戳：多轮
-                // 思考各占一个 entry，固定 id 会撞 React key）。
-                const lastIdx = tl.length - 1;
-                if (lastIdx >= 0 && tl[lastIdx].type === 'thinking') {
-                  tl[lastIdx] = { ...tl[lastIdx], content: text };
+                const idx = tl.findIndex((e) => e.id === pushId);
+                if (idx >= 0) {
+                  tl[idx] = {
+                    ...tl[idx],
+                    content: text,
+                    expanded: isFinal && !tl[idx].userToggled ? false : tl[idx].expanded,
+                  };
                 } else {
-                  tl.push({ id: `${agentMsgId}-think-${Date.now()}`, type: 'thinking', content: text });
+                  tl.push({ id: pushId, type: 'thinking', content: text, expanded: !isFinal });
                 }
                 return { ...m, status: 'thinking', timeline: tl };
               }),
@@ -962,15 +1003,14 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
           case 'tool_call_start': {
             // 先同步 flush 文本 buffer（让 text 出现在 tool 之前），再 push 一个
             // pending tool entry，并重置 text refs（让 tool 之后的新 text 开新 entry）。
+            // 注意：此处不重置 thinking 累积——tool_call_start 在流式期间先于
+            // on_chat_model_end 到达，thinking 的轮次边界是 final 事件本身。
             if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
             const buf = deltaBufferRef.current;
             deltaBufferRef.current = null;
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
-            // 新一轮 LLM 开始：清空 thinking 累积，下一轮思考另起 entry，
-            // 不再携带前几轮内容（与 text buffer 重置同步）。
-            thinkingText = '';
             // tool_call_start 不带 tool_name（名字在后续 tool_call 事件里），
             // 先 push 一个 pending entry（toolName 空），tool_call 到达时补全。
             const toolName = '';
@@ -995,8 +1035,6 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
-            // 同 tool_call_start：新一轮 LLM 开始，重置 thinking 累积。
-            thinkingText = '';
             setLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
@@ -1454,14 +1492,15 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         {rightTab === 'files' ? (
           <SessionFilesPanel ref={filesPanelRef} sessionId={activeSessionId} />
         ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom p-6 space-y-5">
+        <div ref={chatScrollRef} className="flex-1 min-h-0 overflow-y-auto scrollbar-custom p-6 space-y-5">
           <div className="flex items-center justify-center">
             <span className="px-3 py-1 rounded bg-[#18181b] border border-[#27272a]/60 text-[#71717a] text-[10px] font-mono">
               对话由 MEPER Agent 引擎实时流式生成
             </span>
           </div>
 
-          {!activeSession && !sessionsLoading && (
+          {/* 空状态仅在没有任何消息时显示（流式/会话绑定延迟期间不压在消息上方） */}
+          {!activeSession && !sessionsLoading && liveMessages.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 text-center">
               <Bot className="w-10 h-10 text-[#71717a] mb-3" />
               <p className="text-sm text-[#a1a1aa] font-sans">还没有会话</p>
@@ -1538,10 +1577,15 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                           );
                         }
                         if (entry.type === 'thinking') {
+                          // 流式判定：消息 thinking 中，且该 entry 是末尾条目或
+                          // 最后一个 thinking entry（交错思考块更新时不一定在末尾）。
+                          const isLastThinking =
+                            isLast || !msg.timeline!.slice(idx + 1).some((e) => e.type === 'thinking');
                           return (
                             <ThinkingEntryCard
                               key={entry.id}
                               entry={entry}
+                              streaming={msg.status === 'thinking' && isLastThinking}
                               onToggle={() =>
                                 setLiveMessages((prev) =>
                                   prev.map((m) =>
@@ -1549,7 +1593,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
                                       ? {
                                           ...m,
                                           timeline: (m.timeline ?? []).map((e) =>
-                                            e.id === entry.id ? { ...e, expanded: !e.expanded } : e,
+                                            e.id === entry.id
+                                              ? { ...e, expanded: !e.expanded, userToggled: true }
+                                              : e,
                                           ),
                                         }
                                       : m,
@@ -1897,15 +1943,29 @@ function formatToolResult(raw?: string): { text: string; isJson: boolean } {
 
 const RESULT_COLLAPSE_THRESHOLD = 800;
 
-/** Thinking entry — collapsible reasoning card. */
+/** Thinking entry — collapsible reasoning card with streaming animation.
+ *  内容区固定最大高度（内部滚动），避免长思考撑爆版面；流式期间内部
+ *  贴底跟随（终端效果），思考结束自动收起。 */
 function ThinkingEntryCard({
   entry,
+  streaming,
   onToggle,
 }: {
   entry: TimelineEntry;
+  /** 本轮思考正在流式输出（消息 thinking 中且该 entry 是最新条目）→ 头部脉冲 + 打字光标 */
+  streaming?: boolean;
   onToggle: () => void;
 }) {
   const expanded = !!entry.expanded;
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  // 流式期间内容超出固定高度时，内部滚动条贴底跟随最新输出。
+  useEffect(() => {
+    if (streaming && contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    }
+  }, [entry.content, streaming]);
+
   return (
     <div className="rounded-lg border border-blue-100 bg-blue-50/50 overflow-hidden font-sans dark:border-indigo-900/40 dark:bg-indigo-950/20">
       <button
@@ -1913,14 +1973,35 @@ function ThinkingEntryCard({
         onClick={onToggle}
         className="w-full flex items-center gap-2 px-3 py-2 border-0 bg-transparent cursor-pointer text-left hover:bg-blue-50 dark:hover:bg-indigo-950/40 transition-colors"
       >
-        <Brain className="text-indigo-400" size={13} />
-        <span className="text-xs font-medium text-indigo-300">思考过程</span>
+        <Brain className={`text-indigo-400 ${streaming ? 'animate-pulse' : ''}`} size={13} />
+        <span className="text-xs font-medium text-indigo-300">
+          {streaming ? '思考中' : '思考过程'}
+        </span>
+        {streaming ? (
+          <span className="flex items-center gap-[3px]">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="w-1 h-1 rounded-full bg-indigo-400 animate-thinking-dot"
+                style={{ animationDelay: `${i * 0.18}s` }}
+              />
+            ))}
+          </span>
+        ) : (
+          !!entry.content && (
+            <span className="text-[10px] text-indigo-400/50">{entry.content.length} 字</span>
+          )
+        )}
         <span className="text-[10px] text-indigo-400/60 ml-auto">{expanded ? '收起' : '展开'}</span>
         <ChevronRight className={`w-3 h-3 text-indigo-400/60 transition-transform ${expanded ? 'rotate-90' : ''}`} />
       </button>
       {expanded && (
-        <div className="px-3 pb-2 pt-2 text-xs text-indigo-300/80 whitespace-pre-wrap leading-relaxed border-t border-indigo-900/40 italic">
+        <div
+          ref={contentRef}
+          className="px-3 pb-2 pt-2 text-xs text-indigo-300/80 whitespace-pre-wrap leading-relaxed border-t border-indigo-900/40 italic max-h-64 overflow-y-auto scrollbar-custom"
+        >
           {entry.content}
+          {streaming && <span className="animate-caret-blink not-italic">▍</span>}
         </div>
       )}
     </div>
