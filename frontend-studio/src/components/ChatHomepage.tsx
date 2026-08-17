@@ -902,7 +902,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
 
       // 累积流式过程中 agent 产出的 output 文件路径，挂到 agent 消息上内联预览。
       const streamedAttachments: ChatAttachment[] = [];
-      // 累积 thinking 文本（thinking_delta 逐步到达），写进 timeline thinking entry。
+      // 当前 LLM 轮的 thinking 累积（delta 追加 / 完整事件覆盖），写进 timeline
+      // thinking entry；工具轮次开始时重置（见 tool_call_start / tool_call）。
       let thinkingText = '';
 
       for await (const evt of parseSSEStream(res)) {
@@ -937,18 +938,21 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
         switch (evt.type) {
           case 'thinking':
           case 'thinking_delta': {
-            thinkingText += evt.content;
+            // thinking = on_chat_model_end 的权威全文 → 覆盖；thinking_delta = 增量 → 追加。
+            // 后端先发增量、结束时再发一次全文，若把 thinking 也当增量追加会整段翻倍。
+            thinkingText = evt.type === 'thinking' ? evt.content : thinkingText + evt.content;
             const text = thinkingText;
             setLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
-                // 更新最后一个 thinking entry，没有就 push。
+                // 更新最后一个 thinking entry，没有就 push（id 带时间戳：多轮
+                // 思考各占一个 entry，固定 id 会撞 React key）。
                 const lastIdx = tl.length - 1;
                 if (lastIdx >= 0 && tl[lastIdx].type === 'thinking') {
                   tl[lastIdx] = { ...tl[lastIdx], content: text };
                 } else {
-                  tl.push({ id: `${agentMsgId}-think`, type: 'thinking', content: text });
+                  tl.push({ id: `${agentMsgId}-think-${Date.now()}`, type: 'thinking', content: text });
                 }
                 return { ...m, status: 'thinking', timeline: tl };
               }),
@@ -964,6 +968,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
+            // 新一轮 LLM 开始：清空 thinking 累积，下一轮思考另起 entry，
+            // 不再携带前几轮内容（与 text buffer 重置同步）。
+            thinkingText = '';
             // tool_call_start 不带 tool_name（名字在后续 tool_call 事件里），
             // 先 push 一个 pending entry（toolName 空），tool_call 到达时补全。
             const toolName = '';
@@ -988,6 +995,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
+            // 同 tool_call_start：新一轮 LLM 开始，重置 thinking 累积。
+            thinkingText = '';
             setLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
