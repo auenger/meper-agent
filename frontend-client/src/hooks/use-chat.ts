@@ -183,33 +183,6 @@ interface AssistantAccumulator {
   errorText?: string
 }
 
-/** blocks 数组辅助操作:在末尾追加/合并 text 或 reasoning 块。
- * 如果最后一个块是同类(text→text, reasoning→reasoning),则 append 到它;
- * 否则 push 一个新块。这样相邻的同类型事件合并成一个块,跨类型保持顺序。 */
-function appendTextBlock(
-  blocks: ContentBlock[],
-  type: 'text' | 'reasoning',
-  content: string,
-) {
-  const last = blocks[blocks.length - 1]
-  if (last && last.type === type) {
-    last.text += content
-  } else {
-    blocks.push({ type, text: content })
-  }
-}
-
-/** text 事件（on_chat_model_end 的完整文本）覆盖最后一个 text block，
- * 不追加——因为 text_delta 已经逐字拼出了完整内容，text 是同一份的权威版。 */
-function overwriteTextBlock(blocks: ContentBlock[], type: 'text', content: string) {
-  const last = blocks[blocks.length - 1]
-  if (last && last.type === type) {
-    last.text = content
-  } else {
-    blocks.push({ type, text: content })
-  }
-}
-
 /** 从 blocks 中找出所有 tool 块的 tool 对象(用于附件/chart 提取等)。 */
 function allToolsFromBlocks(blocks: ContentBlock[]): ToolRun[] {
   return blocks.filter((b): b is ContentBlock & { type: 'tool' } => b.type === 'tool').map((b) => b.tool)
@@ -476,21 +449,36 @@ export function useChat(
 
   const process = useCallback(
     async (events: AsyncGenerator<StreamEvent>, acc: AssistantAccumulator) => {
+      // 当前 LLM 轮的 reasoning/text 块引用。thinking/text 的 final 事件
+      // （on_chat_model_end）与其增量版之间隔着其他块（事件序：…text_delta →
+      // thinking final → text final），不能靠"末尾块"定位——否则 final 会另起
+      // 新块，把整段思考/正文重复一遍。tool_call 到达即本轮结束，重置引用；
+      // 同轮交错思考块（thinking→text→thinking）也归并到同一 reasoning 块，
+      // 与后端持久化结构（final 合并全部块）一致。
+      let reasoningBlock: { type: 'reasoning'; text: string } | null = null
+      let textBlock: { type: 'text'; text: string } | null = null
       try {
         for await (const event of events) {
           if ((event.type === 'text_delta' || event.type === 'text') && event.content) {
             // text_delta 是流式增量 → 追加
             // text 是 on_chat_model_end 的完整文本 → 覆盖（不追加，避免重复）
-            if (event.type === 'text') {
-              overwriteTextBlock(acc.blocks, 'text', event.content)
-            } else {
-              appendTextBlock(acc.blocks, 'text', event.content)
+            if (!textBlock) {
+              textBlock = { type: 'text', text: '' }
+              acc.blocks.push(textBlock)
             }
+            if (event.type === 'text') textBlock.text = event.content
+            else textBlock.text += event.content
           } else if (
             (event.type === 'thinking' || event.type === 'thinking_delta') &&
             event.content
           ) {
-            appendTextBlock(acc.blocks, 'reasoning', event.content)
+            // 同 text：delta 追加 / final 覆盖，按轮内引用定位。
+            if (!reasoningBlock) {
+              reasoningBlock = { type: 'reasoning', text: '' }
+              acc.blocks.push(reasoningBlock)
+            }
+            if (event.type === 'thinking') reasoningBlock.text = event.content
+            else reasoningBlock.text += event.content
           } else if (event.type === 'tool_call') {
             const toolCallId = event.id || ''
             const id = `tool-${allToolsFromBlocks(acc.blocks).length + 1}`
@@ -505,6 +493,10 @@ export function useChat(
                 status: 'running',
               },
             })
+            // 本轮 LLM 输出结束（thinking/text final 已在其前到达）：
+            // 重置轮内块引用，下一轮思考/正文另起新块。
+            reasoningBlock = null
+            textBlock = null
           } else if (event.type === 'tool_result') {
             // 优先用 tool_call_id 精确配对;退化兜底:找最后一个 running 的 tool block
             // 注意:不要求 content 非空 —— 工具报错时可能只有 status=error 而 content
