@@ -1745,7 +1745,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
 
       {/* 3. SELECT AGENT FOR NEW SESSION MODAL */}
       {showAgentSelectModal && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in text-xs font-sans">
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in text-xs font-sans">
           <div className="w-full max-w-lg bg-[#18181b] border border-[#27272a] rounded-xl shadow-2xl relative overflow-hidden">
             <div className="p-4 border-b border-[#27272a] flex justify-between items-center bg-[#121214]/60">
               <h3 className="text-sm font-bold text-white flex items-center gap-1.5 font-sans">

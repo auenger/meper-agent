@@ -32,7 +32,7 @@ export function TaskTraceModal({ task, onClose }: { task: TaskDetail | null; onC
   const timeline: TimelineEvent[] = task.timeline ?? []
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center " onClick={onClose}>
       <div
         className="bg-[#18181b] rounded-xl shadow-2xl w-[640px] max-h-[80vh] flex flex-col border border-[#27272a]"
         onClick={(e) => e.stopPropagation()}

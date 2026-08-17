@@ -145,7 +145,7 @@ const AvatarField: FC<AvatarFieldProps> = ({ value, entityId, onChange, disabled
 
       {/* 裁剪 modal */}
       {imageSrc && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" role="dialog">
+        <div className="fixed inset-0 flex items-center justify-center z-50 p-4" role="dialog">
           <div className="w-full max-w-sm bg-[#18181b] border border-[#27272a] rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-white">裁剪头像</span>

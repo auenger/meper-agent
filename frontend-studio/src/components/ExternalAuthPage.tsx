@@ -410,7 +410,7 @@ export function ExternalAuthPage() {
 
       {/* Authorize Modal */}
       {bindModalApp && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-sm bg-[#121214] border border-[#27272a] rounded-2xl shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#27272a]">
               <h3 className="text-sm font-bold text-white">
@@ -465,7 +465,7 @@ export function ExternalAuthPage() {
 
       {/* App Create/Edit Modal（application:write） */}
       {appModalOpen && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto bg-[#121214] border border-[#27272a] rounded-2xl shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#27272a] sticky top-0 bg-[#121214] z-10">
               <h3 className="text-sm font-bold text-white">
