@@ -1,10 +1,10 @@
 import { useState, FormEvent } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  Users, Shield, Search, Plus, Lock,
+  Users, Shield, Search, Plus, Lock, Pencil,
 } from 'lucide-react';
 import { userApi } from '../services/user-api';
-import { roleApi } from '../services/role-api';
+import { roleApi, type RoleUpdatePayload } from '../services/role-api';
 import { toStudioUser } from '../services/adapters';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
@@ -49,8 +49,9 @@ export function UserManagement() {
   // the user sees why it failed instead of the dialog silently closing.
   const [createFormError, setCreateFormError] = useState<NormalizedApiError | null>(null);
 
-  // New role form state
-  const [isAddingRole, setIsAddingRole] = useState(false);
+  // Role modal state — create & edit share one form (mode distinguishes them).
+  const [roleModalMode, setRoleModalMode] = useState<'create' | 'edit' | null>(null);
+  const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [roleName, setRoleName] = useState('');
   const [roleDisplay, setRoleDisplay] = useState('');
   const [roleDesc, setRoleDesc] = useState('');
@@ -119,6 +120,15 @@ export function UserManagement() {
     },
   });
 
+  const updateRoleM = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: RoleUpdatePayload }) =>
+      roleApi.update(id, body).then((r) => r.data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['roles'] });
+      toast.success('角色权限已更新');
+    },
+  });
+
   const deleteRoleM = useMutation({
     mutationFn: (id: string) => roleApi.delete(id),
     onSuccess: () => {
@@ -177,21 +187,56 @@ export function UserManagement() {
     });
   };
 
-  const handleCreateRole = (e: FormEvent) => {
-    e.preventDefault();
-    if (!roleName || !roleDisplay) return;
-    createRoleM.mutate({
-      name: roleName,
-      display_name: roleDisplay,
-      description: roleDesc,
-      permissions: [...rolePerms],
-    });
+  const openRoleCreate = () => {
+    setEditingRole(null);
     setRoleName('');
     setRoleDisplay('');
     setRoleDesc('');
     setRolePerms(new Set());
-    setIsAddingRole(false);
+    setRoleModalMode('create');
   };
+
+  const openRoleEdit = (role: Role) => {
+    setEditingRole(role);
+    setRoleName(role.name);
+    setRoleDisplay(role.display_name);
+    setRoleDesc(role.description);
+    setRolePerms(new Set(role.permissions));
+    setRoleModalMode('edit');
+  };
+
+  const closeRoleModal = () => {
+    setRoleModalMode(null);
+    setEditingRole(null);
+  };
+
+  const handleRoleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (roleModalMode === 'edit' && editingRole) {
+      // 系统角色仅可改权限点（后端 SYSTEM_ROLE_IMMUTABLE_* 校验拒改显示名/描述），
+      // 自定义角色可一并提交显示名/描述；name 一律不可改。
+      updateRoleM.mutate({
+        id: editingRole.id,
+        body:
+          editingRole.role_type === 'custom'
+            ? { display_name: roleDisplay, description: roleDesc, permissions: [...rolePerms] }
+            : { permissions: [...rolePerms] },
+      });
+    } else {
+      if (!roleName || !roleDisplay) return;
+      createRoleM.mutate({
+        name: roleName,
+        display_name: roleDisplay,
+        description: roleDesc,
+        permissions: [...rolePerms],
+      });
+    }
+    closeRoleModal();
+  };
+
+  // 编辑系统角色时：显示名/描述只读（后端 SYSTEM_ROLE_IMMUTABLE_* 校验）。
+  const isEditingSystemRole = roleModalMode === 'edit' && editingRole?.role_type === 'system';
+  const roleFormPending = roleModalMode === 'edit' ? updateRoleM.isPending : createRoleM.isPending;
 
   return (
     <div className="space-y-6">
@@ -201,7 +246,7 @@ export function UserManagement() {
           <Shield className="w-5 h-5 text-emerald-400" />
           <div className="space-y-0.5">
             <h2 className="text-sm font-bold text-[#fafafa] font-sans">RBAC 角色及矩阵鉴权中心</h2>
-            <p className="text-xs text-[#a1a1aa] font-sans">配置组织成员角色、管理角色权限点（后端 24 权限字符串）。</p>
+            <p className="text-xs text-[#a1a1aa] font-sans">配置组织成员角色、管理角色权限点（后端 {allPerms.length} 权限字符串）。</p>
           </div>
         </div>
 
@@ -337,7 +382,7 @@ export function UserManagement() {
               角色管理 ({roles.length})
             </h3>
             <button
-              onClick={() => setIsAddingRole(true)}
+              onClick={openRoleCreate}
               className="text-[10px] text-indigo-400 hover:underline cursor-pointer"
             >
               + 新建角色
@@ -351,6 +396,12 @@ export function UserManagement() {
                   <span className="text-xs font-bold text-[#fafafa]">{r.display_name}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-[9px] text-[#71717a] font-mono">{r.role_type}</span>
+                    <button
+                      onClick={() => openRoleEdit(r)}
+                      className="text-[10px] uppercase font-bold text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
+                    >
+                      编辑
+                    </button>
                     {r.role_type === 'custom' && (
                       <button
                         onClick={() => handleDeleteRole(r)}
@@ -463,38 +514,67 @@ export function UserManagement() {
         </div>
       )}
 
-      {/* CREATE ROLE DIALOG MODAL */}
-      {isAddingRole && (
+      {/* ROLE CREATE/EDIT DIALOG MODAL */}
+      {roleModalMode !== null && (
         <div id="modal_create_role" className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-lg bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
             <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
               <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">
-                <Plus className="w-4 h-4 text-indigo-400" />
-                新建角色（POST /roles）
+                {roleModalMode === 'create' ? (
+                  <>
+                    <Plus className="w-4 h-4 text-indigo-400" />
+                    新建角色（POST /roles）
+                  </>
+                ) : (
+                  <>
+                    <Pencil className="w-4 h-4 text-indigo-400" />
+                    编辑角色（PATCH /roles/{editingRole?.id}）
+                  </>
+                )}
               </h3>
-              <button onClick={() => setIsAddingRole(false)} className="text-slate-500 hover:text-slate-300 font-bold cursor-pointer">✕</button>
+              <button onClick={closeRoleModal} className="text-slate-500 hover:text-slate-300 font-bold cursor-pointer">✕</button>
             </div>
 
-            <form onSubmit={handleCreateRole} className="p-5 space-y-4 text-xs">
+            <form onSubmit={handleRoleSubmit} className="p-5 space-y-4 text-xs">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1">
                   <label className="text-slate-400 font-medium font-sans">角色 key (小写)</label>
-                  <input type="text" required pattern="[a-z][a-z0-9_]*" value={roleName}
-                    onChange={(e) => setRoleName(e.target.value)} placeholder="如: content_editor"
-                    className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-mono" />
+                  <input
+                    type="text"
+                    required
+                    pattern="[a-z][a-z0-9_]*"
+                    value={roleName}
+                    onChange={(e) => setRoleName(e.target.value)}
+                    readOnly={roleModalMode === 'edit'}
+                    placeholder="如: content_editor"
+                    className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-mono read-only:opacity-60 read-only:cursor-not-allowed"
+                  />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-slate-400 font-medium font-sans">显示名</label>
-                  <input type="text" required value={roleDisplay}
-                    onChange={(e) => setRoleDisplay(e.target.value)} placeholder="如: 内容编辑"
-                    className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-sans" />
+                  <label className="text-slate-400 font-medium font-sans">
+                    显示名{isEditingSystemRole ? '（系统角色不可改）' : ''}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={roleDisplay}
+                    onChange={(e) => setRoleDisplay(e.target.value)}
+                    disabled={isEditingSystemRole}
+                    placeholder="如: 内容编辑"
+                    className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-sans disabled:opacity-60 disabled:cursor-not-allowed"
+                  />
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-slate-400 font-medium font-sans">描述</label>
-                <input type="text" value={roleDesc} onChange={(e) => setRoleDesc(e.target.value)}
-                  className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-sans" />
+                <label className="text-slate-400 font-medium font-sans">描述{isEditingSystemRole ? '（系统角色不可改）' : ''}</label>
+                <input
+                  type="text"
+                  value={roleDesc}
+                  onChange={(e) => setRoleDesc(e.target.value)}
+                  disabled={isEditingSystemRole}
+                  className="w-full px-3 py-2 bg-[#121214] border border-[#27272a] rounded-lg text-slate-200 focus:outline-none focus:border-indigo-500 font-sans disabled:opacity-60 disabled:cursor-not-allowed"
+                />
               </div>
 
               <div className="space-y-1">
@@ -503,13 +583,15 @@ export function UserManagement() {
               </div>
 
               <div className="p-4 border-t border-[#27272a] bg-[#121214] flex justify-end gap-3 pt-4">
-                <button type="button" onClick={() => setIsAddingRole(false)}
+                <button type="button" onClick={closeRoleModal}
                   className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-slate-400 hover:text-white rounded-lg cursor-pointer font-semibold">
                   取消
                 </button>
-                <button type="submit" disabled={createRoleM.isPending}
+                <button type="submit" disabled={roleFormPending}
                   className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shadow-md cursor-pointer font-sans disabled:opacity-60">
-                  {createRoleM.isPending ? '创建中…' : '创建角色'}
+                  {roleFormPending
+                    ? roleModalMode === 'edit' ? '保存中…' : '创建中…'
+                    : roleModalMode === 'edit' ? '保存修改' : '创建角色'}
                 </button>
               </div>
             </form>

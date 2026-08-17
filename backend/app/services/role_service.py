@@ -22,6 +22,7 @@ DEFAULT_SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "agent:read", "agent:write", "agent:invoke",
         "workflow:read", "workflow:write",
         "tool:read", "tool:write",
+        "application:read", "application:write",
         "mcp:read", "mcp:write",
         "skill:read", "skill:write",
         "task:read", "task:write", "task:invoke",
@@ -34,6 +35,7 @@ DEFAULT_SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "agent:read", "agent:write", "agent:invoke",
         "workflow:read", "workflow:write",
         "tool:read",
+        "application:read", "application:write",
         "mcp:read",
         "skill:read", "skill:write",
         "task:read", "task:write",
@@ -77,6 +79,27 @@ ALL_PERMISSION_KEYS: list[str] = [
     "apikey:manage", "settings:manage",
     "model:read", "model:write",
 ]
+
+# ---------------------------------------------------------------------------
+# One-time data migrations (marker-guarded)
+#
+# init_system_roles() never touches existing role documents, so roles
+# materialized by older code keep stale permission lists forever. Each
+# backfill below patches a known gap exactly once per database — the marker
+# prevents re-adding permissions an admin may have deliberately removed
+# afterwards via the role editor.
+# ---------------------------------------------------------------------------
+
+_MIGRATION_COLLECTION = "schema_migrations"
+
+# v1: application:read/write were absent from DEFAULT_SYSTEM_ROLE_PERMISSIONS
+# when admin/developer were first written to MongoDB, leaving even admins
+# without the "create application" button.
+_BACKFILL_V1_MARKER = "backfill_application_perms_v1"
+_BACKFILL_V1_TARGETS: dict[str, list[str]] = {
+    "admin": ["application:read", "application:write"],
+    "developer": ["application:read", "application:write"],
+}
 
 
 class RoleService:
@@ -141,6 +164,52 @@ class RoleService:
                     )
 
         logger.info("system_roles_initialized")
+
+    @staticmethod
+    async def backfill_system_role_permissions() -> None:
+        """One-time migration: patch permission keys missing from system roles
+        that were materialized by older code.
+
+        Marker-guarded so it runs at most once per database. The marker is
+        only written after a successful patch, so a failed run retries on the
+        next startup. Affected roles' Redis caches are invalidated so the fix
+        is visible immediately instead of after the 1h TTL.
+        """
+        markers = get_database()[_MIGRATION_COLLECTION]
+        if await markers.find_one({"_id": _BACKFILL_V1_MARKER}) is not None:
+            return
+
+        col = RoleService._collection()
+        patched: list[str] = []
+        for role_name, missing in _BACKFILL_V1_TARGETS.items():
+            result = await col.update_one(
+                {"name": role_name, "role_type": RoleType.SYSTEM.value},
+                {"$addToSet": {"permissions": {"$each": missing}}},
+            )
+            if result.modified_count > 0:
+                patched.append(role_name)
+
+        # Record the marker even when nothing needed patching (fresh installs
+        # already get the correct defaults from init_system_roles).
+        await markers.update_one(
+            {"_id": _BACKFILL_V1_MARKER},
+            {
+                "$set": {
+                    "executed_at": utc_now().isoformat(),
+                    "patched_roles": patched,
+                }
+            },
+            upsert=True,
+        )
+
+        for role_name in patched:
+            await RoleService.invalidate_cache(role_name)
+
+        logger.info(
+            "role_permissions_backfilled marker={} patched_roles={}",
+            _BACKFILL_V1_MARKER,
+            patched,
+        )
 
     # ------------------------------------------------------------------
     # Read operations

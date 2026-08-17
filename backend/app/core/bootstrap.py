@@ -81,6 +81,9 @@ async def ensure_all_indexes() -> TriggerRepository:
 
     # init_system_roles depends on RoleService.ensure_indexes completing.
     await RoleService.init_system_roles()
+    # Backfill stale system-role permission lists written by older code
+    # (marker-guarded, runs once per database).
+    await RoleService.backfill_system_role_permissions()
     return trigger_repo
 
 
