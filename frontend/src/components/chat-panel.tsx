@@ -39,7 +39,6 @@ import { parseBackendDate } from '../lib/format'
 import {
   agentApi,
   type StreamEvent,
-  type ThinkingEvent,
   type ToolCallEvent,
   type ToolResultEvent,
 } from '../services/agent-api'
@@ -77,6 +76,8 @@ export interface TimelineEntry {
   toolStatus?: ToolStatus
   /** Whether this entry is expanded (for collapsible items) */
   expanded?: boolean
+  /** 用户手动切换过折叠——thinking 流式结束后的自动收起据此让位于用户选择 */
+  userToggled?: boolean
 }
 
 export interface Message {
@@ -675,6 +676,13 @@ export default function ChatPanel({
       const reader = response.body.getReader()
       const decoder = new TextDecoder()
 
+      // 当前 LLM 轮的 thinking 累积与 entry 定位（对齐 frontend-studio 修复）：
+      // thinking=权威全文覆盖 / thinking_delta=增量追加；轮次边界是 final 事件
+      // ——tool_call_start 在流式期间先于 on_chat_model_end 到达，不能作为边界，
+      // 否则 final 会在 tool entry 之后另起卡片，思考被排到它触发的工具之后。
+      let thinkingText = ''
+      let thinkingEntryId: string | null = null
+
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -967,18 +975,40 @@ export default function ChatPanel({
                   }
                   return next
                 })
-              } else if (eventType === 'thinking') {
-                const entry = _sseEventToTimeline(event)
-                if (entry) {
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === agentMsgId
-                        ? { ...m, timeline: [...(m.timeline ?? []), entry] }
-                        : m,
-                    ),
-                  )
-                  scrollToBottom()
+              } else if (eventType === 'thinking' || eventType === 'thinking_delta') {
+                // thinking = on_chat_model_end 的权威全文 → 覆盖；thinking_delta = 增量 → 追加。
+                // 按 thinkingEntryId 定位本轮 entry（delta 到达即创建，位于其触发的
+                // 工具之前，顺序正确）；final 到达即本轮结束：写入全文、收起、清空累积。
+                const isFinal = eventType === 'thinking'
+                const rawContent = (event as { content?: unknown }).content
+                const chunk = typeof rawContent === 'string' ? rawContent : ''
+                if (!chunk && !isFinal) continue
+                thinkingText = isFinal ? chunk : thinkingText + chunk
+                const text = thinkingText
+                const pushId: string = thinkingEntryId ?? generateId()
+                thinkingEntryId = pushId
+                if (isFinal) {
+                  thinkingText = ''
+                  thinkingEntryId = null
                 }
+                setMessages((prev) =>
+                  prev.map((m) => {
+                    if (m.id !== agentMsgId) return m
+                    const tl = m.timeline ? [...m.timeline] : []
+                    const idx = tl.findIndex((e) => e.id === pushId)
+                    if (idx >= 0) {
+                      tl[idx] = {
+                        ...tl[idx],
+                        content: text,
+                        expanded: isFinal && !tl[idx].userToggled ? false : tl[idx].expanded,
+                      }
+                    } else {
+                      tl.push({ id: pushId, type: 'thinking', content: text, expanded: !isFinal })
+                    }
+                    return { ...m, timeline: tl }
+                  }),
+                )
+                if (isFinal) scrollToBottom()
               }
             }
           } catch {
@@ -1086,7 +1116,9 @@ export default function ChatPanel({
           ? {
               ...m,
               timeline: (m.timeline ?? []).map((e) =>
-                e.id === entryId ? { ...e, expanded: !e.expanded } : e,
+                e.id === entryId
+                  ? { ...e, expanded: !e.expanded, userToggled: true }
+                  : e,
               ),
             }
           : m,
@@ -1663,7 +1695,7 @@ function TimelineEntryCard({
             </span>
           </button>
           {entry.expanded && (
-            <div className="px-3 pb-2 text-xs text-blue-700 whitespace-pre-wrap leading-relaxed border-t border-blue-100 pt-2">
+            <div className="px-3 pb-2 text-xs text-blue-700 whitespace-pre-wrap leading-relaxed border-t border-blue-100 pt-2 max-h-64 overflow-y-auto">
               {entry.content}
             </div>
           )}
@@ -2096,20 +2128,5 @@ function ToolResultCardRenderer({
     )
   }
 
-  return null
-}
-
-/* ─── SSE event to timeline entry converter ─── */
-
-function _sseEventToTimeline(event: StreamEvent): TimelineEntry | null {
-  if ('type' in event && event.type === 'thinking') {
-    const e = event as ThinkingEvent
-    const safeStr = (v: unknown): string => {
-      if (typeof v === 'string') return v
-      if (v == null) return ''
-      try { return JSON.stringify(v) } catch { return String(v) }
-    }
-    return { id: generateId(), type: 'thinking', content: safeStr(e.content) }
-  }
   return null
 }
