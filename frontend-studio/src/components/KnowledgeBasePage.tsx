@@ -174,7 +174,7 @@ export function KnowledgeBasePage({
 
       {/* create modal */}
       {isCreating && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 text-xs">
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 text-xs">
           <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl">
             <div className="p-4 border-b border-[#27272a] flex items-center justify-between bg-[#121214]/60">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">

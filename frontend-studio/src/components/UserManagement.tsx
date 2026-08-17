@@ -385,7 +385,7 @@ export function UserManagement() {
 
       {/* CREATE USER DIALOG MODAL */}
       {isAdding && (
-        <div id="modal_create_user" className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div id="modal_create_user" className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
             <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
               <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">
@@ -465,7 +465,7 @@ export function UserManagement() {
 
       {/* CREATE ROLE DIALOG MODAL */}
       {isAddingRole && (
-        <div id="modal_create_role" className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div id="modal_create_role" className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-lg bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
             <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
               <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">

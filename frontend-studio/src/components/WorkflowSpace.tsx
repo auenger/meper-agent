@@ -200,7 +200,7 @@ export function WorkflowSpace({
 
       {/* Delete confirm modal */}
       {confirmDelete && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in">
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
           <div className="w-full max-w-sm bg-[#121214] border border-[#27272a] rounded-2xl shadow-2xl">
             <div className="flex items-center justify-between px-5 py-4 border-b border-[#27272a]">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
