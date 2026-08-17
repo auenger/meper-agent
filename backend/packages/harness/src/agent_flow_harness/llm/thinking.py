@@ -39,6 +39,10 @@ _OPENAI_REASONING_PREFIXES: tuple[str, ...] = ("o1-", "o3-", "o4-")
 # Default token budget for Claude extended thinking.
 _ANTHROPIC_THINKING_BUDGET = 5000
 
+# Anthropic requires budget_tokens >= 1024; below this max_tokens there is no
+# room for a meaningful thinking budget + answer, so thinking is disabled.
+_MIN_THINKING_MAX_TOKENS = 2048
+
 
 def build_thinking_kwargs(
     model_id: str,
@@ -72,13 +76,25 @@ def build_thinking_kwargs(
     # Anthropic path.
     if provider_or_compatibility == "anthropic":
         budget = _ANTHROPIC_THINKING_BUDGET
-        if max_tokens is not None and int(max_tokens) <= budget:
-            logger.warning(
-                "llm_thinking_max_tokens_low",
-                max_tokens=max_tokens,
-                budget=budget,
-            )
-            return {}
+        if max_tokens is not None:
+            if int(max_tokens) < _MIN_THINKING_MAX_TOKENS:
+                # Too small to fit a meaningful budget + answer — explicitly
+                # disable so the model doesn't emit thinking on its own
+                # (some gateways default it on) and duplicate reasoning in
+                # the visible text.
+                logger.warning(
+                    "llm_thinking_max_tokens_too_small",
+                    max_tokens=max_tokens,
+                    min_required=_MIN_THINKING_MAX_TOKENS,
+                )
+                return {"thinking": {"type": "disabled"}}
+            # Adapt the budget so thinking is actually enabled instead of
+            # silently dropped: cap it at half the token window, leaving the
+            # rest for the answer. (Previously max_tokens <= budget caused the
+            # kwargs to be dropped entirely, leaving the model to its own
+            # default — which made GLM emit reasoning both as a thinking
+            # block AND as a "思考过程" section in the text.)
+            budget = min(budget, int(max_tokens) // 2)
         kwargs: dict[str, Any] = {
             "thinking": {"type": "enabled", "budget_tokens": budget},
         }

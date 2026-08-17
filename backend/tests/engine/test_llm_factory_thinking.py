@@ -31,11 +31,20 @@ class TestBuildThinkingKwargs:
         assert result["thinking"]["type"] == "enabled"
 
     def test_anthropic_thinking_insufficient_max_tokens(self):
-        """When max_tokens <= budget, thinking should be skipped."""
+        """max_tokens below the floor (< 2048): thinking is explicitly disabled
+        so gateways that default it on don't duplicate reasoning in text."""
         result = build_thinking_kwargs(
             "claude-sonnet-4", "anthropic", True, max_tokens=1000
         )
-        assert result == {}
+        assert result == {"thinking": {"type": "disabled"}}
+
+    def test_anthropic_thinking_budget_adapts_to_max_tokens(self):
+        """max_tokens above the floor but below the default budget: the
+        budget adapts to half the window instead of dropping thinking."""
+        result = build_thinking_kwargs(
+            "claude-sonnet-4", "anthropic", True, max_tokens=4096
+        )
+        assert result["thinking"] == {"type": "enabled", "budget_tokens": 2048}
 
     def test_openai_reasoning_model(self):
         result = build_thinking_kwargs("o3-mini", "openai", True, None)

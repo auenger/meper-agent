@@ -77,8 +77,9 @@ def test_build_client_from_doc_anthropic_with_thinking() -> None:
         enable_thinking=True,
     )
     assert isinstance(llm, ChatAnthropic)
-    # thinking kwargs applied at construction (max_tokens must exceed budget).
-    assert getattr(llm, "thinking", None) == {"type": "enabled", "budget_tokens": 5000}
+    # thinking kwargs applied at construction — budget adapts to half of
+    # max_tokens (8192 // 2 = 4096 < default 5000).
+    assert getattr(llm, "thinking", None) == {"type": "enabled", "budget_tokens": 4096}
 
 
 def test_build_client_from_doc_agent_overrides_temperature() -> None:

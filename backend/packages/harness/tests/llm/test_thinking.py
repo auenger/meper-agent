@@ -35,12 +35,23 @@ def test_thinking_anthropic_enables_with_budget() -> None:
     assert "max_tokens" in out
 
 
-def test_thinking_anthropic_max_tokens_too_low_skips() -> None:
-    """max_tokens <= budget must skip thinking (Anthropic constraint)."""
+def test_thinking_anthropic_max_tokens_too_small_disables() -> None:
+    """max_tokens below the floor (no room for budget + answer) must
+    explicitly disable thinking — otherwise gateways that default thinking
+    on emit reasoning twice (thinking block + "思考过程" in text)."""
     out = build_thinking_kwargs(
         "claude-sonnet-4", "anthropic", enable_thinking=True, max_tokens=100
     )
-    assert out == {}
+    assert out == {"thinking": {"type": "disabled"}}
+
+
+def test_thinking_anthropic_budget_adapts_to_max_tokens() -> None:
+    """max_tokens above the floor but below the default budget: the budget
+    adapts to half the window instead of dropping thinking entirely."""
+    out = build_thinking_kwargs(
+        "claude-sonnet-4", "anthropic", enable_thinking=True, max_tokens=4096
+    )
+    assert out["thinking"] == {"type": "enabled", "budget_tokens": 2048}
 
 
 def test_thinking_openai_oseries_enables_reasoning_effort() -> None:
