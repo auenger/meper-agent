@@ -796,6 +796,85 @@ export function useChat(
 
   const cancel = useCallback(() => abortRef.current?.abort(), [])
 
+  // ── 语音桥接：VoiceComposer 的 WS 事件写入同一条消息流 ──────────────
+  // 语音期间 running=true（send 的早退条件天然互斥：语音 turn 中不能发文本，
+  // 文本流式中麦克风按钮也被禁用）。turn.end 复用 reloadTick 全量重载路径
+  // （图片/chart artifacts、hitl 恢复都走它）。
+  const voiceAccRef = useRef<AssistantAccumulator | null>(null)
+
+  const voiceAppendUserMessage = useCallback((text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    setMessages((current) => [
+      ...current,
+      {
+        id: genId(),
+        role: 'user',
+        content: [{ type: 'text', text: trimmed }],
+        attachments: [],
+        charts: [],
+        status: 'success',
+        createdAt: new Date(),
+      },
+    ])
+  }, [])
+
+  const voiceBeginAssistantTurn = useCallback(() => {
+    const acc: AssistantAccumulator = {
+      id: genId(),
+      blocks: [],
+      attachments: new Map(),
+      charts: new Map(),
+    }
+    voiceAccRef.current = acc
+    setRunning(true)
+    setMessages((current) => [
+      ...current,
+      {
+        id: acc.id,
+        role: 'assistant',
+        content: [],
+        attachments: [],
+        charts: [],
+        status: 'loading',
+        createdAt: new Date(),
+      },
+    ])
+  }, [])
+
+  const voiceAppendDelta = useCallback(
+    (delta: string) => {
+      const acc = voiceAccRef.current
+      if (!acc || !delta) return
+      const last = acc.blocks[acc.blocks.length - 1]
+      if (last && last.type === 'text') {
+        last.text += delta
+      } else {
+        acc.blocks.push({ type: 'text', text: delta })
+      }
+      flush(acc)
+    },
+    [flush],
+  )
+
+  const voiceFinishTurn = useCallback(() => {
+    const acc = voiceAccRef.current
+    if (acc) {
+      flush(acc, 'success')
+      voiceAccRef.current = null
+    }
+    setRunning(false)
+    onFilesChanged()
+    onSessionChanged?.()
+    setReloadTick((tick) => tick + 1)
+  }, [flush, onFilesChanged, onSessionChanged])
+
+  const voiceAbort = useCallback(() => {
+    // 语音出错/退出输入模式：清占位状态，不动消息（下一句会重开 turn）。
+    voiceAccRef.current = null
+    setRunning(false)
+  }, [])
+
   return {
     messages,
     loading,
@@ -805,5 +884,10 @@ export function useChat(
     send,
     cancel,
     answerClarification,
+    voiceAppendUserMessage,
+    voiceBeginAssistantTurn,
+    voiceAppendDelta,
+    voiceFinishTurn,
+    voiceAbort,
   }
 }

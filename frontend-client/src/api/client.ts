@@ -160,9 +160,13 @@ async function refreshAccessToken(): Promise<string | null> {
   return refreshPromise
 }
 
-export async function ensureAccessToken(): Promise<string | null> {
+export async function ensureAccessToken(force = false): Promise<string | null> {
   if (AUTH_MODE === 'apikey') return null
-  return useAuthStore.getState().accessToken ?? refreshAccessToken()
+  if (!force) {
+    const current = useAuthStore.getState().accessToken
+    if (current) return current
+  }
+  return refreshAccessToken()
 }
 
 /** apikey 模式：附加 API Key +（若有）用户 token（X-User-Token header）。

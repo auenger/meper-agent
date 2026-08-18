@@ -28,6 +28,9 @@ class ExtAgentResponse(BaseModel):
     recommended_items: list[RecommendedItem] = Field(
         default_factory=list, description="终端用户首屏推荐问题/操作快捷项"
     )
+    voice_enabled: bool = Field(
+        default=False, description="该 Agent 是否开启实时语音对话"
+    )
 
 
 class ExtAgentListResponse(BaseModel):

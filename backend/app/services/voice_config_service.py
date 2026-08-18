@@ -36,6 +36,12 @@ class VoiceConfigService:
         return VoiceConfig(**doc)
 
     @staticmethod
+    async def is_configured() -> bool:
+        """Whether voice is usable (master ASR/TTS credential present)."""
+        cfg = await VoiceConfigService.get_config()
+        return bool(cfg and cfg.api_key_enc)
+
+    @staticmethod
     async def save_config(body) -> VoiceConfig:
         """Upsert the singleton. A null/empty ``api_key`` keeps the existing value."""
         db = get_database()

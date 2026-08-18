@@ -48,6 +48,7 @@ def _doc_to_ext_response(doc: dict) -> ExtAgentResponse:
         status=doc["status"],
         welcome_message=doc.get("welcome_message", ""),
         recommended_items=doc.get("recommended_items", []),
+        voice_enabled=bool(doc.get("voice_enabled", False)),
     )
 
 

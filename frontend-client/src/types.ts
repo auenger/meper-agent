@@ -30,6 +30,8 @@ export interface AgentSummary {
   welcomeMessage?: string
   /** 终端用户首屏推荐问题/操作快捷项 */
   recommendedItems?: RecommendedItem[]
+  /** 该 Agent 是否开启实时语音对话（仅 apikey/ext 列表返回） */
+  voiceEnabled?: boolean
 }
 
 export interface EffectiveResource {
@@ -49,6 +51,7 @@ export interface AgentRecord {
   status: string
   welcome_message?: string | null
   recommended_items?: RecommendedItem[]
+  voice_enabled?: boolean
 }
 
 export interface ChatSession {

@@ -1,4 +1,5 @@
 import {
+  AudioOutlined,
   FileOutlined,
   MenuOutlined,
   PaperClipOutlined,
@@ -17,6 +18,7 @@ import {
   Result,
   Skeleton,
   Spin,
+  Tooltip,
   Typography,
 } from 'antd'
 import type { UploadFile } from 'antd'
@@ -25,10 +27,12 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { useChat } from '../hooks/use-chat'
+import { fetchVoiceStatus } from '../api/voice'
 import type { AgentSummary } from '../types'
 import { GeneratedFiles } from './GeneratedFiles'
 import { MessageContent } from './MessageContent'
 import { ClarificationFormCard } from './clarification-form-card'
+import { VoiceComposer } from './voice/VoiceComposer'
 
 interface ChatViewProps {
   agent: AgentSummary | null
@@ -39,6 +43,8 @@ interface ChatViewProps {
   onCreateSession: () => void
   /** 会话内容变化(如发完消息后端生成标题)时回调,用于刷新侧边栏会话列表 */
   onSessionChanged?: () => void
+  /** 语音对话后端新建会话时回传新 session_id,用于切换当前会话 */
+  onSessionSwitched?: (sessionId: string) => void
 }
 
 export function ChatView({
@@ -49,6 +55,7 @@ export function ChatView({
   onOpenNavigation,
   onCreateSession,
   onSessionChanged,
+  onSessionSwitched,
 }: ChatViewProps) {
   const { message } = App.useApp()
   const [input, setInput] = useState('')
@@ -70,12 +77,44 @@ export function ChatView({
     send,
     cancel,
     answerClarification,
+    voiceAppendUserMessage,
+    voiceBeginAssistantTurn,
+    voiceAppendDelta,
+    voiceFinishTurn,
+    voiceAbort,
   } = useChat(
     agent?.id ?? null,
     sessionId,
     () => setFilesRefreshKey((value) => value + 1),
     onSessionChanged,
   )
+
+  // ── 语音输入模式 ─────────────────────────────────────────────────
+  const [inputMode, setInputMode] = useState<'text' | 'voice'>('text')
+  const [voiceConfigured, setVoiceConfigured] = useState(false)
+  const voiceAvailable = voiceConfigured && agent?.voiceEnabled === true
+
+  useEffect(() => {
+    let cancelled = false
+    fetchVoiceStatus()
+      .then((status) => {
+        if (!cancelled) setVoiceConfigured(status.configured === true)
+      })
+      .catch(() => {
+        // 探测失败按未配置处理（不弹错，麦克风按钮不出现即可）
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // 语音可用性变化后退出语音模式（如切换到未开启语音的 Agent）
+  useEffect(() => {
+    if (inputMode === 'voice' && !voiceAvailable) {
+      voiceAbort()
+      setInputMode('text')
+    }
+  }, [inputMode, voiceAvailable, voiceAbort])
 
   // ── 自动滚动跟随 ────────────────────────────────────────────────
   // 历史背景:.message-viewport(外层 overflow:auto)与 Bubble.List 内部
@@ -496,6 +535,27 @@ export function ChatView({
                 ))}
               </div>
             ) : null}
+            {inputMode === 'voice' && voiceAvailable ? (
+              <VoiceComposer
+                agentId={agent?.id}
+                sessionId={sessionId ?? undefined}
+                onExit={() => {
+                  voiceAbort()
+                  setInputMode('text')
+                }}
+                onTranscriptFinal={voiceAppendUserMessage}
+                onTurnStarted={(info) => {
+                  voiceBeginAssistantTurn()
+                  // voice.start 未带 session_id 时后端新建会话并在此回传
+                  if (info.session_id && info.session_id !== sessionId) {
+                    onSessionSwitched?.(info.session_id)
+                  }
+                }}
+                onAgentDelta={voiceAppendDelta}
+                onTurnEnd={voiceFinishTurn}
+                onInterruptRequest={voiceAppendDelta}
+              />
+            ) : (
             <Sender
               value={input}
               onChange={setInput}
@@ -507,15 +567,29 @@ export function ChatView({
               placeholder={hitl ? '请先处理待确认操作' : '输入消息，Enter 发送'}
               autoSize={{ minRows: 1, maxRows: 6 }}
               prefix={
-                <Button
-                  type="text"
-                  icon={<PaperClipOutlined />}
-                  onClick={() => fileInputRef.current?.click()}
-                  aria-label="上传附件"
-                  disabled={running || Boolean(hitl)}
-                />
+                <>
+                  {voiceAvailable && (
+                    <Tooltip title="切换到语音输入">
+                      <Button
+                        type="text"
+                        icon={<AudioOutlined />}
+                        onClick={() => setInputMode('voice')}
+                        aria-label="切换到语音输入"
+                        disabled={running || Boolean(hitl)}
+                      />
+                    </Tooltip>
+                  )}
+                  <Button
+                    type="text"
+                    icon={<PaperClipOutlined />}
+                    onClick={() => fileInputRef.current?.click()}
+                    aria-label="上传附件"
+                    disabled={running || Boolean(hitl)}
+                  />
+                </>
               }
             />
+            )}
             <input
               ref={fileInputRef}
               className="hidden-file-input"
