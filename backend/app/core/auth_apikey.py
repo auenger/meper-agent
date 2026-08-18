@@ -40,6 +40,9 @@ class ApiKeyPrincipal:
     token_record_id: str | None = None
     # 原始 X-User-Token（通用 token 原文）
     user_token: str | None = None
+    # 应用上下文（ticket 序列化 / 语音通道每 turn 凭证复查用）
+    app_id: str = ""
+    introspect_url: str = ""
 
     def has_scope(self, scope: str) -> bool:
         return scope in self.scopes
@@ -107,11 +110,11 @@ def _extract_bearer_token(header_value: str | None) -> str | None:
     return value or None
 
 
-async def get_api_key_principal(
-    request: Request,
-    authorization: str = Header(None, description="Bearer af_live_xxx"),
-) -> ApiKeyPrincipal:
-    """FastAPI dependency: authenticate via API Key.
+async def authenticate_api_key(full_key: str, user_token: str) -> ApiKeyPrincipal:
+    """Core API Key authentication, independent of FastAPI Request/headers.
+
+    Shared by the HTTP dependency and non-HTTP surfaces (e.g. the voice
+    realtime WebSocket, which cannot carry custom headers).
 
     终端用户身份校验（v4）：X-User-Token 通过接入方 introspection 端点验证，
     ApiKey 绑定的 app_id 提供身份命名空间，sub = {app_id}:{username} 查
@@ -125,14 +128,6 @@ async def get_api_key_principal(
             authorized the application.
     """
     from app.services.api_key_service import ApiKeyService
-
-    if not authorization or not authorization.startswith("Bearer "):
-        raise UnauthorizedError(
-            code="APIKEY_MISSING",
-            message="Missing or malformed Authorization header",
-        )
-
-    full_key = authorization.removeprefix("Bearer ").strip()
 
     if not full_key.startswith("af_live_"):
         raise UnauthorizedError(
@@ -156,7 +151,6 @@ async def get_api_key_principal(
     )
 
     # 终端用户身份校验（introspection + 应用命名空间 + external_identities）。
-    user_token = _extract_bearer_token(request.headers.get("X-User-Token"))
     if not user_token:
         raise UnauthorizedError(
             code="EXT_USER_TOKEN_MISSING",
@@ -218,6 +212,29 @@ async def get_api_key_principal(
     principal.user_id = identity["platform_user_id"]
     principal.token_record_id = identity["platform_user_id"]
     principal.user_token = user_token
+    principal.app_id = app_id
+    principal.introspect_url = introspect_url
 
     return principal
+
+
+async def get_api_key_principal(
+    request: Request,
+    authorization: str = Header(None, description="Bearer af_live_xxx"),
+) -> ApiKeyPrincipal:
+    """FastAPI dependency: authenticate via API Key.
+
+    Header extraction only; the full chain lives in ``authenticate_api_key``
+    so non-HTTP surfaces (WebSocket ticket validation) can reuse it.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        raise UnauthorizedError(
+            code="APIKEY_MISSING",
+            message="Missing or malformed Authorization header",
+        )
+
+    full_key = authorization.removeprefix("Bearer ").strip()
+    user_token = _extract_bearer_token(request.headers.get("X-User-Token")) or ""
+
+    return await authenticate_api_key(full_key, user_token)
 

@@ -28,10 +28,13 @@ import struct
 import time
 import uuid
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import WebSocket
 from loguru import logger
+
+if TYPE_CHECKING:
+    from app.core.auth_apikey import ApiKeyPrincipal
 
 from app.voice import protocol as P  # noqa: N812
 from app.voice.config import VoiceRuntimeConfig
@@ -43,6 +46,17 @@ from app.voice.vad import Speech, create_vad
 # first-packet latency (don't wait for the whole reply to finish synthesizing).
 _SENT_END = re.compile(r"[。！？!?；;\n]")
 PARTIAL_IDLE_COMMIT_SECONDS = 1.0
+# Content-aware TTS: past this many spoken chars, or on code fences / markdown
+# table separators, mute streaming playback and summarize at end of turn.
+SPOKEN_BUDGET_CHARS = 400
+SUMMARY_CUE = "回复内容较长，以下是关键信息摘要。"
+SUMMARY_FALLBACK = "回复内容较长，详细内容请查看屏幕。"
+_DATA_BLOCK = re.compile(r"```|\|\s*:?-{3,}:?\s*\|")
+_SUMMARY_SYSTEM_PROMPT = (
+    "你是语音播报摘要器。把给定的回复内容提炼成一段中文口语化摘要，"
+    "不超过两百字，只保留关键信息与结论。直接输出纯文本，"
+    "不要使用任何 markdown 格式、列表符号或网址。"
+)
 _MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
 _MD_AUTOLINK = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
@@ -87,10 +101,14 @@ class VoiceSession:
         cfg: VoiceRuntimeConfig,
         asr_factory: Callable[[], STTProvider],
         tts_factory: Callable[[], TTSProvider],
+        principal: ApiKeyPrincipal | None = None,
     ) -> None:
         self.ws = ws
         self.user_id = user_id
         self.cfg = cfg
+        # External embed channel identity (ticket-redeemed). None = internal JWT
+        # user, for which none of the ext gates below apply.
+        self._principal = principal
         self.agent_id: str | None = None
         self.session_id: str | None = None
         self.state: str = P.STATE_IDLE
@@ -158,12 +176,34 @@ class VoiceSession:
             await self._send({"type": P.SERVER_ERROR, "content": "未指定语音对话 Agent"})
             return False
 
+        # External channel: same gate as ext invoke — scope + key bindings +
+        # published status. Uniform message to avoid agent enumeration.
+        if self._principal:
+            from app.core.errors import ForbiddenError
+
+            try:
+                self._principal.require_scope("agents:invoke")
+                self._principal.require_agent_access(self.agent_id)
+            except ForbiddenError:
+                await self._send(
+                    {"type": P.SERVER_ERROR, "content": "Agent 不存在或无权访问"}
+                )
+                return False
+
         from app.services.agent_service import AgentService
 
         agent = await AgentService.get_agent(self.agent_id)
         if agent is None:
             await self._send({"type": P.SERVER_ERROR, "content": "语音对话 Agent 不存在"})
             return False
+        if self._principal:
+            from app.models.agent import AgentStatus
+
+            if agent.get("status") != AgentStatus.PUBLISHED.value:
+                await self._send(
+                    {"type": P.SERVER_ERROR, "content": "Agent 不存在或无权访问"}
+                )
+                return False
         if not agent.get("voice_enabled", False):
             await self._send(
                 {"type": P.SERVER_ERROR, "content": "当前 Agent 未开启语音对话能力"}
@@ -352,13 +392,104 @@ class VoiceSession:
 
     # ── brain + TTS turn (stages 3 + 4) ───────────────────────────────
 
+    async def _ext_turn_gate(self) -> bool:
+        """Per-turn gate for the external (API Key) channel.
+
+        1. Rate limit — one turn counts like one invoke against the Key's
+           sliding window (handshake deliberately doesn't consume quota).
+        2. Credential re-check — introspection (Redis-cached) so a revoked
+           user token kills an otherwise long-lived connection.
+        3. Fresh ExtCallContext — every turn gets its own object; no reliance
+           on ContextVar inheritance across task boundaries.
+
+        Returns False when the turn must be skipped (error already sent).
+        """
+        principal = self._principal
+        assert principal is not None  # caller checks
+
+        from app.core.rate_limiter import check_rate_limit
+
+        allowed, _remaining, _reset = await check_rate_limit(
+            api_key_id=principal.key_id, limit=principal.rate_limit
+        )
+        if not allowed:
+            await self._send(
+                {
+                    "type": P.SERVER_ERROR,
+                    "code": "RATE_LIMIT_EXCEEDED",
+                    "content": "请求频率超限，请稍后重试",
+                }
+            )
+            return False
+
+        if principal.user_token and principal.introspect_url:
+            from app.services.user_auth_service import UserAuthService
+
+            try:
+                result = await UserAuthService.introspect(
+                    principal.introspect_url, principal.user_token
+                )
+            except Exception:
+                result = None
+            if result is None or not result.active:
+                await self._send(
+                    {
+                        "type": P.SERVER_ERROR,
+                        "code": "EXT_USER_TOKEN_INVALID",
+                        "content": "登录凭证已失效，请重新授权后再试",
+                    }
+                )
+                with contextlib.suppress(Exception):
+                    await self.ws.close(code=4401, reason="Authentication failed")
+                return False
+
+        from app.services.ext_api_call_log_service import (
+            ExtCallContext,
+            set_ext_call_context,
+        )
+
+        set_ext_call_context(ExtCallContext(
+            api_key_id=principal.key_id,
+            owner_user_id=principal.owner_user_id,
+            endpoint="voice:realtime",
+            start_time_ms=_now_ms(),
+        ))
+        return True
+
+    async def _ext_session_allowed(self, session_id: str | None) -> bool:
+        """External channel: verify an existing session belongs to this user.
+
+        MUST run before ``_resolve_session`` — its first step add_message()s
+        the user utterance into the target session, so a late check would
+        already have written into someone else's conversation. Exact-match
+        on ``user_id``, same rule as the ext session detail endpoint.
+        """
+        if not self._principal or not session_id:
+            return True
+
+        from app.services.session_service import SessionService
+
+        doc = await SessionService.get_session(session_id)
+        if doc is None or doc.get("user_id") != self.user_id:
+            await self._send(
+                {"type": P.SERVER_ERROR, "content": "会话不存在或无权访问"}
+            )
+            return False
+        return True
+
     async def _run_turn(self, transcript: str) -> None:
+        # External channel: per-turn gate BEFORE taking the lock — one turn
+        # ≈ one invoke (rate window), plus a credential re-check so a token
+        # revoked mid-connection cannot keep this WS channel alive.
+        if self._principal and not await self._ext_turn_gate():
+            return
         async with self._turn_lock:
             turn = TurnContext(transcript=transcript)
             turn.tts_queue = asyncio.Queue()
             self._active_turn = turn
             await self._set_state(P.STATE_THINKING)
             turn.tts_task = asyncio.create_task(self._tts_pump(turn))
+            turn_status = 200
             try:
                 if self._pending_clarification:
                     # Previous turn ended on ask_clarification → resume the
@@ -369,7 +500,11 @@ class VoiceSession:
                     await self._exec_brain(turn)
                 # Brain done — flush any trailing buffered text, then close TTS.
                 if not turn._cancelled and turn.tts_queue is not None:
-                    if turn.tts_buffer.strip():
+                    if turn.summary_mode:
+                        # Long/data-dense reply was muted mid-stream — speak an
+                        # LLM summary instead (the UI already has the full text).
+                        await self._speak_summary(turn)
+                    elif turn.tts_buffer.strip():
                         await turn.tts_queue.put(turn.tts_buffer)
                         turn.tts_buffer = ""
                     await turn.tts_queue.put(None)  # sentinel
@@ -382,7 +517,17 @@ class VoiceSession:
                 logger.exception("voice_turn_error")
                 await self._send({"type": P.SERVER_ERROR, "content": f"执行失败：{e}"})
                 await self._abort_tts(turn)
+                turn_status = 500
             finally:
+                if self._principal:
+                    # WS bypasses ExtApiStatsMiddleware (HTTP-only) — record
+                    # the turn into the Key's usage stats manually.
+                    from app.services.api_key_stats_service import record_request
+
+                    with contextlib.suppress(Exception):
+                        await record_request(
+                            self._principal.key_id, "voice:realtime", turn_status
+                        )
                 self._active_turn = None
                 if self._ptt:
                     await self._set_state(P.STATE_IDLE)
@@ -413,8 +558,11 @@ class VoiceSession:
                 {"type": P.SERVER_ERROR, "content": f"Agent {agent_id} 不存在"}
             )
             return
+        turn.agent_doc = exec_doc
 
         body = ExecutionRequest(input=turn.transcript, session_id=self.session_id)
+        if not await self._ext_session_allowed(body.session_id):
+            return
         self.session_id = await _resolve_session(agent_id, body, self.user_id)
 
         system_text = await _build_system_prompt_checked(exec_doc)
@@ -448,7 +596,7 @@ class VoiceSession:
                 on_event=lambda e: self._on_brain_event(e, turn),
                 enable_thinking=False,
                 legacy_records=[],
-                user_token=None,
+                user_token=self._principal.user_token if self._principal else None,
             )
             turn.usage = result.get("usage", {})
         except Exception as exc:
@@ -488,6 +636,7 @@ class VoiceSession:
         t = evt.get("type")
         if t == "text_delta":
             content = evt.get("content", "")
+            turn.reply_text += content
             await self._send({"type": P.SERVER_AGENT_TEXT_DELTA, "content": content})
             await self._feed_tts(content, turn)
         elif t == "error":
@@ -531,6 +680,10 @@ class VoiceSession:
                 {"type": P.SERVER_ERROR, "content": f"Agent {agent_id} 不存在"}
             )
             return
+        turn.agent_doc = exec_doc
+
+        if not await self._ext_session_allowed(self.session_id):
+            return
 
         request_id = uuid.uuid4().hex
         state = _build_initial_state(
@@ -560,7 +713,7 @@ class VoiceSession:
                 on_event=lambda e: self._on_brain_event(e, turn),
                 answer=turn.transcript,
                 enable_thinking=False,
-                user_token=None,
+                user_token=self._principal.user_token if self._principal else None,
             )
             turn.usage = result.get("usage", {})
         except Exception as exc:
@@ -607,13 +760,74 @@ class VoiceSession:
     # ── TTS pump (stage 4) ─────────────────────────────────────────────
 
     async def _feed_tts(self, delta: str, turn: TurnContext) -> None:
-        """Sentence-buffer the text_delta; enqueue whole sentences for synthesis."""
-        if turn.tts_queue is None:
+        """Sentence-buffer the text_delta; enqueue whole sentences for synthesis.
+
+        Content-aware switch: once the spoken budget is exhausted or a data
+        block (code fence / table separator) appears, mute TTS via summary
+        mode — the rest of the reply is only summarized at end of turn. The
+        client UI is fed separately (SERVER_AGENT_TEXT_DELTA) and unaffected.
+        """
+        if turn.tts_queue is None or turn.summary_mode:
             return
         turn.tts_buffer += delta
+        if _DATA_BLOCK.search(turn.tts_buffer):
+            await self._enter_summary_mode(turn)
+            return
         while True:
             sentence, turn.tts_buffer = _split_sentence(turn.tts_buffer)
             if sentence is None:
+                break
+            turn.spoken_chars += len(sentence)
+            await turn.tts_queue.put(sentence)
+        if turn.spoken_chars > SPOKEN_BUDGET_CHARS:
+            await self._enter_summary_mode(turn)
+
+    async def _enter_summary_mode(self, turn: TurnContext) -> None:
+        """Mute streaming TTS; announce the switch, summarize at end of turn."""
+        turn.summary_mode = True
+        turn.tts_buffer = ""
+        logger.info(
+            "voice_tts_summary_mode",
+            user_id=self.user_id,
+            spoken_chars=turn.spoken_chars,
+        )
+        if turn.tts_queue is not None:
+            await turn.tts_queue.put(SUMMARY_CUE)
+
+    async def _speak_summary(self, turn: TurnContext) -> None:
+        """Speak a short LLM summary of a muted long reply, sentence by sentence.
+
+        Uses the Agent's own model (``turn.agent_doc``); any failure degrades
+        to the fallback cue so the turn still ends with spoken feedback.
+        """
+        assert turn.tts_queue is not None
+        text = ""
+        if turn.reply_text.strip():
+            try:
+                from langchain_core.messages import HumanMessage, SystemMessage
+
+                from app.engine.llm_factory import get_llm_client
+
+                client = await get_llm_client(turn.agent_doc)
+                reply = await client.ainvoke(
+                    [
+                        SystemMessage(content=_SUMMARY_SYSTEM_PROMPT),
+                        HumanMessage(content=turn.reply_text),
+                    ]
+                )
+                content = reply.content if hasattr(reply, "content") else reply
+                raw = content if isinstance(content, str) else str(content)
+                text = markdown_to_speech(raw)
+            except Exception as e:
+                logger.warning("voice_tts_summary_failed", error=str(e))
+        if not text:
+            text = SUMMARY_FALLBACK
+        buffer = text
+        while buffer:
+            sentence, buffer = _split_sentence(buffer)
+            if sentence is None:
+                if buffer.strip():
+                    await turn.tts_queue.put(buffer)
                 break
             await turn.tts_queue.put(sentence)
 

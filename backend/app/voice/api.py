@@ -1,11 +1,17 @@
 """Voice realtime WebSocket endpoint.
 
-Auth reuses the notification WS token check (``verify_ws_token``) so no new
-auth surface is introduced. One ``VoiceSession`` per connection; the receive
-loop dispatches binary audio frames and JSON control messages.
+Auth supports two modes, chosen explicitly by which query param is present:
 
-Like ``app/api/v1/ws.py``: token via ``?token=xxx`` query param, reject with
-4401 on failure, 30s heartbeat ping.
+- ``?token=<JWT access>`` — internal users (notification-WS style, unchanged)
+- ``?ticket=<one-time>``  — embed clients; the ticket was minted via
+  ``POST /api/v1/ext/voice/ticket`` (standard header auth) so long-lived
+  API Key / user-token material never appears in the URL.
+
+No silent fallback: if ``token`` is present only JWT is tried (fail → 4401);
+a ticket is only consulted when ``token`` is absent. One ``VoiceSession``
+per connection; the receive loop dispatches binary audio frames and JSON
+control messages. Like ``app/api/v1/ws.py``: reject with 4401 on failure,
+30s heartbeat ping.
 """
 
 from __future__ import annotations
@@ -16,9 +22,11 @@ import json
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from loguru import logger
 
+from app.api.v1.ext import resolve_user_id
 from app.api.v1.ws import verify_ws_token
 from app.core.security import get_current_user
 from app.services.voice_config_service import VoiceConfigService
+from app.services.voice_ticket_service import consume_ticket
 from app.voice.config import get_runtime_config
 from app.voice.providers.volcano import VolcanoASRClient, VolcanoTTSClient
 from app.voice.session import VoiceSession
@@ -31,14 +39,19 @@ HEARTBEAT_INTERVAL = 30  # seconds
 @router.get("/voice/status", dependencies=[Depends(get_current_user)])
 async def voice_status() -> dict[str, bool]:
     """Expose voice availability without revealing any credential material."""
-    cfg = await VoiceConfigService.get_config()
-    return {"configured": bool(cfg and cfg.api_key_enc)}
+    return {"configured": await VoiceConfigService.is_configured()}
 
 
 @router.websocket("/voice/realtime")
-async def voice_realtime(websocket: WebSocket, token: str = ""):
+async def voice_realtime(websocket: WebSocket, token: str = "", ticket: str = ""):
     """Realtime voice channel: binary PCM up/down + JSON control."""
-    user_id = verify_ws_token(token)
+    principal = None
+    if token:
+        # JWT mode only — no fallback to ticket on failure.
+        user_id = verify_ws_token(token)
+    else:
+        principal = await consume_ticket(ticket)
+        user_id = resolve_user_id(principal) if principal else None
     if user_id is None:
         await websocket.accept()
         await websocket.close(code=4401, reason="Authentication failed")
@@ -59,8 +72,13 @@ async def voice_realtime(websocket: WebSocket, token: str = ""):
         cfg=cfg,
         asr_factory=lambda: VolcanoASRClient(cfg.asr),
         tts_factory=lambda: VolcanoTTSClient(cfg.tts),
+        principal=principal,
     )
-    logger.info("voice_client_connected", user_id=user_id)
+    logger.info(
+        "voice_client_connected",
+        user_id=user_id,
+        auth="api_key" if principal else "jwt",
+    )
 
     heartbeat = asyncio.create_task(_heartbeat(websocket))
     try:

@@ -194,6 +194,10 @@ export function ClientApp() {
         onOpenNavigation={() => setNavigationOpen(true)}
         onCreateSession={() => void createNewSession()}
         onSessionChanged={() => void refreshSessions()}
+        onSessionSwitched={(sessionId) => {
+          setActiveSessionId(sessionId)
+          void refreshSessions()
+        }}
       />
     </div>
   )

@@ -82,6 +82,7 @@ from app.api.v1.ext import (  # noqa: E402, F401
     files,
     tasks,
     userinfo,  # noqa: E402, F401
+    voice,
     workflows,
 )
 
@@ -90,6 +91,7 @@ router.include_router(files.router, prefix="")  # type: ignore[has-type]
 router.include_router(workflows.router, prefix="")  # type: ignore[has-type]
 router.include_router(tasks.router, prefix="")  # type: ignore[has-type]
 router.include_router(userinfo.router, prefix="")  # type: ignore[has-type]
+router.include_router(voice.router, prefix="")  # type: ignore[has-type]
 
 
 class ExtApiStatsMiddleware(BaseHTTPMiddleware):
@@ -186,4 +188,8 @@ def _extract_endpoint(request: Request) -> str:
         return "tasks:read"
     if "/sessions/" in path and "/files" in path:
         return "sessions:files"
+    if path.endswith("/voice/ticket"):
+        return "voice:ticket"
+    if path.endswith("/voice/status"):
+        return "voice:status"
     return f"{request.method.lower()}:unknown"
