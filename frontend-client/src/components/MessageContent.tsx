@@ -5,6 +5,7 @@ import {
   CopyOutlined,
   DatabaseOutlined,
   FileOutlined,
+  FileTextOutlined,
   QuestionCircleOutlined,
   RobotOutlined,
   ToolOutlined,
@@ -132,6 +133,50 @@ function statusIcon(tool: ToolRun): ReactNode {
   if (tool.status === 'running') return <ClockCircleOutlined spin />
   if (tool.status === 'error') return <CloseCircleOutlined />
   return <CheckCircleOutlined />
+}
+
+/** 从 parse_file 的 args(JSON 字符串)里取展示文件名(path basename 或 file_id)。 */
+function parseFileName(args?: string): string {
+  try {
+    const a: { path?: string; file_id?: string } = args ? JSON.parse(args) : {}
+    const raw = String(a.path || a.file_id || '')
+    return raw.split('/').pop() || '文件'
+  } catch {
+    return '文件'
+  }
+}
+
+/** parse_file 成功结果 → 专属文件解析卡片(FileText 图标 + 文件名 + 元信息 Tag，
+ * 内容 Markdown 渲染)。失败([parse_file] 前缀错误)回落到通用工具卡。 */
+function ParseFileCard({ tool }: { tool: ToolRun }) {
+  const meta = /^# .+（(.+?)）/.exec(tool.result ?? '')
+  return (
+    <Collapse
+      className={`tool-run tool-run-${tool.status}`}
+      size="small"
+      ghost
+      items={[
+        {
+          key: tool.id,
+          label: (
+            <div className="tool-title">
+              {statusIcon(tool)}
+              <FileTextOutlined />
+              <span>文件解析 · {parseFileName(tool.args)}</span>
+              {meta ? <Tag style={{ margin: 0 }}>{meta[1]}</Tag> : null}
+            </div>
+          ),
+          children: (
+            <div className="tool-details">
+              <div className="tool-result-body">
+                <Markdown>{tool.result ?? ''}</Markdown>
+              </div>
+            </div>
+          ),
+        },
+      ]}
+    />
+  )
 }
 
 /** 把扁平的 tools 数组按连续性分成"普通工具组"和"特殊工具"交替序列。
@@ -420,6 +465,14 @@ function ToolResult({ tool }: { tool: ToolRun }) {
   // confirm_workflow：已答时显示"工作流确认→确认/拒绝"卡片。
   if (tool.name === 'confirm_workflow') {
     return <WorkflowConfirmAnsweredCard tool={tool} />
+  }
+  // parse_file：成功解析 → 专属文件解析卡片(文件名 + 元信息 + Markdown 内容)。
+  if (
+    tool.name === 'parse_file' &&
+    tool.result &&
+    !tool.result.startsWith('[parse_file]')
+  ) {
+    return <ParseFileCard tool={tool} />
   }
   const isKnowledge = tool.name === 'kb_retrieve' || tool.name === 'search_kb'
   const title = isKnowledge ? '知识库检索' : tool.name

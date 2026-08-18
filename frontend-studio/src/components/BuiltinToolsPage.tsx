@@ -9,7 +9,7 @@
  * (lucide icons instead of @ant-design/icons).
  */
 import { useMemo, useState, type FC } from 'react';
-import { Search, Terminal, BookOpen, FilePen, Wrench, Loader2 } from 'lucide-react';
+import { Search, Terminal, BookOpen, FilePen, FileSearch, Wrench, Loader2 } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
 import { toolsApi, toolKeys, type BuiltinTool } from '../services/tools-api';
 
@@ -26,6 +26,9 @@ function iconFor(name: string): { Icon: typeof Terminal; color: string } {
   }
   if (n.includes('write') || n.includes('edit') || n.includes('create') || n.includes('update')) {
     return { Icon: FilePen, color: 'text-indigo-400 bg-indigo-500/10' };
+  }
+  if (n.includes('parse') || n.includes('extract')) {
+    return { Icon: FileSearch, color: 'text-violet-400 bg-violet-500/10' };
   }
   return { Icon: Wrench, color: 'text-zinc-400 bg-zinc-500/10' };
 }
