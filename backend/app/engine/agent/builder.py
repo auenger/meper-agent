@@ -350,10 +350,12 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
     """Build built-in tool declaration section for the system prompt.
 
     Dynamically reads tool name + description from harness BUILTIN_TOOLS
-    instances, so glob/grep (and any future configurable tools) are
-    automatically included without hardcoding.
+    instances (plus app-level PARSE_TOOL_BY_NAME), so glob/grep (and any
+    future configurable tools) are automatically included without hardcoding.
     """
     from agent_flow_harness import BUILTIN_TOOLS
+
+    from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
 
     from app.engine.harness_integration.context import (
         _CONFIGURABLE_BUILTIN_TOOL_NAMES,
@@ -378,7 +380,7 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
             continue
         if name not in enabled:
             continue
-        tool = BUILTIN_TOOLS.get(name)
+        tool = BUILTIN_TOOLS.get(name) or PARSE_TOOL_BY_NAME.get(name)
         desc = (tool.description if tool and tool.description else name)
         # 取描述第一行(有些描述很长,system prompt 里只需摘要)
         desc_first_line = desc.split("\n")[0].strip()

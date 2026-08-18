@@ -26,13 +26,13 @@ def get_checkpointer() -> Any:
 # 端点 `/api/v1/tools/builtin` 与 `resolve_harness_context` 共同引用此名单,
 # 保证「端点展示的 = 运行时注入的」。
 _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
-    "bash", "read", "write", "glob", "grep", "ask_clarification",
+    "bash", "read", "write", "glob", "grep", "ask_clarification", "parse_file",
 )
 
 # 可配子集 —— 用户可在 Agent 配置页勾选的内建工具(其余始终开启、不可关闭)。
 # ask_clarification 是能力型工具,关闭会导致 Agent 无法澄清,故始终开启。
 _CONFIGURABLE_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
-    {"bash", "read", "write", "glob", "grep"}
+    {"bash", "read", "write", "glob", "grep", "parse_file"}
 )
 
 # 新建 Agent 时默认启用的内建工具(白名单语义:列表中的工具才会注入)。
@@ -77,14 +77,16 @@ def _decrypt_user_args(tool_doc: dict, user_args: dict) -> dict:
 
 
 def _resolve_builtin_tools(agent: dict) -> list:
-    """解析内建工具(task/workflow 工具 + harness 内建工具)。
+    """解析内建工具(task/workflow 工具 + harness 内建工具 + parse_file)。
 
-    task/workflow 工具始终注入;harness 内建工具按 builtin_config 白名单过滤
-    (ask_clarification 等不可配工具始终注入)。bash 选中时连带 read/write。
+    task/workflow 工具始终注入;harness 内建工具与 app 层 parse_file 按
+    builtin_config 白名单过滤(ask_clarification 等不可配工具始终注入)。
+    bash 选中时连带 read/write。
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
     from app.engine.agent.chart_tool import _CHART_TOOLS
+    from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
     from app.engine.agent.workflow_executor import _TASK_TOOLS
 
     tools = list(_TASK_TOOLS)  # app-level task/workflow 工具始终注入
@@ -95,7 +97,8 @@ def _resolve_builtin_tools(agent: dict) -> list:
         builtin_config |= {"read", "write"}
 
     for name in _INJECTED_BUILTIN_TOOL_NAMES:
-        tool = BUILTIN_TOOLS.get(name)
+        # parse_file 是 app 层工具,harness 注册表取不到,补 PARSE_TOOL_BY_NAME 查找。
+        tool = BUILTIN_TOOLS.get(name) or PARSE_TOOL_BY_NAME.get(name)
         if tool is None:
             continue
         if name not in _CONFIGURABLE_BUILTIN_TOOL_NAMES:

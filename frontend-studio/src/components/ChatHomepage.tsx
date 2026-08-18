@@ -2060,6 +2060,19 @@ function ToolEntryCard({
   // 且默认展开（图表是工具的核心产出，不该藏在折叠里）。
   const isChartResult =
     entry.toolName === 'render_chart' && /```(?:echarts|chart)\s*\n/i.test(entry.result ?? '');
+  // parse_file：成功解析（返回 markdown 首行 "# 文件名（类型，摘要）"）→ 专属
+  // 文件卡片（FileText 图标 + 文件名标题 + 元信息徽标），详情区 Markdown 渲染，
+  // 默认折叠（提取内容通常较长）。失败（[parse_file] 前缀错误文本）走通用卡片。
+  const isParseResult =
+    entry.toolName === 'parse_file' &&
+    Boolean(entry.result) &&
+    !entry.result!.startsWith('[parse_file]');
+  const parseArgs = entry.args ?? {};
+  const parseLabel = isParseResult
+    ? String(parseArgs.path ?? parseArgs.file_id ?? '文件').split('/').pop()
+    : '';
+  const parseMetaMatch = isParseResult ? /^# .+（(.+?)）/.exec(entry.result ?? '') : null;
+  const parseMeta = parseMetaMatch ? parseMetaMatch[1] : '';
   const [expanded, setExpanded] = useState(isChartResult);
   const [resultExpanded, setResultExpanded] = useState(false);
 
@@ -2088,10 +2101,19 @@ function ToolEntryCard({
         <StatusIcon
           className={`w-3.5 h-3.5 shrink-0 ${cfg.icon} ${status === 'running' || status === 'pending' ? 'animate-spin' : ''}`}
         />
-        <Wrench className={`w-3.5 h-3.5 shrink-0 ${cfg.icon}`} />
+        {isParseResult ? (
+          <FileText className={`w-3.5 h-3.5 shrink-0 ${cfg.icon}`} />
+        ) : (
+          <Wrench className={`w-3.5 h-3.5 shrink-0 ${cfg.icon}`} />
+        )}
         <span className={`text-xs font-semibold truncate ${cfg.icon}`}>
-          {entry.toolName || 'unknown_tool'}
+          {isParseResult ? `文件解析 · ${parseLabel}` : entry.toolName || 'unknown_tool'}
         </span>
+        {isParseResult && parseMeta && (
+          <span className={`shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium bg-white/5 border border-white/10 ${cfg.icon} opacity-80`}>
+            {parseMeta}
+          </span>
+        )}
         <span className={`text-[10px] ${cfg.icon} opacity-70`}>{cfg.label}</span>
         {hasDetail && (
           <span className={`ml-auto flex items-center gap-1 text-[10px] ${cfg.icon} opacity-70`}>
@@ -2124,8 +2146,9 @@ function ToolEntryCard({
                   <span className="px-1 py-0 rounded bg-[#27272a] text-[9px] opacity-80">JSON</span>
                 )}
               </div>
-              {isChartResult ? (
-                // render_chart：走 Markdown 渲染（识别 ```echarts 出图 + 摘要文本）
+              {isChartResult || isParseResult ? (
+                // render_chart：走 Markdown 渲染（识别 ```echarts 出图 + 摘要文本）；
+                // parse_file：提取内容是 markdown（标题/表格），同样走 Markdown 渲染。
                 <Markdown content={result.text} />
               ) : (
                 <pre className="text-[11px] leading-relaxed whitespace-pre-wrap break-all rounded-lg p-2 bg-[#121214] border border-[#27272a] text-[#a1a1aa] font-mono max-h-64 overflow-y-auto">
