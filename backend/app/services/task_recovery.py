@@ -83,6 +83,7 @@ async def recover_waiting_human_tasks() -> None:
                     await execute_timeout_action(
                         task_id=task_id,
                         timeout_action=timeout_action,
+                        checkpoint=checkpoint if isinstance(checkpoint, dict) else None,
                     )
                 else:
                     # Not yet timed out — leave it to the periodic sweep task.
@@ -107,7 +108,11 @@ async def recover_waiting_human_tasks() -> None:
             )
 
 
-async def execute_timeout_action(task_id: str, timeout_action: str) -> None:
+async def execute_timeout_action(
+    task_id: str,
+    timeout_action: str,
+    checkpoint: dict[str, Any] | None = None,
+) -> None:
     """Execute the configured timeout action for a waiting_human task.
 
     Shared by startup recovery (``recover_waiting_human_tasks``) and the
@@ -116,6 +121,9 @@ async def execute_timeout_action(task_id: str, timeout_action: str) -> None:
     Args:
         task_id: The Task ID.
         timeout_action: One of auto_approve, auto_reject, auto_skip, fail.
+        checkpoint: The task's checkpoint (callers already hold the task doc).
+            Its ``paused_at_node`` is attached to the timeline event so the
+            frontend can attribute the timeout decision to the human node.
     """
     from app.services.task_service import TaskService
 
@@ -128,6 +136,11 @@ async def execute_timeout_action(task_id: str, timeout_action: str) -> None:
 
     target_status = action_map.get(timeout_action, TaskStatus.FAILED)
 
+    _ckpt = checkpoint or {}
+    decision_node_data: dict[str, Any] = {}
+    if _ckpt.get("paused_at_node"):
+        decision_node_data = {"node_id": str(_ckpt["paused_at_node"]), "node_type": "human"}
+
     await TaskService.transition_task(
         task_id=task_id,
         to_status=target_status,
@@ -137,6 +150,7 @@ async def execute_timeout_action(task_id: str, timeout_action: str) -> None:
         timeline_data={
             "timeout_action": timeout_action,
             "message": f"Recovery: 任务超时，执行 {timeout_action}",
+            **decision_node_data,
         },
     )
 

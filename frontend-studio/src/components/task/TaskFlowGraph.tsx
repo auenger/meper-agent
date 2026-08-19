@@ -49,6 +49,7 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
   })
 
   // 推导每个 node_id 的执行状态：扫描 timeline 的 node_* 事件 + checkpoint.paused_at_node
+  // + variables[node_id].decision（存量 reject 事件无 node_id 的兜底）
   const stateByNode = useMemo(() => {
     const map = new Map<string, NodeExecState>()
     const eventsByNode = new Map<string, typeof task.timeline>()
@@ -60,10 +61,15 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
     }
     const pausedNode = task.checkpoint?.paused_at_node
     for (const [nodeId, evts] of eventsByNode) {
-      map.set(nodeId, getNodeExecState(evts, nodeId === pausedNode))
+      const nodeVars = task.variables?.[nodeId]
+      const decision =
+        nodeVars && typeof nodeVars === 'object' && typeof (nodeVars as { decision?: unknown }).decision === 'string'
+          ? (nodeVars as { decision: string }).decision
+          : undefined
+      map.set(nodeId, getNodeExecState(evts, nodeId === pausedNode, decision))
     }
     return map
-  }, [task.timeline, task.checkpoint])
+  }, [task.timeline, task.checkpoint, task.variables])
 
   const { nodes, edges } = useMemo(() => {
     if (!wf?.nodes) return { nodes: [] as Node[], edges: [] as Edge[] }
@@ -144,7 +150,7 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
 
       {/* 图例：状态 → 颜色 */}
       <div className="absolute top-2 left-2 z-10 flex flex-wrap gap-x-3 gap-y-1 px-2.5 py-1.5 rounded-md bg-[#18181b]/90 border border-[#27272a] backdrop-blur-sm">
-        {(['executing', 'completed', 'waiting', 'failed', 'pending'] as NodeExecState[]).map((s) => (
+        {(['executing', 'completed', 'waiting', 'failed', 'rejected', 'pending'] as NodeExecState[]).map((s) => (
           <span key={s} className="inline-flex items-center gap-1 text-[10px] text-[#a1a1aa]">
             <span className="w-2 h-2 rounded-full" style={{ backgroundColor: STATE_COLOR[s] }} />
             {LEGEND_LABEL[s]}
@@ -160,6 +166,7 @@ const LEGEND_LABEL: Record<NodeExecState, string> = {
   completed: '已完成',
   waiting: '审批中',
   failed: '失败',
+  rejected: '已拒绝',
   pending: '待执行',
 }
 

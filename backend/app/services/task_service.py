@@ -1288,6 +1288,15 @@ class TaskService:
         # Get current task document for checkpoint info
         doc = await TaskService.get_task_or_404(task_id)
 
+        # Attribution for approve/skip/reject timeline events: the paused human
+        # node id lets the frontend group the decision event under its node and
+        # derive the terminal state (completed / rejected).
+        paused_node_id = ""
+        _ckpt = doc.get("checkpoint") or {}
+        if isinstance(_ckpt, dict):
+            paused_node_id = str(_ckpt.get("paused_at_node") or "")
+        decision_node_data = {"node_id": paused_node_id, "node_type": "human"} if paused_node_id else {}
+
         # Guard: approve/reject/skip require WAITING_HUMAN. If a timeout or
         # another actor has already moved the task out of that state, the
         # optimistic-lock check inside transition_task will return 409 — but
@@ -1308,7 +1317,7 @@ class TaskService:
                 triggered_by=triggered_by,
                 triggered_by_type=triggered_by_type,
                 timeline_event_type="approve",
-                timeline_data={"comment": _comment_to_text(comment), "action": "approve"},
+                timeline_data={"comment": _comment_to_text(comment), "action": "approve", **decision_node_data},
             )
             # Write decision to variables
             checkpoint_data = doc.get("checkpoint", {}) or {}
@@ -1347,7 +1356,7 @@ class TaskService:
                 triggered_by=triggered_by,
                 triggered_by_type=triggered_by_type,
                 timeline_event_type="skip",
-                timeline_data={"comment": _comment_to_text(comment), "action": "skip"},
+                timeline_data={"comment": _comment_to_text(comment), "action": "skip", **decision_node_data},
             )
             # Resume workflow execution (no decision written)
             TaskService.resume_task_execution(task_id)
@@ -1360,7 +1369,7 @@ class TaskService:
                 triggered_by=triggered_by,
                 triggered_by_type=triggered_by_type,
                 timeline_event_type="reject",
-                timeline_data={"comment": _comment_to_text(comment), "action": "reject"},
+                timeline_data={"comment": _comment_to_text(comment), "action": "reject", **decision_node_data},
                 error_info={
                     "error_message": f"人工驳回: {_comment_to_text(comment) or '无原因'}",
                     "error_code": "HUMAN_REJECTED",

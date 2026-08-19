@@ -72,7 +72,7 @@ async def _sweep_async() -> dict[str, Any]:
                 timeout_action=timeout_action,
                 deadline=deadline_raw,
             )
-            await execute_timeout_action(task_id, timeout_action)
+            await execute_timeout_action(task_id, timeout_action, checkpoint=cp if isinstance(cp, dict) else None)
             swept += 1
         except Exception as exc:
             logger.error(

@@ -11,13 +11,14 @@
 import type { TimelineEvent } from '../../services/tasks-api'
 
 /** 单个节点的执行状态（用于徽标颜色 / 图标 / 节点高亮） */
-export type NodeExecState = 'completed' | 'executing' | 'failed' | 'waiting' | 'pending'
+export type NodeExecState = 'completed' | 'executing' | 'failed' | 'rejected' | 'waiting' | 'pending'
 
 /** 执行状态 → 主色（与 TaskFlowTimeline 的 STATE_META 对齐） */
 export const STATE_COLOR: Record<NodeExecState, string> = {
   completed: '#10B981',
   executing: '#3B82F6',
   failed: '#EF4444',
+  rejected: '#EF4444',
   waiting: '#8B5CF6',
   pending: '#71717a',
 }
@@ -33,14 +34,28 @@ export const NODE_TYPE_LABEL: Record<string, string> = {
  *
  * 规则（按优先级）：
  * 1. 有 node_failed → failed
- * 2. pausedAtThisNode（checkpoint.paused_at_node 命中）→ waiting（人工审批中）
- * 3. 有 node_complete → completed
- * 4. 有 node_start 但无 complete/failed → executing
- * 5. 否则 → pending
+ * 2. 审批被拒绝（reject 事件 / 超时 auto_reject·fail 事件 / decision='reject'）→ rejected
+ * 3. pausedAtThisNode（checkpoint.paused_at_node 命中）→ waiting（人工审批中）
+ * 4. 有 node_complete → completed
+ * 5. 有 node_start 但无 complete/failed → executing
+ * 6. 否则 → pending
+ *
+ * 注：human 节点在暂停前就写入了 node_complete（引擎恢复信号），因此通过/跳过后
+ * 走规则 4 显示「已完成」；拒绝时 checkpoint 不会清空，必须靠规则 2（在 waiting
+ * 之前）压过 pausedAtThisNode。decision 参数取 variables[node_id].decision，
+ * 兼容不带 node_id 的存量 reject 事件。
  */
-export function getNodeExecState(events: TimelineEvent[], pausedAtThisNode: boolean): NodeExecState {
+export function getNodeExecState(
+  events: TimelineEvent[],
+  pausedAtThisNode: boolean,
+  decision?: string,
+): NodeExecState {
   const types = new Set(events.map((e) => e.event_type))
   if (types.has('node_failed')) return 'failed'
+  const rejectedByTimeout = events.some(
+    (e) => e.event_type === 'timeout' && (e.data?.timeout_action === 'auto_reject' || e.data?.timeout_action === 'fail'),
+  )
+  if (types.has('reject') || rejectedByTimeout || decision === 'reject') return 'rejected'
   if (pausedAtThisNode) return 'waiting'
   if (types.has('node_complete')) return 'completed'
   if (types.has('node_start')) return 'executing'

@@ -3,8 +3,10 @@
  *
  * 把扁平的 timeline 事件按 node_id 分组为「阶段」，每个节点一行卡片：
  * - 类型图标 + 名称 + 执行状态徽标（已完成/执行中/失败/审批中/待执行）+ 耗时
- * - 点击展开该节点：事件列表（中文标签 + 时间 + actor + 可折叠事件数据 JSON）
- *   + 节点输出（variables[node_id]）
+ * - 默认折叠，点击展开该节点：事件列表（中文标签 + 时间 + actor + 可折叠
+ *   事件数据 JSON，冗余字段已过滤）+ 节点输出（variables[node_id]，正常
+ *   完成的任务回落 output[node_id]）
+ * - Agent 节点的执行明细（内部消息）按需点击加载
  * - 生命周期里程碑（任务创建/完成/失败/取消）作为首尾节点
  *
  * 保留了旧 TimelineView 的富细节：EVENT_META 中文事件标签、节点类型前缀
@@ -47,6 +49,7 @@ const STATE_META: Record<NodeExecState, { icon: ReactNode; color: string; label:
   completed: { icon: <CheckCircle2 size={12} />, color: '#10B981', label: '已完成' },
   executing: { icon: <Loader2 size={12} className="animate-spin" />, color: '#3B82F6', label: '执行中' },
   failed: { icon: <XCircle size={12} />, color: '#EF4444', label: '失败' },
+  rejected: { icon: <XCircle size={12} />, color: '#EF4444', label: '已拒绝' },
   waiting: { icon: <CircleDot size={12} />, color: '#8B5CF6', label: '审批中' },
   pending: { icon: <Clock size={12} />, color: '#71717a', label: '待执行' },
 }
@@ -118,16 +121,24 @@ function nodeEventLabel(evt: TimelineEvent): string {
  * - node_id / node_type / node_label：阶段卡片的标题、图标、状态徽标已完整展示
  * - output_summary：完整输出已在「节点输出」分区渲染（仅当该节点取不到完整输出时，
  *   output_summary 才作为唯一线索保留，不计入冗余）
+ * - usage：token 总量已在卡片头部展示（「N tokens」）
  */
-const REDUNDANT_EVENT_DATA_KEYS = new Set(['node_id', 'node_type', 'node_label'])
+const REDUNDANT_EVENT_DATA_KEYS = new Set(['node_id', 'node_type', 'node_label', 'usage'])
 
-/** 事件 data 是否还有「有信息量」的字段值得展开「详细数据」。 */
-function eventHasMeaningfulData(evt: TimelineEvent, nodeOutputExists: boolean): boolean {
-  const keys = Object.keys(evt.data ?? {})
-  if (keys.length === 0) return false
-  return keys.some((k) =>
-    k === 'output_summary' ? !nodeOutputExists : !REDUNDANT_EVENT_DATA_KEYS.has(k),
-  )
+/**
+ * 事件 data 剔除已被上层消费的字段后返回浅拷贝；无剩余字段返回 undefined。
+ * 「详细数据」区块只渲染这个过滤结果——与卡片头部 / 「节点输出」零重复；
+ * node_start / node_complete 过滤后通常为空（不再出现该区块），
+ * node_failed 剩 error、审批事件剩决策字段。
+ */
+function filterEventData(evt: TimelineEvent, nodeOutputExists: boolean): Record<string, unknown> | undefined {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(evt.data ?? {})) {
+    if (REDUNDANT_EVENT_DATA_KEYS.has(k)) continue
+    if (k === 'output_summary' && nodeOutputExists) continue
+    out[k] = v
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 export interface TaskFlowTimelineProps {
@@ -139,10 +150,9 @@ export interface TaskFlowTimelineProps {
 
 export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: TaskFlowTimelineProps) {
   const stages = useMemo<NodeStageInfo[]>(() => buildStages(task), [task])
-  // 反转语义：collapsedIds 记录「手动折叠」的节点，默认空 = 全部展开，
-  // 这样打开任务详情即可一次性看清所有节点的结果（参考 silieco 全展开布局）。
-  // 新增节点（任务继续执行）不在折叠集里，自动展开。
-  const [collapsedIds, setCollapsedIds] = useState<Set<string>>(new Set())
+  // expandedIds 记录「手动展开」的节点，默认空 = 全部折叠，
+  // 用户点击卡片再查看详情，避免打开任务详情即铺开全部节点。
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
 
   // 拉工作流定义取节点名（node_id → label）。与 TaskFlowGraph 共用 workflowKeys.detail 缓存，
   // 同一抽屉内不会额外打请求；拉不到（模板被删/解析失败）则回退到类型名。
@@ -192,9 +202,11 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
       {stages.map((stage) => {
         const state = stage.state
         const meta = STATE_META[state]
-        const isExpanded = !collapsedIds.has(stage.nodeId)
+        const isExpanded = expandedIds.has(stage.nodeId)
         const nodeLabel = nodeNameMap.get(stage.nodeId) || stage.label || (NODE_TYPE_LABEL[stage.nodeType] ?? stage.nodeType)
-        const output = task.variables?.[stage.nodeId]
+        // 节点完整输出：variables（暂停/干预时写入）优先，正常完成的任务回落到
+        // output（完成时写入的完整变量池快照，同样按 node_id 取）。
+        const output = task.variables?.[stage.nodeId] ?? task.output?.[stage.nodeId]
         return (
           <div key={stage.nodeId} className="relative py-1.5">
             {/* 左侧状态圆点 */}
@@ -208,7 +220,7 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
             {/* 阶段卡片 */}
             <div
               onClick={() =>
-                setCollapsedIds((prev) => {
+                setExpandedIds((prev) => {
                   const next = new Set(prev)
                   if (next.has(stage.nodeId)) next.delete(stage.nodeId)
                   else next.add(stage.nodeId)
@@ -218,7 +230,7 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
               className={`rounded-lg border px-3 py-2 transition-colors cursor-pointer ${
                 state === 'executing'
                   ? 'border-[#3B82F6]/50 bg-[#3B82F6]/5'
-                  : state === 'failed'
+                  : state === 'failed' || state === 'rejected'
                     ? 'border-[#EF4444]/40 bg-[#EF4444]/5'
                     : state === 'waiting'
                       ? 'border-[#8B5CF6]/40 bg-[#8B5CF6]/5'
@@ -265,10 +277,10 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
                       {stage.events.map((evt, idx) => {
                         const emeta = EVENT_META[evt.event_type] ?? { label: evt.event_type, color: '#94A3B8' }
                         const label = nodeEventLabel(evt)
-                        // 薄字段过滤：node_start/node_complete 的 node_id/node_type 已在阶段卡片
-                        // 消费、output_summary 已在「节点输出」分区渲染，仅剩这些的事件不再展开
-                        // 详细数据（节点无完整输出时 output_summary 仍保留作唯一线索）。
-                        const hasData = eventHasMeaningfulData(evt, output !== undefined)
+                        // 冗余字段过滤：node_id/node_type/node_label/usage 已在卡片头部
+                        // 消费、output_summary 已在「节点输出」分区渲染（节点无完整输出时
+                        // 保留作唯一线索），过滤后为空的事件不再渲染「详细数据」区块。
+                        const filteredData = filterEventData(evt, output !== undefined)
                         return (
                           <div key={idx} className="text-[10px]">
                             <div className="flex items-baseline gap-1.5 flex-wrap">
@@ -278,15 +290,14 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
                                 <span className={mutedText}>· {evt.actor}</span>
                               )}
                             </div>
-                            {hasData && (
-                              <details open className="mt-1 group rounded-lg border border-[#27272a] bg-[#09090b] overflow-hidden">
+                            {filteredData && (
+                              <details className="mt-1 group rounded-lg border border-[#27272a] bg-[#09090b] overflow-hidden">
                                 <summary className={`cursor-pointer list-none flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-medium ${mutedText} hover:text-[#1E5EFF] hover:bg-[#18181b]/40 transition-colors [&::-webkit-details-marker]:hidden`}>
-                                  <ChevronRight className="w-3 h-3 shrink-0 group-open:hidden" />
-                                  <ChevronRight className="w-3 h-3 shrink-0 hidden group-open:inline rotate-90" />
+                                  <ChevronRight className="w-3 h-3 shrink-0 group-open:rotate-90 transition-transform" />
                                   详细数据
                                 </summary>
                                 <div className="p-2.5 border-t border-[#27272a]">
-                                  <DataView value={evt.data} context="event_data" showRaw={false} />
+                                  <DataView value={filteredData} context="event_data" showRaw={false} />
                                 </div>
                               </details>
                             )}
@@ -335,11 +346,14 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
 /* ─── 子组件：Agent 节点执行明细（挂载即自动加载，每节点独立缓存） ─── */
 
 function NodeAgentTrace({ taskId, nodeId, theme }: { taskId: string; nodeId: string; theme: 'light' | 'dark' }) {
-  // 组件仅在 stage 展开 + agent 节点时挂载 → 挂载即拉取；nodeId 维度的缓存键让多个
-  // agent 节点各自独立、互不串数据。收起 stage 即卸载，重展开走缓存秒显。
+  // 按需查看：默认只渲染一行入口，用户点击后才拉取 timeline 并展开
+  // （enabled: expanded，未点击不发请求）；nodeId 维度的缓存键让多个
+  // agent 节点各自独立、互不串数据，收起后再展开走缓存秒显。
+  const [expanded, setExpanded] = useState(false)
   const { data: nodeTimeline, isLoading, error } = useQuery({
     queryKey: taskKeys.nodeTimeline(taskId, nodeId),
     queryFn: () => tasksApi.getNodeTimeline(taskId, nodeId),
+    enabled: expanded,
     staleTime: 60_000,
     retry: 1,
   })
@@ -349,10 +363,25 @@ function NodeAgentTrace({ taskId, nodeId, theme }: { taskId: string; nodeId: str
   const is404 = errStatus === 404
   return (
     <div onClick={(e) => e.stopPropagation()} className="mt-2">
-      <div className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${mutedText} mb-1.5`}>
-        <Workflow size={11} /> Agent 执行明细
-      </div>
-      {isLoading ? (
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className={`w-full flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-medium transition-colors cursor-pointer ${
+          theme === 'dark'
+            ? `border-[#27272a] bg-[#09090b] hover:border-[#1E5EFF]/50 hover:text-[#1E5EFF] ${expanded ? 'text-[#1E5EFF] border-[#1E5EFF]/40' : 'text-[#a1a1aa]'}`
+            : `border-slate-200 bg-slate-50 hover:border-[#1E5EFF]/50 hover:text-[#1E5EFF] ${expanded ? 'text-[#1E5EFF] border-[#1E5EFF]/40' : 'text-slate-600'}`
+        }`}
+      >
+        <Workflow size={12} className="shrink-0" />
+        Agent 执行明细
+        {expanded && nodeTimeline?.message_count ? (
+          <span className={`text-[10px] font-normal ${mutedText}`}>· {nodeTimeline.message_count} 条消息</span>
+        ) : null}
+        <ChevronRight
+          size={12}
+          className={`ml-auto shrink-0 transition-transform ${expanded ? 'rotate-90' : ''}`}
+        />
+      </button>
+      {expanded && (isLoading ? (
         <div className="flex items-center justify-center py-3">
           <Spin />
         </div>
@@ -369,7 +398,7 @@ function NodeAgentTrace({ taskId, nodeId, theme }: { taskId: string; nodeId: str
         </div>
       ) : (
         <div className={`text-[10px] italic ${mutedText}`}>该节点暂无执行记录</div>
-      )}
+      ))}
     </div>
   )
 }
@@ -414,17 +443,21 @@ function fmtTime(iso: string): string {
  * 把 timeline 按 node_id 聚合成阶段，并推导每个节点的执行状态。
  * 顺序按节点首次出现（node_start）的时间排列。
  *
- * 同时保留旧 TimelineView 的审批事件过滤：若存在任意审批完成事件
- * （approve/skip/reject/...），则过滤掉冗余的 waiting_human 事件。
+ * 审批事件的展示过滤（保留旧 TimelineView 逻辑）：若存在任意审批完成事件
+ * （approve/skip/reject/...），human 节点展开区隐藏冗余的 waiting_human 事件
+ * 与 node_complete（已被审批事件取代）。注意：该过滤只作用于「展示的事件列表」，
+ * 状态推导 / 耗时 / token 统计仍用全量事件——human 节点在暂停前写入的
+ * node_complete 是「已完成」状态的唯一信号，过滤它会导致审批通过后节点
+ * 永远显示「执行中」（checkpoint 在任务完成时被清空）。
  */
 function buildStages(task: TaskDetail): NodeStageInfo[] {
   const timeline = task.timeline ?? []
   const pausedNode = task.checkpoint?.paused_at_node
 
-  // 审批已完成？若是，过滤掉 waiting_human（旧 APPROVE_TYPES 逻辑）
+  // 审批已完成？若是，展示层过滤掉 waiting_human / human node_complete（旧 APPROVE_TYPES 逻辑）
   const hasAnyApproval = timeline.some((e) => APPROVE_TYPES.has(e.event_type))
 
-  // 收集每个节点的相关事件 + 首次出现顺序
+  // 收集每个节点的相关事件 + 首次出现顺序（全量收集，不做状态相关过滤）
   const order: string[] = []
   const eventsByNode = new Map<string, TimelineEvent[]>()
   const typeByNode = new Map<string, string>()
@@ -433,14 +466,12 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
     const nodeId = typeof evt.data?.node_id === 'string' ? evt.data.node_id : undefined
     const nodeType = typeof evt.data?.node_type === 'string' ? evt.data.node_type : undefined
     if (!nodeId) continue
-    // 审批过滤：存在审批完成事件时，跳过 waiting_human 事件
-    if (hasAnyApproval && evt.event_type === 'waiting_human') continue
     if (!eventsByNode.has(nodeId)) {
       eventsByNode.set(nodeId, [])
       order.push(nodeId)
     }
-    // 审批过滤：跳过 human 节点的 node_complete（已被审批事件取代）
-    if (hasAnyApproval && evt.event_type === 'node_complete' && nodeType === 'human') continue
+    // 展示过滤：存在审批完成事件时，waiting_human 纯冗余（不参与状态推导，可安全跳过）
+    if (hasAnyApproval && evt.event_type === 'waiting_human') continue
     eventsByNode.get(nodeId)!.push(evt)
     if (nodeType) typeByNode.set(nodeId, nodeType)
   }
@@ -448,7 +479,14 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
   return order.map((nodeId) => {
     const evts = eventsByNode.get(nodeId)!
     const nodeType = typeByNode.get(nodeId) ?? 'agent'
-    const state = getNodeExecState(evts, nodeId === pausedNode)
+    // 决策兜底：存量任务的 reject 事件不带 node_id，无法归属到节点，
+    // 用 variables 里的 decision 字段识别被拒绝的 human 节点
+    const nodeVars = task.variables?.[nodeId]
+    const decision =
+      nodeVars && typeof nodeVars === 'object' && typeof (nodeVars as { decision?: unknown }).decision === 'string'
+        ? (nodeVars as { decision: string }).decision
+        : undefined
+    const state = getNodeExecState(evts, nodeId === pausedNode, decision)
     const startEvt = evts.find((e) => e.event_type === 'node_start')
     const endEvt = evts.find((e) => e.event_type === 'node_complete' || e.event_type === 'node_failed')
     const duration = (startEvt && endEvt) ? humanDuration(startEvt.timestamp, endEvt.timestamp) : undefined
@@ -456,7 +494,11 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
     // 节点 token 用量（仅 agent 节点的 node_complete 事件 data.usage 携带）
     const usage = endEvt?.data?.usage as { total_tokens?: number } | undefined
     const tokenTotal = typeof usage?.total_tokens === 'number' ? usage.total_tokens : undefined
-    return { nodeId, nodeType, state, events: evts, duration, label, tokenTotal }
+    // 展示事件：审批完成后隐藏 human 节点的 node_complete（语义被审批事件取代），仅影响列表
+    const displayEvents = hasAnyApproval && nodeType === 'human'
+      ? evts.filter((e) => e.event_type !== 'node_complete')
+      : evts
+    return { nodeId, nodeType, state, events: displayEvents, duration, label, tokenTotal }
   })
 }
 

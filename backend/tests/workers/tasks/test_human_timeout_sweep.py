@@ -54,7 +54,7 @@ class TestSweepTimedOutHumanTasks:
             ) as mock_action:
                 result = await _sweep_async()
 
-                mock_action.assert_awaited_once_with("task_timeout", "fail")
+                mock_action.assert_awaited_once_with("task_timeout", "fail", checkpoint=task_doc["checkpoint"])
                 assert result["swept"] == 1
 
     async def test_sweep_skips_not_yet_timed_out_task(self) -> None:

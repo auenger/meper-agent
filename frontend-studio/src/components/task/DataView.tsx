@@ -344,16 +344,6 @@ function DeepFallback({ value }: { value: unknown }) {
   return <span className="text-[#71717a] italic text-[11px]">深度嵌套（{count} 项），已折叠</span>
 }
 
-/** 带「小标题」的语义区块（回答 / 执行结果） */
-function LabeledCard({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="rounded bg-[#09090b] border border-[#27272a] p-2">
-      <div className="text-[10px] text-[#71717a] font-medium mb-1">{label}</div>
-      {children}
-    </div>
-  )
-}
-
 /** Markdown 文本块（output_summary / response 等 LLM 文本）：复用聊天渲染栈，超长可滚动 */
 function MarkdownBlock({ content }: { content: string }) {
   return (
@@ -461,21 +451,22 @@ function matchKnownField(
     return <Tag color="orange">{TIMEOUT_ACTION_LABEL[value.toLowerCase()] ?? value}</Tag>
   }
 
-  // response（agent 输出）→ 「回答」Markdown 卡（LLM 回复天然含格式）
+  // response（agent 输出）→ Markdown 卡（LLM 回复天然含格式）。
+  // 键值网格已在字段上方展示「回答」标签，这里不再包 LabeledCard，避免双重标签。
   if (k === 'response' && typeof value === 'string') {
-    return <LabeledCard label="回答"><MarkdownBlock content={value} /></LabeledCard>
+    return <MarkdownBlock content={value} />
   }
 
-  // result（tool 输出）→ 「执行结果」子区
+  // result（tool 输出）→ 自带边框的文本/递归内容（网格已有「执行结果」标签）
   if (k === 'result') {
     if (typeof value === 'string') {
-      return <LabeledCard label="执行结果"><LongText text={value} /></LabeledCard>
+      return <LongText text={value} />
     }
     if (typeof value === 'object' && value !== null) {
       return (
-        <LabeledCard label="执行结果">
+        <div className="rounded bg-[#09090b] border border-[#27272a] p-2">
           <RenderNode value={value} context="generic" depth={depth + 1} ancestors={[]} />
-        </LabeledCard>
+        </div>
       )
     }
   }
@@ -544,7 +535,7 @@ function matchKnownField(
     return (
       <div className="flex flex-wrap gap-1">
         {value.map((opt, idx) => (
-          <Tag key={idx} color="#8B5CF6">{opt}</Tag>
+          <Tag key={idx} color="#a1a1aa">{opt}</Tag>
         ))}
       </div>
     )

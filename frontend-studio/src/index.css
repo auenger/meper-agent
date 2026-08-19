@@ -392,11 +392,20 @@
 .theme-light .text-\[\#fafafa\] {
   color: #0f172a !important; /* text-slate-900 */
 }
+.theme-light .text-\[\#d4d4d8\] {
+  color: #334155 !important; /* text-slate-700 — DataView 值文本，浅底需深色 */
+}
 .theme-light .text-\[\#a1a1aa\] {
   color: #334155 !important; /* text-slate-705 */
 }
 .theme-light .text-\[\#71717a\] {
   color: #64748b !important; /* text-slate-500 */
+}
+.theme-light .text-\[\#60A5FA\] {
+  color: #1d4ed8 !important; /* text-blue-700 — Agent 思考过程文本 */
+}
+.theme-light .text-rose-400 {
+  color: #e11d48 !important; /* text-rose-600 — 错误文本，浅底需加深 */
 }
 
 /* Tailwind default slate texts under light mode */

@@ -50,7 +50,7 @@ export function ApprovalView({ view, variables, taskId }: ApprovalViewProps) {
 function SectionTitle({ icon, title }: { icon: ReactNode; title?: string }) {
   if (!title) return null;
   return (
-    <div className="flex items-center gap-1.5 text-sm font-medium text-[#a78bfa] mb-1.5">
+    <div className="flex items-center gap-1.5 text-sm font-medium text-[#fafafa] mb-1.5">
       <span className="shrink-0">
         {icon}
       </span>

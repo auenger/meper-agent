@@ -73,6 +73,7 @@ class TestRecoverWaitingHumanTasks:
                 mock_action.assert_called_once_with(
                     task_id="task_timeout",
                     timeout_action="auto_approve",
+                    checkpoint=task_doc["checkpoint"],
                 )
 
     @pytest.mark.asyncio

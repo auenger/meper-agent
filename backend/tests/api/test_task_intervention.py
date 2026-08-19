@@ -132,6 +132,35 @@ def test_intervene_reject_writes_comment_to_variables(auth_token: str, current_u
         app.dependency_overrides.clear()
 
 
+@pytest.mark.parametrize("action,expected_status", [("approve", "running"), ("skip", "running"), ("reject", "failed")])
+def test_intervene_attaches_node_attribution_to_timeline(
+    auth_token: str, current_user: UserResponse, action: str, expected_status: str
+) -> None:
+    """approve/skip/reject 的 timeline 事件 data 携带 node_id/node_type（前端按节点推导审批终态）。"""
+    client, app, tasks_module = _build_client(current_user)
+    try:
+        task_doc = _make_task_doc()
+        updated_doc = {**task_doc, "status": expected_status, "version": task_doc["version"] + 1}
+
+        transition_mock = AsyncMock(return_value=updated_doc)
+        with (
+            patch.object(tasks_module.TaskService, "get_task_or_404", AsyncMock(return_value=task_doc)),
+            patch.object(tasks_module.TaskService, "transition_task", transition_mock),
+            patch.object(tasks_module.TaskService, "update_variables", AsyncMock(return_value=updated_doc)),
+            patch.object(tasks_module.TaskService, "resume_task_execution"),
+        ):
+            status_code, payload = _post_intervene(client, {"action": action, "version": task_doc["version"]})
+
+        assert status_code == 200, payload
+        assert transition_mock.await_count == 1
+        timeline_data = transition_mock.await_args.kwargs["timeline_data"]
+        assert timeline_data["node_id"] == HUMAN_NODE_ID
+        assert timeline_data["node_type"] == "human"
+        assert timeline_data["action"] == action
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_intervene_with_empty_comment_writes_empty_string(auth_token: str, current_user: UserResponse) -> None:
     """Without comment, variables['comment'] == '' (not None)."""
     client, app, tasks_module = _build_client(current_user)

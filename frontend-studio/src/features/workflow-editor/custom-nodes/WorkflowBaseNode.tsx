@@ -118,7 +118,7 @@ function WorkflowBaseNode({ data, selected }: Props) {
 
         {/* 摘要信息 */}
         {summary && (
-          <div className="text-[9px] text-slate-400 mt-0.5 truncate" title={summary}>
+          <div className="text-[10px] text-slate-400 mt-0.5 truncate" title={summary}>
             {summary}
           </div>
         )}

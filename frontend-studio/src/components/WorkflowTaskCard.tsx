@@ -224,11 +224,11 @@ export function WorkflowTaskCard({ created }: { created: TaskCreated }) {
           {/* 人工节点上下文（waiting_human 时置顶） */}
           {ckpt && status === 'waiting_human' ? (
             <div className="rounded-lg border border-[#8B5CF6]/30 bg-[#8B5CF6]/10 p-2.5 space-y-1">
-              <div className="text-[11px] font-semibold text-[#c4b5fd]">
+              <div className="text-[11px] font-semibold text-[#fafafa]">
                 {ckpt.human_context?.title || '需要人工确认'}
               </div>
               {ckpt.human_context?.description ? (
-                <div className="text-[11px] text-[#ddd6fe] whitespace-pre-wrap">{ckpt.human_context.description}</div>
+                <div className="text-[11px] text-[#d4d4d8] whitespace-pre-wrap">{ckpt.human_context.description}</div>
               ) : null}
               {ckpt.human_context?.options?.length ? (
                 <div className="flex flex-wrap gap-1.5 pt-1">
