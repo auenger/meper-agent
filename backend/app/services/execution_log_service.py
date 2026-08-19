@@ -17,6 +17,7 @@ from typing import Any
 from loguru import logger
 
 from app.db.mongodb import get_database
+from app.models.base import utc_now
 from app.models.execution_log import ExecutionLog
 
 COLLECTION = "execution_logs"
@@ -28,11 +29,15 @@ CHANNEL_IM = "im"
 
 
 def classify_channel(user_id: str) -> str:
-    """Classify a user_id into an access channel.
+    """Classify a user_id into an access channel (fallback heuristic).
 
     Priority: ``channel:`` prefix → im; bare ``user_`` (no colon) → internal;
-    ``mcptok_`` prefix → api_key (外部终端用户通用 token);
+    ``mcptok_`` prefix → api_key (v3 遗留的通用 token id);
     anything else with a colon → api_key.
+
+    注意：v4 起外部终端用户的 user_id 是 platform_user_id（纯 ``user_`` id），
+    形态与内部用户无法区分——渠道判定必须优先用显式信号（``api_key_id``
+    非空 → api_key，见 write_log），本函数仅作无显式信号时的兜底。
     """
     if not user_id:
         return CHANNEL_INTERNAL
@@ -116,13 +121,15 @@ class ExecutionLogService:
     ) -> str | None:
         """Insert one execution-log document.
 
-        Channel (source) is derived from ``user_id``. Failure is logged but
-        never raised — execution logging must not break the user-facing
-        request flow.
+        Channel (source): ``api_key_id`` 非空 → api_key（显式信号优先——v4 起
+        外部终端用户的 user_id 是 platform_user_id，形态与内部用户相同，
+        user_id 启发式无法区分）；否则按 classify_channel 兜底。
+        Failure is logged but never raised — execution logging must not
+        break the user-facing request flow.
 
         Returns the inserted document id, or None on failure.
         """
-        source = classify_channel(user_id)
+        source = CHANNEL_API_KEY if api_key_id else classify_channel(user_id)
         channel_id = _extract_channel_id(user_id) if source == CHANNEL_IM else ""
         doc = ExecutionLog(
             source=source,
@@ -148,6 +155,42 @@ class ExecutionLogService:
         except Exception as exc:
             logger.warning("execution_log_write_failed", error=str(exc))
             return None
+
+    # ── One-time data migration ──
+
+    # 与 role_service 的 _MIGRATION_COLLECTION 共用同一标记集合。
+    _MIGRATION_COLLECTION = "schema_migrations"
+    _BACKFILL_MARKER = "backfill_execution_log_source_v1"
+
+    @staticmethod
+    async def backfill_source_channel() -> None:
+        """One-time migration: fix ext-call records misclassified as internal.
+
+        v3→v4 身份模型切换后外部调用的 user_id 从 ``mcptok_*``/带冒号形态
+        变为纯 platform ``user_*`` id，classify_channel 的 user_id 启发式
+        无法再识别（现由 write_log 的 api_key_id 显式信号判定）。本回填把
+        带 api_key_id 却被记成其他渠道的历史记录修正为 api_key。
+
+        Marker-guarded（schema_migrations 集合），每个库只执行一次。
+        """
+        markers = get_database()[ExecutionLogService._MIGRATION_COLLECTION]
+        if await markers.find_one({"_id": ExecutionLogService._BACKFILL_MARKER}) is not None:
+            return
+
+        result = await ExecutionLogService._collection().update_many(
+            {"api_key_id": {"$ne": ""}, "source": {"$ne": CHANNEL_API_KEY}},
+            {"$set": {"source": CHANNEL_API_KEY}},
+        )
+
+        await markers.update_one(
+            {"_id": ExecutionLogService._BACKFILL_MARKER},
+            {"$set": {"executed_at": utc_now().isoformat(), "fixed_docs": result.modified_count}},
+            upsert=True,
+        )
+        if result.modified_count:
+            logger.info(
+                "execution_log_source_backfilled", fixed=result.modified_count,
+            )
 
     # ── Stats (per-channel aggregation) ──
 

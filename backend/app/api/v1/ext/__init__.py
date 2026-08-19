@@ -23,8 +23,8 @@ router = APIRouter(
 def resolve_user_id(principal: ApiKeyPrincipal) -> str:
     """Resolve the stable user_id for session/audit attribution.
 
-    user_id 即 mcp_token_credentials._id（通用 token 记录 id），由
-    get_api_key_principal 本地校验后设置。
+    user_id 即外部身份解析出的 platform_user_id（v4：external_identities
+    反查所得平台用户 id），由 get_api_key_principal 校验后设置。
     """
     return principal.user_id or principal.owner_user_id
 
@@ -157,8 +157,6 @@ class ExtApiStatsMiddleware(BaseHTTPMiddleware):
             response.headers["X-RateLimit-Reset"] = str(
                 getattr(request.state, "rate_reset", 0)
             )
-
-        # 旧的 stale introspection header 逻辑已废弃（外部回调模式不再使用）。
 
         return response
 

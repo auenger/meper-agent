@@ -4,9 +4,9 @@ Provides ``get_api_key_principal`` — a FastAPI Depends that validates
 the Bearer token as an API Key (not JWT) and returns an
 ``ApiKeyPrincipal`` object with scopes and bindings.
 
-终端用户身份由 MEPER 统一托管：X-User-Token 必须是 MEPER 签发的通用 token
-（``meper_`` 前缀），本地校验后解出 token 记录 id。详见
-``docs/planning-artifacts/mcp-credential-broker-design.md``。
+终端用户身份（v4）：X-User-Token 经接入方 introspection 端点回调验证，
+按 ``sub = {app_id}:{username}`` 查 external_identities 反查 platform_user_id。
+详见 ``docs/planning-artifacts/mcp-credential-broker-design.md``。
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ class ApiKeyPrincipal:
     Carries the Key's scopes, resource bindings, and owner_user_id
     so that downstream route handlers can enforce authorization.
 
-    终端用户身份（通用 token 模式）:
-    - ``user_id``: 解析出的稳定用户 ID = mcp_token_credentials._id（记录 id）。
-    - ``token_record_id``: MCP 兑换器查绑定的 key（同 user_id）。
-    - ``user_token``: 原始 X-User-Token（通用 token 原文），标识用途。
+    终端用户身份（v4 外部身份模型）:
+    - ``user_id``: platform_user_id（external_identities 反查的平台用户 id）。
+    - ``token_record_id``: 同 user_id（MCP 兑换器按此查绑定的 key）。
+    - ``user_token``: 原始 X-User-Token（introspection 回调验证用原文）。
     """
 
     key_id: str
@@ -36,9 +36,9 @@ class ApiKeyPrincipal:
     bindings: dict = field(default_factory=dict)
     rate_limit: int = 60
     user_id: str | None = None
-    # MCP 兑换器查绑定的 key = mcp_token_credentials._id
+    # MCP 兑换器查绑定 key 的定位 id（= platform_user_id）
     token_record_id: str | None = None
-    # 原始 X-User-Token（通用 token 原文）
+    # 原始 X-User-Token（introspection 回调验证用原文）
     user_token: str | None = None
     # 应用上下文（ticket 序列化 / 语音通道每 turn 凭证复查用）
     app_id: str = ""
@@ -81,21 +81,6 @@ class ApiKeyPrincipal:
                 code="APIKEY_WORKFLOW_DENIED",
                 message="API Key 无权访问该 Workflow",
             )
-
-    def owns_resource(self, created_by: str | None) -> bool:
-        """Check if a resource (e.g. a Task) belongs to this Key's owner.
-
-        Resources created via the Workflow invoke path carry the bare
-        ``owner_user_id``. Resources created by an Agent on the user's
-        behalf carry the resolved user_id (``mcp_token_credentials._id``).
-        Both shapes belong to the same owner, so we accept an exact match
-        or an ``owner:`` prefix match.
-        """
-        if not created_by:
-            return False
-        if created_by == self.owner_user_id:
-            return True
-        return created_by.startswith(f"{self.owner_user_id}:")
 
 
 def _extract_bearer_token(header_value: str | None) -> str | None:

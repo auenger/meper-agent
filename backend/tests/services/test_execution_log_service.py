@@ -53,17 +53,63 @@ async def test_write_log_inserts_with_correct_source() -> None:
         assert inserted_internal["agent_id"] == "agent_1"
         assert inserted_internal["total_tokens"] == 100
 
-        # api_key
+        # api_key — v4 形态回归：user_id 是纯 platform user_ id（与内部用户
+        # 同形态），api_key_id 显式存在时必须判为 api_key 渠道。
+        await ExecutionLogService.write_log(
+            user_id="user_01KTNVBYQSKQQNW1BAXC436ZJ4", api_key_id="apikey_1",
+        )
+        inserted_v4 = mock_col.insert_one.call_args_list[1].args[0]
+        assert inserted_v4["source"] == CHANNEL_API_KEY
+        assert inserted_v4["api_key_id"] == "apikey_1"
+
+        # api_key — 旧形态（带冒号）
         await ExecutionLogService.write_log(user_id="user_01:1", api_key_id="apikey_1")
-        inserted_ext = mock_col.insert_one.call_args_list[1].args[0]
+        inserted_ext = mock_col.insert_one.call_args_list[2].args[0]
         assert inserted_ext["source"] == CHANNEL_API_KEY
-        assert inserted_ext["api_key_id"] == "apikey_1"
 
         # im
         await ExecutionLogService.write_log(user_id="channel:ch_1:oc_1")
-        inserted_im = mock_col.insert_one.call_args_list[2].args[0]
+        inserted_im = mock_col.insert_one.call_args_list[3].args[0]
         assert inserted_im["source"] == CHANNEL_IM
         assert inserted_im["channel_id"] == "ch_1"
+
+
+# ---------------------------------------------------------------------------
+# backfill_source_channel — one-time migration (marker-guarded)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backfill_fixes_misclassified_and_is_idempotent() -> None:
+    """First run fixes api_key_id-bearing records + writes marker; second run no-ops."""
+    logs_col = MagicMock()
+    logs_col.update_many = AsyncMock(
+        return_value=MagicMock(modified_count=23)
+    )
+    markers_col = MagicMock()
+    # First call: no marker; second call: marker present.
+    markers_col.find_one = AsyncMock(side_effect=[None, {"_id": "backfill_execution_log_source_v1"}])
+    markers_col.update_one = AsyncMock()
+
+    mock_db = MagicMock()
+    mock_db.__getitem__.side_effect = (
+        lambda key: logs_col if key == "execution_logs" else markers_col
+    )
+
+    with patch("app.services.execution_log_service.get_database", return_value=mock_db):
+        await ExecutionLogService.backfill_source_channel()
+        # 修正查询只针对带 api_key_id 但 source 不是 api_key 的记录
+        query = logs_col.update_many.call_args.args[0]
+        assert query["api_key_id"] == {"$ne": ""}
+        assert query["source"] == {"$ne": CHANNEL_API_KEY}
+        markers_col.update_one.assert_awaited_once()
+
+        logs_col.update_many.reset_mock()
+        markers_col.update_one.reset_mock()
+        await ExecutionLogService.backfill_source_channel()
+
+    logs_col.update_many.assert_not_awaited()
+    markers_col.update_one.assert_not_awaited()
 
 
 @pytest.mark.asyncio

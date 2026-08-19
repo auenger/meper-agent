@@ -38,21 +38,18 @@ def _doc_to_ext_task(doc: dict) -> ExtTaskResponse:
     )
 
 
-async def _get_owned_task(task_id: str, principal: ApiKeyPrincipal) -> dict:
-    """Load a Task and enforce API-Key ownership.
+async def _get_task_or_404(task_id: str) -> dict:
+    """Load a Task by id, raising 404 when it does not exist.
 
     Shared by all task sub-resources (detail / outputs / node timeline /
-    intervention). Only tasks created by this API Key's owner are
-    accessible; others return 404 (not 403) to avoid leaking existence.
-
-    Tasks created directly (Workflow invoke) carry the bare owner id; tasks
-    created by an Agent on a user's behalf carry the resolved user_id
-    (mcp_token_credentials._id) — both belong to this owner.
+    intervention). Access is gated by the API Key + X-User-Token
+    authentication and the endpoint's scope requirement; no per-task
+    ownership filter is applied (created_by may be a platform user, an
+    external end-user's platform_user_id, or a channel-encoded id,
+    depending on the entry point).
     """
     doc = await TaskService.get_task(task_id)
     if doc is None:
-        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
-    if not principal.owns_resource(doc.get("created_by")):
         raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
     return doc
 
@@ -69,10 +66,9 @@ async def get_task(
     """Query the status of a Task.
 
     Requires ``executions:read`` scope.
-    Only tasks created by this API Key's owner are accessible.
     """
     principal.require_scope("executions:read")
-    doc = await _get_owned_task(task_id, principal)
+    doc = await _get_task_or_404(task_id)
     return _doc_to_ext_task(doc)
 
 
@@ -88,10 +84,9 @@ async def list_task_outputs(
     """List files produced by an Agent node during Task execution.
 
     Requires ``executions:read`` scope.
-    Only tasks created by this API Key's owner are accessible.
     """
     principal.require_scope("executions:read")
-    await _get_owned_task(task_id, principal)
+    await _get_task_or_404(task_id)
 
     from app.services.file_service import FileService
     from app.services.file_storage import LocalFileStorage
@@ -123,11 +118,10 @@ async def get_node_timeline(
     an Agent node, read on demand from the LangGraph checkpointer thread.
 
     Requires ``executions:read`` scope.
-    Only tasks created by this API Key's owner are accessible.
     Returns 404 when the node has no checkpoint yet.
     """
     principal.require_scope("executions:read")
-    await _get_owned_task(task_id, principal)
+    await _get_task_or_404(task_id)
 
     from app.engine.harness_integration import get_checkpointer
     from app.services.message_converters import messages_to_timeline_entries
@@ -167,14 +161,13 @@ async def intervene_task(
     """Intervene in a Task: approve, reject, skip, cancel, resume, retry.
 
     Requires ``workflows:invoke`` scope (write operation on an execution).
-    Only tasks created by this API Key's owner are accessible.
 
     Core logic is shared with the internal JWT endpoint via
     ``TaskService.intervene``. The actor identity is resolved from the
-    API-Key principal (mcp_token_credentials._id).
+    API-Key principal (the end-user's platform_user_id).
     """
     principal.require_scope("workflows:invoke")
-    await _get_owned_task(task_id, principal)
+    await _get_task_or_404(task_id)
 
     # Resolve end-user identity for attribution (timeline / variables).
     triggered_by = resolve_user_id(principal)

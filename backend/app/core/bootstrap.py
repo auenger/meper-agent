@@ -84,6 +84,8 @@ async def ensure_all_indexes() -> TriggerRepository:
     # Backfill stale system-role permission lists written by older code
     # (marker-guarded, runs once per database).
     await RoleService.backfill_system_role_permissions()
+    # Backfill misclassified ext-call execution logs (marker-guarded, once).
+    await ExecutionLogService.backfill_source_channel()
     return trigger_repo
 
 

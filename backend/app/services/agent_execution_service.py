@@ -101,7 +101,7 @@ class AgentExecutionService:
             result = {}
             raise
         finally:
-            # Unified execution log (all channels) + ext audit log (ext only).
+            # Unified execution log (all channels).
             await _record_execution_log(
                 user_id=user_id, agent_id=agent_id, session_id=session_id,
                 request_id=request_id, start_time_ms=start_time_ms,
@@ -207,7 +207,7 @@ class AgentExecutionService:
                         session_id, collected_timeline,
                         token_usage=result.get("usage"),
                     )
-                # Unified execution log (all channels) + ext audit log (ext only).
+                # Unified execution log (all channels).
                 with contextlib.suppress(Exception):
                     await _record_execution_log(
                         user_id=user_id, agent_id=agent_id, session_id=session_id,
@@ -290,7 +290,7 @@ class AgentExecutionService:
                         token_usage=result.get("usage"),
                         append_to_last_agent=True,
                     )
-                # Unified execution log (all channels) + ext audit log (ext only).
+                # Unified execution log (all channels).
                 # Failure is non-fatal — must not block the terminal done event.
                 try:
                     await _record_execution_log(

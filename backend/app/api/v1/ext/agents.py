@@ -286,7 +286,7 @@ async def create_session(
 ) -> ExtSessionResponse:
     """Create a new session for the current end-user.
 
-    The session is attributed via ``resolve_user_id`` (mcp_token_credentials._id),
+    The session is attributed via ``resolve_user_id`` (platform_user_id),
     matching how ``invoke`` attributes sessions so subsequent calls find it.
     """
     principal.require_scope("agents:invoke")
@@ -320,7 +320,7 @@ async def list_user_sessions(
 ) -> ExtSessionListResponse:
     """List sessions for the current end-user.
 
-    Sessions are keyed by ``user_id`` (mcp_token_credentials._id).
+    Sessions are keyed by ``user_id`` (platform_user_id).
     """
     principal.require_scope("agents:invoke")
     principal.require_agent_access(agent_id)
