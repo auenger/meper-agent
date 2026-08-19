@@ -5,11 +5,13 @@ import io
 from pathlib import Path
 
 import pytest
-from app.engine.agent.builtin_tools import reset_workspace_context, set_workspace_context
+from app.engine.agent.builtin_tools import (
+    reset_workspace_context,
+    set_workspace_context,
+)
 from app.engine.agent.parse_tool import _PARSE_TOOLS, PARSE_TOOL_BY_NAME, parse_file
 from app.engine.tool.workspace import Workspace
 from app.models.file_library import FileConsumerKind, FileRef
-
 
 # ---------------------------------------------------------------------------
 # Fixtures — 临时 workspace + 样本文件工厂

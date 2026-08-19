@@ -10,7 +10,6 @@ from app.voice import protocol as P  # noqa: N812
 
 from tests.voice.helpers import FakeASR, FakeWebSocket, make_principal, make_session
 
-
 # ── agent-level gate (B6) ──────────────────────────────────────────────────
 
 
