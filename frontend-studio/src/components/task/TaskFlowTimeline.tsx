@@ -22,7 +22,7 @@ import {
 import { tasksApi, taskKeys, type TaskDetail, type TimelineEvent, type NodeTimelineEntry } from '../../services/tasks-api'
 import { useQuery } from '@tanstack/react-query'
 import { workflowsApi, workflowKeys } from '../../services/workflows-api'
-import { getNodeExecState, type NodeExecState, type NodeStageInfo } from './task-flow-utils'
+import { getNodeExecState, hasTaskRejectSignal, type NodeExecState, type NodeStageInfo } from './task-flow-utils'
 import { DataView } from './DataView'
 import { Spin } from '../ui'
 import AgentTimeline from './AgentTimeline'
@@ -78,6 +78,7 @@ const EVENT_META: Record<string, { label: string; color: string }> = {
   reject: { label: '审批驳回', color: '#EF4444' },
   cancel: { label: '人工取消', color: '#94A3B8' },
   resume: { label: '人工恢复', color: '#3B82F6' },
+  timeout: { label: '审批超时', color: '#F59E0B' },
   // 人工干预（Agent 工具）
   human_approved: { label: '审批通过', color: '#10B981' },
   human_rejected: { label: '审批拒绝', color: '#EF4444' },
@@ -456,6 +457,8 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
 
   // 审批已完成？若是，展示层过滤掉 waiting_human / human node_complete（旧 APPROVE_TYPES 逻辑）
   const hasAnyApproval = timeline.some((e) => APPROVE_TYPES.has(e.event_type))
+  // 任务级拒绝信号（reject / 超时 auto_reject·fail），兜底无法归属节点的存量事件
+  const taskRejected = hasTaskRejectSignal(timeline)
 
   // 收集每个节点的相关事件 + 首次出现顺序（全量收集，不做状态相关过滤）
   const order: string[] = []
@@ -486,7 +489,9 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
       nodeVars && typeof nodeVars === 'object' && typeof (nodeVars as { decision?: unknown }).decision === 'string'
         ? (nodeVars as { decision: string }).decision
         : undefined
-    const state = getNodeExecState(evts, nodeId === pausedNode, decision)
+    // 任务级拒绝兜底：存量超时事件（timeout auto_reject/fail）同样不带 node_id，
+    // 暂停节点凭任务级信号判为已拒绝（超时 fail 不清空 checkpoint）
+    const state = getNodeExecState(evts, nodeId === pausedNode, decision, taskRejected)
     const startEvt = evts.find((e) => e.event_type === 'node_start')
     const endEvt = evts.find((e) => e.event_type === 'node_complete' || e.event_type === 'node_failed')
     const duration = (startEvt && endEvt) ? humanDuration(startEvt.timestamp, endEvt.timestamp) : undefined

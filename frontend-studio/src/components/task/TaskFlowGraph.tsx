@@ -20,7 +20,7 @@ import { workflowsApi, workflowKeys } from '../../services/workflows-api'
 import type { TaskDetail } from '../../services/tasks-api'
 import { toXyflowNodes, deriveXyflowEdgesFromNodes } from '../../features/workflow-editor/utils/canvas-converters'
 import WorkflowBaseNode from '../../features/workflow-editor/custom-nodes/WorkflowBaseNode'
-import { getNodeExecState, STATE_COLOR, type NodeExecState } from './task-flow-utils'
+import { getNodeExecState, hasTaskRejectSignal, STATE_COLOR, type NodeExecState } from './task-flow-utils'
 
 /** 只读节点类型注册表（复用 WorkflowBaseNode） */
 const nodeTypes = { workflow: WorkflowBaseNode }
@@ -50,6 +50,7 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
 
   // 推导每个 node_id 的执行状态：扫描 timeline 的 node_* 事件 + checkpoint.paused_at_node
   // + variables[node_id].decision（存量 reject 事件无 node_id 的兜底）
+  // + 任务级拒绝信号（存量超时事件无 node_id 的兜底）
   const stateByNode = useMemo(() => {
     const map = new Map<string, NodeExecState>()
     const eventsByNode = new Map<string, typeof task.timeline>()
@@ -60,13 +61,14 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
       eventsByNode.get(nodeId)!.push(evt)
     }
     const pausedNode = task.checkpoint?.paused_at_node
+    const taskRejected = hasTaskRejectSignal(task.timeline ?? [])
     for (const [nodeId, evts] of eventsByNode) {
       const nodeVars = task.variables?.[nodeId]
       const decision =
         nodeVars && typeof nodeVars === 'object' && typeof (nodeVars as { decision?: unknown }).decision === 'string'
           ? (nodeVars as { decision: string }).decision
           : undefined
-      map.set(nodeId, getNodeExecState(evts, nodeId === pausedNode, decision))
+      map.set(nodeId, getNodeExecState(evts, nodeId === pausedNode, decision, taskRejected))
     }
     return map
   }, [task.timeline, task.checkpoint, task.variables])

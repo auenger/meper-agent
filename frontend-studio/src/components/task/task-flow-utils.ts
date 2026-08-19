@@ -30,25 +30,39 @@ export const NODE_TYPE_LABEL: Record<string, string> = {
 }
 
 /**
+ * 任务级「拒绝」信号：timeline 中存在 reject 事件、或超时 auto_reject/fail。
+ * 用于兜底不带 node_id 的存量审批/超时事件——事件无法归属到节点分组时，
+ * 暂停节点（checkpoint.paused_at_node 命中且未清空）凭该信号判为已拒绝。
+ */
+export function hasTaskRejectSignal(timeline: TimelineEvent[]): boolean {
+  return timeline.some((e) =>
+    e.event_type === 'reject' ||
+    (e.event_type === 'timeout' && (e.data?.timeout_action === 'auto_reject' || e.data?.timeout_action === 'fail')),
+  )
+}
+
+/**
  * 从一个节点的相关 timeline 事件推导其执行状态。
  *
  * 规则（按优先级）：
  * 1. 有 node_failed → failed
  * 2. 审批被拒绝（reject 事件 / 超时 auto_reject·fail 事件 / decision='reject'）→ rejected
- * 3. pausedAtThisNode（checkpoint.paused_at_node 命中）→ waiting（人工审批中）
+ * 3. pausedAtThisNode（checkpoint.paused_at_node 命中）→ waiting（人工审批中）；
+ *    若存在任务级拒绝信号（存量事件无 node_id 无法归属节点）→ rejected
  * 4. 有 node_complete → completed
  * 5. 有 node_start 但无 complete/failed → executing
  * 6. 否则 → pending
  *
  * 注：human 节点在暂停前就写入了 node_complete（引擎恢复信号），因此通过/跳过后
- * 走规则 4 显示「已完成」；拒绝时 checkpoint 不会清空，必须靠规则 2（在 waiting
- * 之前）压过 pausedAtThisNode。decision 参数取 variables[node_id].decision，
- * 兼容不带 node_id 的存量 reject 事件。
+ * 走规则 4 显示「已完成」；拒绝时 checkpoint 不会清空（reject / 超时 fail 均如此），
+ * 必须靠规则 2、3（在 waiting 之前）压过 pausedAtThisNode。decision 参数取
+ * variables[node_id].decision，taskRejected 取 hasTaskRejectSignal(全量 timeline)。
  */
 export function getNodeExecState(
   events: TimelineEvent[],
   pausedAtThisNode: boolean,
   decision?: string,
+  taskRejected?: boolean,
 ): NodeExecState {
   const types = new Set(events.map((e) => e.event_type))
   if (types.has('node_failed')) return 'failed'
@@ -56,7 +70,7 @@ export function getNodeExecState(
     (e) => e.event_type === 'timeout' && (e.data?.timeout_action === 'auto_reject' || e.data?.timeout_action === 'fail'),
   )
   if (types.has('reject') || rejectedByTimeout || decision === 'reject') return 'rejected'
-  if (pausedAtThisNode) return 'waiting'
+  if (pausedAtThisNode) return taskRejected ? 'rejected' : 'waiting'
   if (types.has('node_complete')) return 'completed'
   if (types.has('node_start')) return 'executing'
   return 'pending'
