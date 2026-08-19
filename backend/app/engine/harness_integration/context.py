@@ -26,14 +26,30 @@ def get_checkpointer() -> Any:
 # 端点 `/api/v1/tools/builtin` 与 `resolve_harness_context` 共同引用此名单,
 # 保证「端点展示的 = 运行时注入的」。
 _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
-    "bash", "read", "write", "glob", "grep", "ask_clarification", "parse_file",
+    "bash", "read", "write", "glob", "grep", "ask_clarification",
+    "run_code", "parse_file",
 )
 
 # 可配子集 —— 用户可在 Agent 配置页勾选的内建工具(其余始终开启、不可关闭)。
 # ask_clarification 是能力型工具,关闭会导致 Agent 无法澄清,故始终开启。
+# run_code(代码即工具编排)默认启用:新建 Agent 的 DEFAULT_BUILTIN_CONFIG
+# 自动包含;存量 Agent 在配置页手动勾选后生效。
 _CONFIGURABLE_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
-    {"bash", "read", "write", "glob", "grep", "parse_file"}
+    {"bash", "read", "write", "glob", "grep", "run_code", "parse_file"}
 )
+
+# run_code 代码内可桥接调用的工具排除名单(不进 tools_map)。
+# - run_code 自身:防递归编排;
+# - ask_clarification / confirm_workflow:HITL interrupt 在工作线程桥接下
+#   无法挂起 graph(会退化为异常),失去人机协同语义;
+# - delegate_to_subagent / load_skill:子代理/技能加载改变执行上下文,
+#   不适合在代码内嵌套;
+# - bash/read/write/glob/grep:文件 shell 敏感面,代码内用不到。
+_RUN_CODE_EXCLUDED_TOOLS: frozenset[str] = frozenset({
+    "run_code", "ask_clarification", "confirm_workflow",
+    "delegate_to_subagent", "load_skill",
+    "bash", "read", "write", "glob", "grep",
+})
 
 # 新建 Agent 时默认启用的内建工具(白名单语义:列表中的工具才会注入)。
 # 保持与 _CONFIGURABLE_BUILTIN_TOOL_NAMES 一致(按 _INJECTED_BUILTIN_TOOL_NAMES
@@ -82,9 +98,11 @@ def _resolve_builtin_tools(agent: dict) -> list:
     task/workflow 工具始终注入;harness 内建工具与 app 层 parse_file 按
     builtin_config 白名单过滤(ask_clarification 等不可配工具始终注入)。
     bash 选中时连带 read/write。
+    run_code 受全局开关 RUN_CODE_ENABLED 控制,关闭时视为未配置。
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
+    from app.core.config import settings
     from app.engine.agent.chart_tool import _CHART_TOOLS
     from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
     from app.engine.agent.workflow_executor import _TASK_TOOLS
@@ -93,6 +111,8 @@ def _resolve_builtin_tools(agent: dict) -> list:
     tools += list(_CHART_TOOLS)  # render_chart 图表工具始终注入
 
     builtin_config = set(agent.get("builtin_config") or [])
+    if not settings.RUN_CODE_ENABLED:
+        builtin_config.discard("run_code")
     if "bash" in builtin_config:
         builtin_config |= {"read", "write"}
 
@@ -396,6 +416,25 @@ async def resolve_harness_context(
     # 8. 注入 sandbox context
     sb_token = set_sandbox_context(SandboxContext(sandbox=sandbox))
 
+    # 8.6 注入 run_code 工具桥接 context(代码内 tools.call 的工具表)。
+    # 仅当 run_code 实际注入本次执行时才设置(工具表按 Agent 绑定动态构建,
+    # 排除 HITL/子代理/文件 shell 类工具,见 _RUN_CODE_EXCLUDED_TOOLS)。
+    tb_token = None
+    if settings.RUN_CODE_ENABLED and "run_code" in set(agent.get("builtin_config") or []):
+        from agent_flow_harness import ToolBridgeContext, set_tool_bridge_context
+
+        tb_token = set_tool_bridge_context(ToolBridgeContext(
+            tools_map={
+                t.name: t
+                for t in all_tools
+                if getattr(t, "name", "") not in _RUN_CODE_EXCLUDED_TOOLS
+            },
+            restricted=settings.RUN_CODE_RESTRICTED,
+            call_timeout=settings.RUN_CODE_CALL_TIMEOUT,
+            overall_timeout=settings.RUN_CODE_TIMEOUT,
+            max_output_bytes=settings.RUN_CODE_MAX_OUTPUT_BYTES,
+        ))
+
     # 8.5 注入 user_token context(供 MCP 工具透传给 MCP server)。
     # asyncio.create_task 会复制 contextvars,所以即便 stream/resume 的
     # 真正执行在后台任务里,MCP loader 的 interceptor 也能读到。
@@ -433,6 +472,7 @@ async def resolve_harness_context(
         "ws_token": ws_token,
         "ut_token": ut_token,
         "tri_token": tri_token,
+        "tb_token": tb_token,
         "middlewares": [UsageMiddleware()],
         "context_window": context_window,
         # 压缩配置(全局可配)。
@@ -464,7 +504,11 @@ def _make_tool_output_reference_formatter():
 
 def release_harness_context(hctx: dict) -> None:
     """释放 resolve_harness_context 持有的 contextvar token(在 finally 调用)。"""
-    from agent_flow_harness import reset_sandbox_context, reset_user_token_context
+    from agent_flow_harness import (
+        reset_sandbox_context,
+        reset_tool_bridge_context,
+        reset_user_token_context,
+    )
     from agent_flow_harness.mcp.user_token_context import reset_token_record_id_context
 
     from app.engine.agent.builtin_tools import reset_workspace_context
@@ -475,6 +519,8 @@ def release_harness_context(hctx: dict) -> None:
     reset_user_token_context(hctx["ut_token"])
     if hctx.get("tri_token") is not None:
         reset_token_record_id_context(hctx["tri_token"])
+    if hctx.get("tb_token") is not None:
+        reset_tool_bridge_context(hctx["tb_token"])
 
 
 async def _maybe_migrate_legacy(graph, config, legacy_records: list[dict] | None) -> None:

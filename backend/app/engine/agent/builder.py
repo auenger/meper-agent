@@ -355,8 +355,8 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
+    from app.core.config import settings
     from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
-
     from app.engine.harness_integration.context import (
         _CONFIGURABLE_BUILTIN_TOOL_NAMES,
         _INJECTED_BUILTIN_TOOL_NAMES,
@@ -373,6 +373,9 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
     enabled = set(builtin_config)
     if "bash" in enabled:
         enabled |= {"read", "write"}
+    # 与运行时注入保持一致:全局开关关闭时 run_code 不进声明。
+    if not settings.RUN_CODE_ENABLED:
+        enabled.discard("run_code")
 
     for name in _INJECTED_BUILTIN_TOOL_NAMES:
         # 只声明可配工具(ask_clarification 单独在下方声明)
@@ -385,6 +388,23 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
         # 取描述第一行(有些描述很长,system prompt 里只需摘要)
         desc_first_line = desc.split("\n")[0].strip()
         lines.append(f"- **{name}**: {desc_first_line}")
+
+    # run_code 使用策略 —— 硬性规则,约束 LLM 不要逐条调用工具。
+    if "run_code" in enabled:
+        lines.extend([
+            "",
+            "### Batch Tool Execution (run_code)",
+            "",
+            "When a task requires calling the same tool for many items (every person,",
+            "every order, every record), OR chaining multiple tools where later calls",
+            "depend on earlier results, you MUST write one **run_code** with a loop /",
+            "tools.call_many instead of issuing one tool call per item.",
+            "Direct per-item tool calls for batches of 3+ items are an error — they",
+            "waste turns and tokens. Inside run_code, call tools via",
+            "`tools.call(name, **kwargs)` / `tools.call_many([...])`; see the tool",
+            "description for the full API and examples.",
+            "",
+        ])
 
     # ask_clarification is always available (not gated by builtin_config)
     lines.extend([

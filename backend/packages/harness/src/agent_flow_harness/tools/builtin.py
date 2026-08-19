@@ -9,6 +9,8 @@
 三层工具模型（SPEC §Always）：
 - 第一层（能力型）：delegate_to_subagent / ask_clarification / tool_search
 - 第二层（文件/shell）：bash / read / write / glob / grep（委托 Sandbox）
+- 编排层：run_code（代码即工具编排 — 代码内经 tools.call 批量/链式
+  调用其他工具，工具表由宿主经 ToolBridgeContext 注入）
 
 注意：这是"能力清单"，不是"领域工具"。第三层领域工具（查 MES/发邮件等）
 由用户通过 TOOL_REGISTRY.register 或 use 字符串注入，不在此处。
@@ -50,6 +52,11 @@ def _load_builtin_tools() -> dict[str, "BaseTool"]:
 
     for t in (delegate_to_subagent, ask_clarification, tool_search):
         tools[t.name] = t
+
+    # 编排层：run_code（代码即工具编排，工具表经 ToolBridgeContext 注入）
+    from agent_flow_harness.tools.run_code import run_code
+
+    tools[run_code.name] = run_code
 
     _CACHE = tools
     return tools

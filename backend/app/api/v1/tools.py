@@ -71,6 +71,7 @@ async def list_builtin_tools(
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
+    from app.core.config import settings
     from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
     from app.engine.harness_integration.context import (
         _CONFIGURABLE_BUILTIN_TOOL_NAMES,
@@ -79,6 +80,9 @@ async def list_builtin_tools(
 
     results: list[BuiltinToolResponse] = []
     for name in _INJECTED_BUILTIN_TOOL_NAMES:
+        # 与运行时注入保持一致:RUN_CODE_ENABLED=False 时 run_code 不展示。
+        if name == "run_code" and not settings.RUN_CODE_ENABLED:
+            continue
         # parse_file 是 app 层工具,harness 注册表取不到,补 PARSE_TOOL_BY_NAME 查找。
         tool = BUILTIN_TOOLS.get(name) or PARSE_TOOL_BY_NAME.get(name)
         if tool is None:

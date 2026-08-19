@@ -60,9 +60,9 @@ export interface ToolSelectorValue {
 
 // eslint-disable-next-line react-refresh/only-export-components
 export const DEFAULT_TOOL_VALUE: ToolSelectorValue = {
-  // 文件类内建工具默认全开(与后端 create_agent 端点的默认值保持一致,
-  // 避免新建后工具面板的勾选状态与落库值不一致导致视觉跳变)。
-  builtin_config: ['bash', 'read', 'write', 'glob', 'grep'],
+  // 文件类内建工具 + run_code 默认全开(与后端 create_agent 端点的默认值
+  // 保持一致,避免新建后工具面板的勾选状态与落库值不一致导致视觉跳变)。
+  builtin_config: ['bash', 'read', 'write', 'glob', 'grep', 'run_code'],
   skill_ids: [],
   mcp_connection_ids: [],
   workflow_ids: [],

@@ -261,6 +261,24 @@ class Settings(BaseSettings):
     SANDBOX_CONTAINER_WORKSPACE_DIR: str = "/workspace"
     SANDBOX_CONTAINER_SKILLS_DIR: str = "/data/skills"
 
+    # ── run_code（代码即工具编排）───────────────────────────────────────
+    # 总开关。False 时 run_code 不注入任何 Agent（名单层直接跳过）。
+    RUN_CODE_ENABLED: bool = True
+
+    # True（默认）= 受限模式：builtins 白名单 + import 模块白名单
+    # （json/math/re/...），禁文件/网络/os。False = 开放模式，信任生成代码
+    # （与 bash 工具同级风险）。
+    RUN_CODE_RESTRICTED: bool = True
+
+    # run_code 整体执行超时（秒）。批量查几十人通常几十秒内，180s 留余量。
+    RUN_CODE_TIMEOUT: int = 180
+
+    # run_code 内单次工具桥接调用（tools.call / call_many 单批）的超时（秒）。
+    RUN_CODE_CALL_TIMEOUT: int = 60
+
+    # run_code stdout 返回给 LLM 的字节上限（超限截断并标记）。
+    RUN_CODE_MAX_OUTPUT_BYTES: int = 50 * 1024
+
     # ── Channels (inbound IM integrations) ──
     CHANNEL_INBOUND_ACK_TIMEOUT_MS: int = 2000
     CHANNEL_EVENT_LOG_TTL_HOURS: int = 24
