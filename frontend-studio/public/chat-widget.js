@@ -3,6 +3,8 @@
  * 纯原生 JS（不进 React 构建、不引框架），放 public/ 由静态服务原样托管。
  *
  * 形态：右下角浮动启动器（client.png）→ 点击从右侧滑出 drawer。
+ * 面板左缘可横向拖拽调宽，右上角按钮可全屏/还原；
+ * 拖拽后的宽度记忆在 localStorage（优先于 data-width 默认值）。
  * 用户身份通过 cookie（mep-access-token）自动注入，无需登录面板。
  * 用户名和退出按钮由 client 内部侧边栏管理（不在 widget 层显示）。
  *
@@ -31,10 +33,17 @@
   var state = {
     host: null, shadow: null, shell: null, panel: null,
     launcher: null, iframe: null, loading: null, closeButton: null,
+    resizeHandle: null, maxButton: null,
     initialized: false, open: false, iframeLoaded: false,
+    fullscreen: false, resizing: false, width: null,
     previousFocus: null, config: null, userName: '',
     loadedToken: '' // iframe 初始化时使用的 token，用于检测身份变化
   };
+
+  var WIDTH_KEY = 'afc-panel-width'; // 拖拽宽度记忆（localStorage）
+  var MIN_WIDTH = 360;
+  var ICON_MAXIMIZE = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+  var ICON_RESTORE = '<svg viewBox="0 0 24 24" fill="none" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v3a2 2 0 0 1-2 2H3"/><path d="M21 8h-3a2 2 0 0 1-2-2V3"/><path d="M3 16h3a2 2 0 0 1 2 2v3"/><path d="M16 21v-3a2 2 0 0 1 2-2h3"/></svg>';
 
   function bool(v, f) { return v === undefined || v === null || v === '' ? f : !/^(false|0|no|off)$/i.test(String(v)); }
   function cssLength(v, f) { if (typeof v === 'number' && isFinite(v)) return v + 'px'; var t = String(v || '').trim(); return /^\d+(\.\d+)?(px|rem|em|vw|vh|%)$/.test(t) ? t : f; }
@@ -75,11 +84,20 @@
       ':host{all:initial}','*,*::before,*::after{box-sizing:border-box}',
       '.afc-panel{position:fixed;z-index:2;top:0;right:0;width:min(var(--afc-width),100vw);height:100vh;height:100dvh;background:#fff;box-shadow:-18px 0 48px rgba(15,23,42,.18);transform:translate3d(102%,0,0);visibility:hidden;pointer-events:none;transition:transform .34s cubic-bezier(.22,1,.36,1),visibility .34s;overflow:hidden;border-left:1px solid rgba(148,163,184,.22)}',
       '.afc-open .afc-panel{transform:translate3d(0,0,0);visibility:visible;pointer-events:auto}',
-      '.afc-close{position:absolute;z-index:5;top:max(15px,env(safe-area-inset-top));right:max(15px,env(safe-area-inset-right));width:30px;height:30px;padding:0;border:1px solid rgba(148,163,184,.18);border-radius:8px;background:rgba(255,255,255,.52);color:rgba(63,73,91,.68);display:grid;place-items:center;cursor:pointer;box-shadow:0 4px 12px rgba(15,23,42,.08);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:background .16s ease,color .16s ease,transform .16s ease}',
-      '.afc-close:hover{background:rgba(255,255,255,.82);color:#1f2937;transform:scale(1.06)}',
-      '.afc-close:active{transform:scale(.94)}',
-      '.afc-close:focus-visible,.afc-launcher:focus-visible{outline:3px solid rgba(94,129,255,.35);outline-offset:3px}',
-      '.afc-close svg{width:15px;height:15px;stroke:currentColor}',
+      '.afc-panel.afc-full{width:100vw;height:100vh;height:100dvh;border-left:0}',
+      '.afc-panel.afc-full .afc-resize{display:none}',
+      '.afc-resize{position:absolute;left:0;top:0;bottom:0;width:8px;z-index:6;cursor:col-resize;background:transparent;touch-action:none}',
+      '.afc-resize::after{content:"";position:absolute;left:2px;top:50%;width:3px;height:42px;border-radius:2px;transform:translateY(-50%);background:rgba(113,104,255,0);transition:background .16s ease}',
+      '.afc-resize:hover::after,.afc-resize.afc-active::after{background:rgba(113,104,255,.72)}',
+      '.afc-resizing{user-select:none;cursor:col-resize}',
+      '.afc-resizing .afc-panel{transition:none}',
+      '.afc-resizing .afc-frame{pointer-events:none}',
+      '.afc-actions{position:absolute;z-index:5;top:max(15px,env(safe-area-inset-top));right:max(15px,env(safe-area-inset-right));display:flex;gap:8px}',
+      '.afc-actions button{width:30px;height:30px;padding:0;border:1px solid rgba(148,163,184,.18);border-radius:8px;background:rgba(255,255,255,.52);color:rgba(63,73,91,.68);display:grid;place-items:center;cursor:pointer;box-shadow:0 4px 12px rgba(15,23,42,.08);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);transition:background .16s ease,color .16s ease,transform .16s ease}',
+      '.afc-actions button:hover{background:rgba(255,255,255,.82);color:#1f2937;transform:scale(1.06)}',
+      '.afc-actions button:active{transform:scale(.94)}',
+      '.afc-actions button:focus-visible,.afc-launcher:focus-visible{outline:3px solid rgba(94,129,255,.35);outline-offset:3px}',
+      '.afc-actions svg{width:15px;height:15px;stroke:currentColor}',
       '.afc-body{position:absolute;inset:0;background:#fff}',
       '.afc-frame{display:block;width:100%;height:100%;border:0;background:#fff;opacity:0;transition:opacity .2s ease}',
       '.afc-loaded .afc-frame{opacity:1}',
@@ -94,7 +112,7 @@
       '@keyframes afc-spin{to{transform:rotate(360deg)}}','@keyframes afc-float{0%,100%{margin-bottom:0}50%{margin-bottom:5px}}',
       '@keyframes afc-pulse{0%{transform:scale(.9);opacity:.7}75%,100%{transform:scale(1.18);opacity:0}}',
       '@keyframes afc-breathe{0%,100%{transform:scale(1)}50%{transform:scale(1.08)}}',
-      '@media(max-width:640px){.afc-panel{width:100vw;border-left:0}.afc-launcher{right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom))}}',
+      '@media(max-width:640px){.afc-panel{width:100vw;border-left:0}.afc-resize{display:none}.afc-launcher{right:max(16px,env(safe-area-inset-right));bottom:max(16px,env(safe-area-inset-bottom))}}',
       '@media(prefers-reduced-motion:reduce){.afc-panel,.afc-launcher,.afc-loading,.afc-frame{transition:none}.afc-launcher,.afc-launcher::before,.afc-logo,.afc-spinner{animation:none}}'
     ].join('');
 
@@ -105,7 +123,11 @@
     shell.style.setProperty('--afc-bottom', state.config.bottom);
     shell.innerHTML = [
       '<aside class="afc-panel" role="dialog" aria-label="对话窗口">',
-      '  <button class="afc-close" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.9" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>',
+      '  <div class="afc-resize" aria-hidden="true"></div>',
+      '  <div class="afc-actions">',
+      '    <button class="afc-max" type="button" aria-label="全屏">' + ICON_MAXIMIZE + '</button>',
+      '    <button class="afc-close" type="button" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke-width="1.9" stroke-linecap="round"><path d="m6 6 12 12M18 6 6 18"/></svg></button>',
+      '  </div>',
       '  <div class="afc-body">',
       '    <iframe class="afc-frame" title="AI 对话" allow="clipboard-read; clipboard-write; microphone" referrerpolicy="strict-origin-when-cross-origin"></iframe>',
       '    <div class="afc-loading"><div><div class="afc-spinner"></div></div></div>',
@@ -123,11 +145,16 @@
     state.iframe = shell.querySelector('.afc-frame');
     state.loading = shell.querySelector('.afc-body');
     state.closeButton = shell.querySelector('.afc-close');
+    state.resizeHandle = shell.querySelector('.afc-resize');
+    state.maxButton = shell.querySelector('.afc-max');
     state.iframe.title = state.config.title;
     shell.querySelector('.afc-logo').src = resolveLogoUrl();
+    restoreWidth();
 
     state.launcher.addEventListener('click', open);
     state.closeButton.addEventListener('click', close);
+    state.maxButton.addEventListener('click', toggleFullscreen);
+    initResize();
     state.iframe.addEventListener('load', function () {
       state.iframeLoaded = true;
       // 延迟隐藏 widget loading——等 iframe 内 React 完全渲染，
@@ -148,6 +175,60 @@
   function loadIframe() {
     var src = state.iframe.getAttribute('src');
     if (!src || src === 'about:blank') state.iframe.setAttribute('src', state.config.chatUrl);
+  }
+
+  /* ═══ 宽度拖拽 / 全屏 ═══ */
+  function applyWidth(px) {
+    var w = Math.round(Math.min(window.innerWidth, Math.max(MIN_WIDTH, px)));
+    state.width = w;
+    state.shell.style.setProperty('--afc-width', w + 'px');
+  }
+
+  // 用户上次拖拽的宽度优先于接入方 data-width 默认值
+  function restoreWidth() {
+    try {
+      var v = parseInt(window.localStorage.getItem(WIDTH_KEY), 10);
+      if (isFinite(v) && v >= MIN_WIDTH) applyWidth(v);
+    } catch (e) {}
+  }
+
+  function saveWidth() {
+    try { if (state.width) window.localStorage.setItem(WIDTH_KEY, String(state.width)); } catch (e) {}
+  }
+
+  function initResize() {
+    var handle = state.resizeHandle;
+    handle.addEventListener('pointerdown', function (e) {
+      if (state.fullscreen) return;
+      e.preventDefault();
+      state.resizing = true;
+      try { handle.setPointerCapture(e.pointerId); } catch (err) {}
+      state.shell.classList.add('afc-resizing');
+      handle.classList.add('afc-active');
+    });
+    handle.addEventListener('pointermove', function (e) {
+      if (!state.resizing) return;
+      applyWidth(window.innerWidth - e.clientX);
+    });
+    function end(e) {
+      if (!state.resizing) return;
+      state.resizing = false;
+      try { if (e.pointerId !== undefined) handle.releasePointerCapture(e.pointerId); } catch (err) {}
+      state.shell.classList.remove('afc-resizing');
+      handle.classList.remove('afc-active');
+      saveWidth();
+    }
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+  }
+
+  function toggleFullscreen() {
+    if (!state.initialized) return;
+    state.fullscreen = !state.fullscreen;
+    state.panel.classList.toggle('afc-full', state.fullscreen);
+    state.maxButton.innerHTML = state.fullscreen ? ICON_RESTORE : ICON_MAXIMIZE;
+    state.maxButton.setAttribute('aria-label', state.fullscreen ? '退出全屏' : '全屏');
+    emit(state.fullscreen ? 'fullscreen' : 'restore');
   }
 
   /* ═══ Cookie ═══ */
@@ -268,6 +349,8 @@
     if (state.host && state.host.parentNode) state.host.parentNode.removeChild(state.host);
     state.host = state.shadow = state.shell = state.panel = state.launcher = state.iframe = null;
     state.initialized = state.open = state.iframeLoaded = false;
+    state.fullscreen = state.resizing = false;
+    state.width = null;
     state.userName = '';
     state.loadedToken = '';
   }
