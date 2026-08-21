@@ -76,7 +76,7 @@ export default function SkillDetailPage() {
           {/* Title + meta */}
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-[#0F172A] mb-2">{tool.name}</h1>
+              <h1 className="text-2xl font-bold text-[#0F172A] mb-2 truncate max-w-lg" title={tool.name}>{tool.name}</h1>
               <p className="text-sm text-[#64748B] mb-3">{tool.description}</p>
               <div className="flex items-center gap-3">
                 <span className="text-xs text-[#94A3B8]">v{tool.version}</span>

@@ -313,3 +313,23 @@ export async function* streamConfirmation(
   )
   yield* parseSse(response)
 }
+
+/* ── 消息级反馈（§8.2 v2）：赞回复 → 本轮 load 的技能派生加分 ── */
+
+export interface SessionFeedbackItem {
+  request_id: string
+  /** 0=未投 */
+  value: 0 | 1 | -1
+  skills: { skill_id: string; name: string; kind: 'official' | 'user' }[]
+}
+
+export function sessionFeedback(sessionId: string): Promise<SessionFeedbackItem[]> {
+  return apiRequest<SessionFeedbackItem[]>(`/v1/user-skills/sessions/${encodeURIComponent(sessionId)}/feedback`)
+}
+
+export function voteMessage(sessionId: string, requestId: string, value: 1 | -1): Promise<{ ok: boolean }> {
+  return apiRequest<{ ok: boolean }>('/v1/user-skills/messages/vote', {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId, request_id: requestId, value }),
+  })
+}

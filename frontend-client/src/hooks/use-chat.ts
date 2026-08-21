@@ -170,11 +170,14 @@ function fromHistory(record: MessageRecord): ChatMessage {
     charts: [],
     status: 'success',
     createdAt: record.created_at ? new Date(record.created_at) : undefined,
+    requestId: record.request_id ?? undefined,
   }
 }
 
 interface AssistantAccumulator {
   id: string
+  /** 本轮请求 id——done 事件挂载（消息级反馈轮次键，§8.2） */
+  requestId?: string
   /** 按事件到达顺序排列的内容块(保留 text/thinking/tool 的交错顺序)。 */
   blocks: ContentBlock[]
   attachments: Map<string, AttachmentView>
@@ -441,6 +444,7 @@ export function useChat(
       status: effectiveStatus,
       error: acc.errorText,
       createdAt: new Date(),
+      requestId: acc.requestId,
     }
     setMessages((current) =>
       current.map((message) => (message.id === acc.id ? next : message)),
@@ -587,6 +591,7 @@ export function useChat(
             setRunning(false)
             return
           } else if (event.done) {
+            acc.requestId = event.request_id  // §8.2 消息级反馈轮次键
             // 流结束但仍有工具停在 running:说明没收到它的 tool_result(异常中断)。
             // 诚实地标为 error 并补提示文案,而不是伪装成 complete 误导用户。
             for (const block of acc.blocks) {

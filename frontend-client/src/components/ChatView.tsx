@@ -5,6 +5,8 @@ import {
   PaperClipOutlined,
   QuestionCircleOutlined,
   PlusOutlined,
+  LikeOutlined,
+  LikeFilled,
 } from '@ant-design/icons'
 import { Attachments, Bubble, Sender } from '@ant-design/x'
 import {
@@ -31,6 +33,7 @@ import { fetchVoiceStatus } from '../api/voice'
 import type { AgentSummary } from '../types'
 import { GeneratedFiles } from './GeneratedFiles'
 import { MessageContent } from './MessageContent'
+import { sessionFeedback, voteMessage, type SessionFeedbackItem } from '../api/chat'
 import { ClarificationFormCard } from './clarification-form-card'
 import { VoiceComposer } from './voice/VoiceComposer'
 
@@ -166,6 +169,38 @@ export function ChatView({
   }, [sessionId])
 
   // 消息变化(新增消息、流式增量、状态变更):贴底则跟随
+  /* ── 消息级反馈（§8.2 v2）：会话各轮投票态，流结束/切会话刷新 ── */
+  const [feedbackTick, setFeedbackTick] = useState(0)
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, SessionFeedbackItem>>({})
+  useEffect(() => {
+    if (!sessionId) return
+    let cancelled = false
+    sessionFeedback(sessionId)
+      .then((items) => {
+        if (cancelled) return
+        const map: Record<string, SessionFeedbackItem> = {}
+        for (const it of items) map[it.request_id] = it
+        setFeedbackMap(map)
+      })
+      .catch(() => { /* 端点不可用/无权限（apikey 模式）——静默降级 */ })
+    return () => { cancelled = true }
+  }, [sessionId, feedbackTick, loading])
+
+  const handleVoteMessage = async (requestId: string, value: 1 | -1) => {
+    if (!sessionId) return
+    const current = feedbackMap[requestId]?.value ?? 0
+    if (current === value) return
+    try {
+      await voteMessage(sessionId, requestId, value)
+      setFeedbackMap((prev) => ({
+        ...prev,
+        [requestId]: { ...(prev[requestId] ?? { request_id: requestId, value: 0, skills: [] }), value },
+      }))
+    } catch {
+      // 投票失败静默——不打断对话
+    }
+  }
+
   const lastMessage = messages[messages.length - 1]
   const lastMessageKey = lastMessage
     ? `${lastMessage.id}:${lastMessage.status}:${lastMessage.content.length}`
@@ -333,7 +368,47 @@ export function ChatView({
                       ? 'updating'
                       : chatMessage.status,
                   content: (
-                    <MessageContent message={chatMessage} sessionId={sessionId} />
+                    <div>
+                      <MessageContent message={chatMessage} sessionId={sessionId} />
+                      {chatMessage.role === 'assistant' &&
+                        chatMessage.status !== 'loading' &&
+                        chatMessage.requestId && (
+                          <div className="flex items-center gap-1 pt-1">
+                            <Button
+                              aria-label="msg-vote-up"
+                              type="text"
+                              size="small"
+                              title={feedbackMap[chatMessage.requestId]?.value === 1 ? '已点过赞' : '这轮回复有帮助'}
+                              onClick={() => void handleVoteMessage(chatMessage.requestId!, 1)}
+                              className={
+                                feedbackMap[chatMessage.requestId]?.value === 1
+                                  ? '!text-blue-500'
+                                  : '!text-gray-400 hover:!text-blue-500'
+                              }
+                              icon={
+                                feedbackMap[chatMessage.requestId]?.value === 1 ? (
+                                  <LikeFilled />
+                                ) : (
+                                  <LikeOutlined />
+                                )
+                              }
+                            />
+                            <Button
+                              aria-label="msg-vote-down"
+                              type="text"
+                              size="small"
+                              title={feedbackMap[chatMessage.requestId]?.value === -1 ? '已点过踩' : '这轮回复没帮助'}
+                              onClick={() => void handleVoteMessage(chatMessage.requestId!, -1)}
+                              className={
+                                feedbackMap[chatMessage.requestId]?.value === -1
+                                  ? '!text-red-500'
+                                  : '!text-gray-400 hover:!text-red-500'
+                              }
+                              icon={<LikeOutlined style={{ transform: 'rotate(180deg)' }} />}
+                            />
+                          </div>
+                        )}
+                    </div>
                   ),
                   streaming: chatMessage.status === 'loading',
                 }))}

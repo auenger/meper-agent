@@ -29,7 +29,7 @@ import { AgentDetailPage } from './components/AgentDetailPage';
 import { AgentEditorPage } from './components/AgentEditorPage';
 import { WorkflowDesigner } from './components/WorkflowDesigner';
 import { WorkflowSpace } from './components/WorkflowSpace';
-import { SkillsStore } from './components/SkillsStore';
+import { UserSkillsPage } from './components/UserSkillsPage';
 import { BuiltinToolsPage } from './components/BuiltinToolsPage';
 import { McpManagePage } from './components/McpManagePage';
 import { SkillDetailPage } from './components/SkillDetailPage';
@@ -76,7 +76,7 @@ const NAV_ITEMS: NavItem[] = [
   { id: 'triggers', label: '定时任务', icon: Clock, permission: 'workflow:read' },
   { id: 'tools', label: '内置工具', icon: Wrench, permission: 'tool:read' },
   { id: 'mcp', label: '外部工具接入', icon: Plug, permission: 'tool:read' },
-  { id: 'skills', label: '技能商店', icon: Sparkles, permission: 'tool:read' },
+  { id: 'skills', label: '技能', icon: Sparkles },
   { id: 'knowledge', label: '知识库', icon: BookOpen, permission: 'knowledge:read' },
   // 外部授权：所有登录用户可见；应用管理操作按 application:write 权限在卡片上显示。
   { id: 'external-auth', label: '外部授权', icon: Link2 },
@@ -543,7 +543,10 @@ export default function App() {
                 onBack={() => setOpenSkill(null)}
               />
             ) : (
-              <SkillsStore onOpenSkill={(s) => setOpenSkill({ id: s.id, name: s.name })} />
+              <UserSkillsPage
+                theme={theme}
+                onOpenOfficial={(id, name) => setOpenSkill({ id, name })}
+              />
             )
           )}
 

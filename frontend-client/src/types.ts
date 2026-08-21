@@ -83,6 +83,8 @@ export interface MessageRecord {
   session_id: string
   role: string
   content: string
+  /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键 */
+  request_id?: string
   timeline_entries?: Array<{
     type: string
     content?: string
@@ -144,6 +146,8 @@ export interface ChatMessage {
   status: 'loading' | 'success' | 'error' | 'abort'
   createdAt?: Date
   error?: string
+  /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键（流 done 事件/历史加载） */
+  requestId?: string
 }
 
 export interface ClarificationField {
@@ -204,6 +208,8 @@ export type StreamEventType =
 export interface StreamEvent {
   type?: StreamEventType
   done?: true
+  /** done 事件携带——本轮请求 id（消息级反馈轮次键） */
+  request_id?: string
   content?: string
   tool_name?: string
   args?: Record<string, unknown>

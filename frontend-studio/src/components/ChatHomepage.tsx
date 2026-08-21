@@ -4,8 +4,10 @@ import {
   Send, Plus, ChevronDown, Sparkles, Trash2, FileCode, CheckCircle,
   Bot, Terminal, Loader2, Paperclip, Brain, X,
   Wrench, AlertTriangle, ChevronRight, User, Download, FileText, Image as ImageIcon, Mic,
+  ThumbsUp, ThumbsDown,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { userSkillsApi, type SessionFeedbackItem } from '../services/user-skills-api';
 import {
   sessionApi, sessionKeys, type Session, type MessageRecord, type FileRef, getFileId,
 } from '../services/session-api';
@@ -175,6 +177,7 @@ function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: st
     role: 'agent',
     content: '',
     timestamp: new Date(rec.created_at).toLocaleString(),
+    requestId: rec.request_id,
     timeline: timeline.length > 0 ? timeline : undefined,
     isInterrupted,
     attachment: fileRefToAttachment(rec.files?.[0]),
@@ -494,6 +497,39 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
   const sessions: Session[] = sessionsData?.items ?? [];
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  // ── 消息级反馈（§8.2 v2）：会话各轮投票态，流结束/切会话时刷新 ──
+  const [feedbackTick, setFeedbackTick] = useState(0);
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, SessionFeedbackItem>>({});
+  useEffect(() => {
+    if (!activeSessionId) return;
+    let cancelled = false;
+    userSkillsApi.sessionFeedback(activeSessionId)
+      .then((items) => {
+        if (cancelled) return;
+        const map: Record<string, SessionFeedbackItem> = {};
+        for (const it of items) map[it.request_id] = it;
+        setFeedbackMap(map);
+      })
+      .catch(() => { /* 端点不可用（旧后端）——静默 */ });
+    return () => { cancelled = true; };
+  }, [activeSessionId, feedbackTick]);
+
+  const handleVoteMessage = useCallback(async (requestId: string, value: 1 | -1) => {
+    if (!activeSessionId) return;
+    const current = feedbackMap[requestId]?.value ?? 0;
+    if (current === value) return;  // 同向已投——no-op
+    try {
+      await userSkillsApi.voteMessage(activeSessionId, requestId, value);
+      setFeedbackMap((prev) => ({
+        ...prev,
+        [requestId]: { ...(prev[requestId] ?? { request_id: requestId, value: 0, skills: [] }), value },
+      }));
+    } catch {
+      // 投票失败静默——不打断对话
+    }
+  }, [activeSessionId, feedbackMap]);
+
   const [showDropdown, setShowDropdown] = useState(false);
   const [showAgentSelectModal, setShowAgentSelectModal] = useState(false);
   const [inputText, setInputText] = useState('');
@@ -958,6 +994,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
           }
           refreshSessions();
           filesPanelRef.current?.refresh();
+          setFeedbackTick((t) => t + 1);  // 本轮可能 load 了技能——刷新反馈态
           // 收敛残留 pending/running 的 tool entry 为 success（跳过 ask_clarification/
           // confirm_workflow —— 它们 interrupt 等待用户），并挂 usage。
           setLiveMessages((prev) =>
@@ -972,7 +1009,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
                   ? { ...e, toolStatus: 'success' as const }
                   : e,
               );
-              return { ...m, status: undefined, timeline: tl, usage: evt.usage ?? m.usage };
+              return {
+                ...m, status: undefined, timeline: tl,
+                usage: evt.usage ?? m.usage,
+                requestId: evt.request_id || m.requestId,  // §8.2 消息级反馈轮次键
+              };
             }),
           );
           continue;
@@ -1674,6 +1715,31 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
                       </div>
                     )}
                   </div>
+                  )}
+                  {/* 回答下方：消息级反馈（§8.2 v2）——赞回复→本轮技能派生加分 */}
+                  {!isUser && !isStreaming && msg.requestId && (
+                    <div className="flex items-center gap-0.5 pt-1">
+                      <button
+                        aria-label="msg-vote-up"
+                        title={feedbackMap[msg.requestId]?.value === 1 ? '已点过赞' : '这轮回复有帮助'}
+                        onClick={() => handleVoteMessage(msg.requestId!, 1)}
+                        className={`border-0 bg-transparent rounded-md w-7 h-7 flex items-center justify-center cursor-pointer transition ${
+                          feedbackMap[msg.requestId]?.value === 1 ? 'text-blue-400' : 'text-[#71717a] hover:text-blue-400'
+                        }`}
+                      >
+                        <ThumbsUp size={15} />
+                      </button>
+                      <button
+                        aria-label="msg-vote-down"
+                        title={feedbackMap[msg.requestId]?.value === -1 ? '已点过踩' : '这轮回复没帮助'}
+                        onClick={() => handleVoteMessage(msg.requestId!, -1)}
+                        className={`border-0 bg-transparent rounded-md w-7 h-7 flex items-center justify-center cursor-pointer transition ${
+                          feedbackMap[msg.requestId]?.value === -1 ? 'text-rose-400' : 'text-[#71717a] hover:text-rose-400'
+                        }`}
+                      >
+                        <ThumbsDown size={15} />
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>

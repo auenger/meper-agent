@@ -15,11 +15,12 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from pydantic import BaseModel, Field
 
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, UnauthorizedError, ValidationError
 from app.core.security import get_current_user, require_any_role
+from app.models.base import utc_now
 from app.models.user_skill import MEMORY_TOTAL_CHAR_LIMIT
 from app.schemas.user import UserResponse
 from app.services.user_profile_service import MemoryError, UserProfileService
@@ -34,6 +35,7 @@ class SkillItem(BaseModel):
     id: str = Field(alias="_id", serialization_alias="id")
     name: str
     description: str = ""
+    avatar: str = ""
     status: str = "private"
     source: str = "own"
     binding_enabled: bool = True
@@ -86,7 +88,8 @@ class MemoryUpdateRequest(BaseModel):
 def _skill_item(doc: dict) -> SkillItem:
     return SkillItem(
         _id=doc["_id"], name=doc.get("name", ""),
-        description=doc.get("description", ""), status=doc.get("status", "private"),
+        description=doc.get("description", ""), avatar=doc.get("avatar", ""),
+        status=doc.get("status", "private"),
         source=doc.get("source", "own"),
         binding_enabled=doc.get("binding_enabled", True),
         stats=doc.get("stats") or {},
@@ -143,6 +146,33 @@ async def clear_my_memory(
 # ---------------------------------------------------------------------------
 
 
+async def get_feedback_user_id(
+    authorization: str = Header(None, description="Bearer jwt 或 Bearer af_live_xxx"),
+    x_user_token: str = Header(None, description="apikey 模式的终端用户 token"),
+) -> str:
+    """消息级反馈端点的身份（§8.2）：JWT 平台用户或 apikey+X-User-Token
+    映射的平台用户——两者同属 platform_user_id 命名空间，同一用户跨端
+    （管理端 JWT / client apikey）是同一反馈主体。
+
+    分流：token 以 af_live_ 开头走 apikey 链（introspection + 应用命名空间
+    反查 platform_user_id），否则走 JWT。
+    """
+    from app.core.auth_apikey import _extract_bearer_token, authenticate_api_key
+
+    token = (authorization or "").removeprefix("Bearer ").strip()
+    if token.startswith("af_live_"):
+        user_token = _extract_bearer_token(x_user_token) or ""
+        principal = await authenticate_api_key(token, user_token)
+        if not principal.user_id:
+            raise UnauthorizedError(
+                code="EXT_USER_TOKEN_INVALID",
+                message="X-User-Token did not resolve to a platform user",
+            )
+        return principal.user_id
+    user = await get_current_user(authorization)
+    return user.id
+
+
 @router.get("/marketplace")
 async def marketplace(
     q: str = Query(default="", description="按名称/描述搜索"),
@@ -154,19 +184,20 @@ async def marketplace(
 @router.get("/sessions/{session_id}/feedback")
 async def get_session_feedback(
     session_id: str,
-    current_user: UserResponse = Depends(get_current_user),
+    user_id: str = Depends(get_feedback_user_id),
 ) -> list[dict]:
     """会话内各轮反馈态与使用技能（消息级 👍/👎 渲染数据，§8.2 v2）。
 
     注册顺序须在 GET /{skill_id} 之前——否则 /sessions/... 会被通配吞掉。
+    身份双通道：JWT / apikey+X-User-Token（client 嵌入模式）——见 get_feedback_user_id。
     """
-    return await UserSkillService.session_message_feedback(current_user.id, session_id)
+    return await UserSkillService.session_message_feedback(user_id, session_id)
 
 
 @router.post("/messages/vote")
 async def vote_message(
     body: MessageVoteRequest,
-    current_user: UserResponse = Depends(get_current_user),
+    user_id: str = Depends(get_feedback_user_id),
 ) -> dict:
     """消息级反馈：点赞/点踩模型的一轮回复（§8.2 v2）。
 
@@ -174,7 +205,7 @@ async def vote_message(
     """
     try:
         return await UserSkillService.vote_message(
-            current_user.id, body.session_id, body.request_id, body.value,
+            user_id, body.session_id, body.request_id, body.value,
         )
     except UserSkillError as exc:
         raise NotFoundError(code="USER_SKILL_INVALID", message=exc.message) from exc
@@ -268,11 +299,27 @@ async def update_my_skill(
     body: SkillUpdateRequest,
     current_user: UserResponse = Depends(get_current_user),
 ) -> SkillItem:
+    """编辑内容（仅 owner）+ 启停切换（owner 或安装者）。
+
+    installed 技能的 owner 是原作者——安装者停用/启用走自己的 binding，
+    不得被 owner 校验拦成 404（修复：安装的个人技能停用报"不存在"）。
+    """
     doc = await UserSkillService.get_skill(skill_id)
-    if doc is None or doc.get("owner_user_id") != current_user.id:
+    if doc is None:
+        raise NotFoundError(code="USER_SKILL_NOT_FOUND", message=f"Skill {skill_id} 不存在")
+    is_owner = doc.get("owner_user_id") == current_user.id
+    installed = await UserSkillService._binding_col().find_one(
+        {"user_id": current_user.id, "skill_id": skill_id, "source": "installed"}
+    )
+    if not is_owner and not installed:
         raise NotFoundError(code="USER_SKILL_NOT_FOUND", message=f"Skill {skill_id} 不存在")
 
     if body.content:
+        if not is_owner:
+            raise NotFoundError(
+                code="USER_SKILL_NOT_FOUND",
+                message=f"Skill {skill_id} 不存在",  # 内容仅 owner 可改——对外不泄露存在性细节
+            )
         try:
             doc = await UserSkillService.update_content(current_user.id, skill_id, body.content)
         except UserSkillError as exc:
@@ -287,7 +334,72 @@ async def update_my_skill(
             {"$set": {"enabled": body.binding_enabled}},
         )
     refreshed = await UserSkillService.get_skill(skill_id) or doc
-    return _skill_item({**refreshed, "source": "own"})
+    binding = await UserSkillService._binding_col().find_one(
+        {"user_id": current_user.id, "skill_id": skill_id}
+    )
+    return _skill_item({
+        **refreshed,
+        "source": "installed" if installed else "own",
+        "binding_enabled": (binding or {}).get("enabled", True),
+    })
+
+
+# ── 个人技能头像（镜像 tools 的 avatar 上传：MIME/大小校验 + 落盘 + 字段回写）──
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
+
+
+@router.post("/{skill_id}/avatar", summary="上传个人技能头像")
+async def upload_my_skill_avatar(
+    skill_id: str,
+    file: UploadFile = File(...),
+    current_user: UserResponse = Depends(get_current_user),
+) -> dict:
+    doc = await UserSkillService.get_skill(skill_id)
+    if doc is None or doc.get("owner_user_id") != current_user.id:
+        raise NotFoundError(code="USER_SKILL_NOT_FOUND", message=f"Skill {skill_id} 不存在")
+
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_ALLOWED_MIME:
+        raise ValidationError(code="AVATAR_TYPE", message="仅支持 PNG / JPEG / WEBP")
+    content = await file.read()
+    if not content:
+        raise ValidationError(code="AVATAR_EMPTY", message="图片内容为空")
+    if len(content) > _AVATAR_MAX_BYTES:
+        raise ValidationError(code="AVATAR_TOO_LARGE", message="图片不超过 2MB")
+
+    # 落盘复用 skill-avatars 静态目录（文件名带 uid 前缀防撞官方技能）
+    import pathlib
+
+    from app.core.config import settings
+
+    avatars_dir = pathlib.Path(settings.SKILL_AVATARS_CONTAINER_DIR)
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"usk_{current_user.id}_{skill_id}.png"
+    target = (avatars_dir / fname).resolve()
+    if avatars_dir.resolve() not in target.parents:
+        raise ValidationError(code="AVATAR_PATH", message="文件路径越界")
+    target.write_bytes(content)
+
+    avatar_url = f"/api/v1/skill-avatars/{fname}"
+    await UserSkillService._col().update_one(
+        {"_id": skill_id}, {"$set": {"avatar": avatar_url, "updated_at": utc_now().isoformat()}}
+    )
+    return {"avatar": avatar_url}
+
+
+@router.delete("/{skill_id}/avatar", summary="移除个人技能头像（回退默认占位）")
+async def remove_my_skill_avatar(
+    skill_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+) -> dict:
+    doc = await UserSkillService.get_skill(skill_id)
+    if doc is None or doc.get("owner_user_id") != current_user.id:
+        raise NotFoundError(code="USER_SKILL_NOT_FOUND", message=f"Skill {skill_id} 不存在")
+    await UserSkillService._col().update_one(
+        {"_id": skill_id}, {"$set": {"avatar": "", "updated_at": utc_now().isoformat()}}
+    )
+    return {"avatar": ""}
 
 
 @router.delete("/{skill_id}")

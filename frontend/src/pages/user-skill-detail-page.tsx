@@ -111,7 +111,7 @@ export default function UserSkillDetailPage() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <h1 className="text-2xl font-bold text-[#0F172A]">{skill.name}</h1>
+                <h1 className="text-2xl font-bold text-[#0F172A] truncate max-w-lg" title={skill.name}>{skill.name}</h1>
                 <Tag color="geekblue">{statusLabel}</Tag>
                 {skill.derived_from_name && <Tag color="purple">fork 自 {skill.derived_from_name}</Tag>}
                 {skill.source === 'installed' && <Tag>安装</Tag>}

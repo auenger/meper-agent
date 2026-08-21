@@ -1335,36 +1335,36 @@ export default function ChatPanel({
                             {msg.usage.llm_calls != null && msg.usage.llm_calls > 1 && ` · ${msg.usage.llm_calls} 轮`}
                           </span>
                         )}
-                        {/* 消息级反馈（§8.2 v2）：赞回复→本轮使用的技能派生加分（技能加分后台静默派生，不展示技能名） */}
-                        {!isStreaming && msg.requestId && (
-                          <span className="flex items-center gap-1 ml-1">
-                            <Tooltip title={feedbackMap[msg.requestId]?.value === 1 ? '已点过赞' : '这轮回复有帮助'}>
-                              <button
-                                aria-label="msg-vote-up"
-                                onClick={() => handleVoteMessage(msg.requestId!, 1)}
-                                className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
-                                  feedbackMap[msg.requestId]?.value === 1 ? 'text-[#0EA5E9]' : 'text-[#94A3B8] hover:text-[#0EA5E9]'
-                                }`}
-                              >
-                                {feedbackMap[msg.requestId]?.value === 1
-                                  ? <LikeFilled style={{ fontSize: 15 }} />
-                                  : <LikeOutlined style={{ fontSize: 15 }} />}
-                              </button>
-                            </Tooltip>
-                            <Tooltip title={feedbackMap[msg.requestId]?.value === -1 ? '已点过踩' : '这轮回复没帮助'}>
-                              <button
-                                aria-label="msg-vote-down"
-                                onClick={() => handleVoteMessage(msg.requestId!, -1)}
-                                className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
-                                  feedbackMap[msg.requestId]?.value === -1 ? 'text-[#EF4444]' : 'text-[#94A3B8] hover:text-[#EF4444]'
-                                }`}
-                              >
-                                <LikeOutlined style={{ fontSize: 15, transform: 'rotate(180deg)' }} />
-                              </button>
-                            </Tooltip>
-                          </span>
-                        )}
                       </div>
+                      {/* 回答下方：消息级反馈（§8.2 v2）——赞回复→本轮技能派生加分 */}
+                      {!isStreaming && msg.requestId && (
+                        <div className="flex items-center gap-1">
+                          <Tooltip title={feedbackMap[msg.requestId]?.value === 1 ? '已点过赞' : '这轮回复有帮助'}>
+                            <button
+                              aria-label="msg-vote-up"
+                              onClick={() => handleVoteMessage(msg.requestId!, 1)}
+                              className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
+                                feedbackMap[msg.requestId]?.value === 1 ? 'text-[#0EA5E9]' : 'text-[#94A3B8] hover:text-[#0EA5E9]'
+                              }`}
+                            >
+                              {feedbackMap[msg.requestId]?.value === 1
+                                ? <LikeFilled style={{ fontSize: 15 }} />
+                                : <LikeOutlined style={{ fontSize: 15 }} />}
+                            </button>
+                          </Tooltip>
+                          <Tooltip title={feedbackMap[msg.requestId]?.value === -1 ? '已点过踩' : '这轮回复没帮助'}>
+                            <button
+                              aria-label="msg-vote-down"
+                              onClick={() => handleVoteMessage(msg.requestId!, -1)}
+                              className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
+                                feedbackMap[msg.requestId]?.value === -1 ? 'text-[#EF4444]' : 'text-[#94A3B8] hover:text-[#EF4444]'
+                              }`}
+                            >
+                              <LikeOutlined style={{ fontSize: 15, transform: 'rotate(180deg)' }} />
+                            </button>
+                          </Tooltip>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

@@ -156,6 +156,8 @@ export interface Message {
   content: string;
   timestamp: string;
   status?: string;
+  /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键 */
+  requestId?: string;
   attachment?: {
     name: string;
     type: 'markdown' | 'video' | 'image' | 'code';
