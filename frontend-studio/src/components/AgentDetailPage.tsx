@@ -219,7 +219,7 @@ export function AgentDetailPage({
 
         {/* Right: live chat scoped to this agent */}
         <section className="lg:col-span-8 h-full min-h-0 overflow-hidden">
-          <ChatHomepage agents={[agent]} theme={theme} />
+          <ChatHomepage agents={[agent]} theme={theme} fixedAgentId={agent.id} />
         </section>
       </div>
     </div>

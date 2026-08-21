@@ -29,6 +29,8 @@ interface ChatHomepageProps {
   /** Studio agents already adapted to the view model; if absent we fetch. */
   agents?: Agent[];
   theme?: 'light' | 'dark';
+  /** 固定 agent 模式：会话列表按该 agent 过滤，点 + 直通新建会话（不弹选择框）。 */
+  fixedAgentId?: string;
 }
 
 /** Convert a stored agent message + its timeline into display Messages. */
@@ -431,7 +433,7 @@ function userMessageToDisplay(rec: MessageRecord): Message {
   };
 }
 
-export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepageProps) {
+export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId }: ChatHomepageProps) {
   const qc = useQueryClient();
 
   // ── Agents (fallback fetch if not passed in) ──
@@ -473,9 +475,17 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
   const voiceConfigured = voiceStatus?.configured === true;
 
   // ── Sessions list ──
+  // 固定 agent 模式按 agent 过滤。key 挂参数（sessionKeys.list({agent_id})）与
+  // 全量 key（sessionKeys.lists()）互不覆盖；refreshSessions 对 lists() 做前缀
+  // 失效，两个 key 同时命中，主 chat tab 与详情页列表始终一致。
   const { data: sessionsData, isLoading: sessionsLoading } = useQuery({
-    queryKey: sessionKeys.lists(),
-    queryFn: () => sessionApi.list({ page: 1, page_size: 50 }),
+    queryKey: fixedAgentId ? sessionKeys.list({ agent_id: fixedAgentId }) : sessionKeys.lists(),
+    queryFn: () =>
+      sessionApi.list({
+        page: 1,
+        page_size: 50,
+        ...(fixedAgentId ? { agent_id: fixedAgentId } : {}),
+      }),
     staleTime: 15_000,
   });
   const sessions: Session[] = sessionsData?.items ?? [];
@@ -1342,7 +1352,15 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             </div>
             <div className="relative">
               <button
-                onClick={() => setShowDropdown(!showDropdown)}
+                onClick={() => {
+                  // 固定 agent 模式：+ 直通以该 agent 新建（原下拉与选择弹窗仅服务多 agent 场景）。
+                  if (fixedAgentId) {
+                    const agent = agents.find((a) => a.id === fixedAgentId);
+                    if (agent) void handleStartNewWithAgent(agent);
+                    return;
+                  }
+                  setShowDropdown(!showDropdown);
+                }}
                 className="w-9 h-9 rounded-full bg-[#27272a]/50 border border-[#27272a] flex items-center justify-center text-white hover:bg-[#1f1f23] transition-colors cursor-pointer"
               >
                 <Plus className="w-4 h-4 text-emerald-400" />
@@ -1389,7 +1407,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
             )}
             {!sessionsLoading && sessions.length === 0 && (
               <div className="p-3 text-[10px] text-[#71717a] font-sans">
-                暂无会话。点击右上 + 选择 Agent 新建。
+                {fixedAgentId ? '暂无会话。点击右上 + 新建。' : '暂无会话。点击右上 + 选择 Agent 新建。'}
               </div>
             )}
             {sessions.map((sess) => {
@@ -1505,7 +1523,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark' }: ChatHomepag
               <Bot className="w-10 h-10 text-[#71717a] mb-3" />
               <p className="text-sm text-[#a1a1aa] font-sans">还没有会话</p>
               <p className="text-[11px] text-[#71717a] mt-1">
-                点击左上 + 选择一个 Agent 开始对话
+                {fixedAgentId ? '点击左上 + 立即开始对话' : '点击左上 + 选择一个 Agent 开始对话'}
               </p>
             </div>
           )}

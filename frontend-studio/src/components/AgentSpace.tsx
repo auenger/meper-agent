@@ -1,13 +1,15 @@
 import { useState, type FormEvent } from 'react';
 import { getErrorMessage } from '../lib/api-client';
 import {
-  Plus, Edit, Bot, Trash2, MessageSquare, Rocket, Archive, Loader2,
+  Plus, Edit, Bot, Trash2, MessageSquare, Rocket, Archive, Loader2, MoreVertical,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys } from '../services/agent-api';
 import { toStudioAgent } from '../services/adapters';
 import type { Agent } from '../types';
 import AvatarRender from './AvatarRender';
+import { Popover } from './ui';
+import { confirmDialog } from './ui/confirm';
 
 /**
  * AgentSpace — agent card list + create dialog.
@@ -27,6 +29,9 @@ export function AgentSpace({
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [error, setError] = useState<string | null>(null);
+  // 当前展开三点菜单的卡片 id。受控 Popover：菜单项点击后需手动关闭
+  // （click 模式下点浮层内部不会自动收起）。
+  const [menuOpenFor, setMenuOpenFor] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: agentKeys.list({}),
@@ -72,6 +77,16 @@ export function AgentSpace({
     createM.mutate({ name: newName.trim(), description: newDesc.trim() || undefined });
   };
 
+  const handleDelete = async (agent: Agent) => {
+    const ok = await confirmDialog({
+      title: `删除智能体「${agent.name}」？`,
+      description: '删除后不可恢复。',
+      okText: '删除',
+      danger: true,
+    });
+    if (ok) deleteM.mutate(agent.id);
+  };
+
   return (
     <div className="space-y-6">
       {/* Top action header */}
@@ -106,7 +121,7 @@ export function AgentSpace({
             return (
               <div
                 key={agent.id}
-                className="bg-[#18181b] border border-[#27272a] rounded-xl flex flex-col justify-between overflow-hidden relative group hover:border-[#3f3f46] transition duration-200"
+                className="bg-[#18181b] border border-[#27272a] rounded-xl flex flex-col justify-between overflow-hidden relative hover:border-[#3f3f46] transition duration-200"
               >
                 <div className="p-5 space-y-4">
                   <div className="flex items-start justify-between">
@@ -127,32 +142,45 @@ export function AgentSpace({
                       </div>
                     </div>
 
-                    {/* Hover actions */}
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      {onOpenDetail && (
-                        <button
-                          onClick={() => onOpenDetail(agent.id)}
-                          className="p-1 px-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-slate-400 hover:text-indigo-400 transition cursor-pointer"
-                          title="详情与实时测试"
-                        >
-                          <MessageSquare className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                    {/* Card actions: 三点菜单（Popover portal 到主题根，fixed 定位，
+                        不被卡片 overflow-hidden 裁剪；打开时随滚动/resize 自动重定位） */}
+                    <Popover
+                      trigger="click"
+                      open={menuOpenFor === agent.id}
+                      onOpenChange={(o) => setMenuOpenFor(o ? agent.id : null)}
+                      content={
+                        <div className="text-xs">
+                          {onOpenDetail && (
+                            <button
+                              onClick={() => { setMenuOpenFor(null); onOpenDetail(agent.id); }}
+                              className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[#d4d4d8] hover:bg-[#121214] hover:text-indigo-400 transition cursor-pointer"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" /> 详情与测试
+                            </button>
+                          )}
+                          <button
+                            onClick={() => { setMenuOpenFor(null); onOpenEdit?.(agent.id); }}
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[#d4d4d8] hover:bg-[#121214] hover:text-white transition cursor-pointer"
+                          >
+                            <Edit className="w-3.5 h-3.5" /> 编辑配置
+                          </button>
+                          <div className="border-t border-[#27272a] my-1" />
+                          <button
+                            onClick={() => { setMenuOpenFor(null); void handleDelete(agent); }}
+                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-rose-400 hover:bg-rose-950/30 transition cursor-pointer"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" /> 删除
+                          </button>
+                        </div>
+                      }
+                    >
                       <button
-                        onClick={() => onOpenEdit?.(agent.id)}
-                        className="p-1 px-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
-                        title="编辑配置"
+                        className="flex-shrink-0 p-1 px-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-slate-400 hover:text-white transition cursor-pointer"
+                        title="更多操作"
                       >
-                        <Edit className="w-3.5 h-3.5" />
+                        <MoreVertical className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        onClick={() => deleteM.mutate(agent.id)}
-                        className="p-1 px-1.5 bg-[#121214] border border-[#27272a] text-rose-500 hover:text-rose-400 hover:bg-rose-950/20 rounded-lg transition cursor-pointer"
-                        title="撤销智能体"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
+                    </Popover>
                   </div>
 
                   <div className="space-y-2.5">
