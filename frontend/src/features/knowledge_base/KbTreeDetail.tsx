@@ -19,6 +19,7 @@ import {
   knowledgeApi, knowledgeKeys,
   type KnowledgeBase, type KbFileTreeNode,
 } from '../../services/knowledge-api'
+import { useAuthStore } from '../../stores/auth-store'
 
 /* ─── tree helpers ─── */
 
@@ -78,10 +79,11 @@ const KbTreeRow: FC<{
 
 /* ─── file editor (remounts per file via key) ─── */
 
-function KbFileEditor({ kbId, filePath, initialContent }: {
+function KbFileEditor({ kbId, filePath, initialContent, canWrite }: {
   kbId: string
   filePath: string
   initialContent: string
+  canWrite: boolean
 }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
@@ -109,46 +111,51 @@ function KbFileEditor({ kbId, filePath, initialContent }: {
 
   return (
     <div className="h-full flex flex-col rounded-xl bg-white shadow-sm overflow-hidden">
-      {/* Toolbar */}
+      {/* Toolbar —— 写操作仅 knowledge:write（§7.6 权限原则：只读用户纯浏览） */}
       <div className="flex items-center justify-between px-4 py-2 bg-surface/60 shrink-0">
         <span className="text-[11px] font-mono text-gray-500 truncate">{filePath}</span>
-        <div className="flex items-center gap-2">
-          {isDirty && <span className="text-[10px] text-amber-500 font-semibold">未保存</span>}
-          <button
-            onClick={() => setLocal(initialContent)}
-            disabled={!isDirty}
-            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-gray-500 hover:text-gray-900 hover:bg-gray-100 disabled:opacity-40 transition cursor-pointer"
-          >
-            <UndoIcon style={{ fontSize: 12 }} /> 撤销
-          </button>
-          <Popconfirm
-            title="删除文件" description={`删除 ${filePath}？`}
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={() => deleteM.mutate()}
-          >
+        {canWrite ? (
+          <div className="flex items-center gap-2">
+            {isDirty && <span className="text-[10px] text-amber-500 font-semibold">未保存</span>}
             <button
-              disabled={deleteM.isPending}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-red-500 hover:bg-red-50 disabled:opacity-40 transition cursor-pointer"
+              onClick={() => setLocal(initialContent)}
+              disabled={!isDirty}
+              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-gray-500 hover:text-gray-900 hover:bg-gray-100 disabled:opacity-40 transition cursor-pointer"
             >
-              {deleteM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <TrashIcon style={{ fontSize: 12 }} />}
-              删除
+              <UndoIcon style={{ fontSize: 12 }} /> 撤销
             </button>
-          </Popconfirm>
-          <button
-            onClick={() => saveM.mutate()}
-            disabled={!isDirty || saveM.isPending}
-            className="flex items-center gap-1 px-3 py-1 rounded-lg text-[11px] bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition cursor-pointer font-semibold"
-          >
-            {saveM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <SaveIcon style={{ fontSize: 12 }} />}
-            保存
-          </button>
-        </div>
+            <Popconfirm
+              title="删除文件" description={`删除 ${filePath}？`}
+              okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+              onConfirm={() => deleteM.mutate()}
+            >
+              <button
+                disabled={deleteM.isPending}
+                className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-red-500 hover:bg-red-50 disabled:opacity-40 transition cursor-pointer"
+              >
+                {deleteM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <TrashIcon style={{ fontSize: 12 }} />}
+                删除
+              </button>
+            </Popconfirm>
+            <button
+              onClick={() => saveM.mutate()}
+              disabled={!isDirty || saveM.isPending}
+              className="flex items-center gap-1 px-3 py-1 rounded-lg text-[11px] bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40 transition cursor-pointer font-semibold"
+            >
+              {saveM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <SaveIcon style={{ fontSize: 12 }} />}
+              保存
+            </button>
+          </div>
+        ) : (
+          <span className="text-[10px] text-gray-400">只读</span>
+        )}
       </div>
 
-      {/* Editor */}
+      {/* Editor —— 只读用户禁编辑 */}
       <textarea
         value={local}
         onChange={(e) => setLocal(e.target.value)}
+        readOnly={!canWrite}
         className="flex-1 w-full p-4 bg-transparent border-0 text-gray-800 font-mono text-xs leading-relaxed resize-none focus:outline-none"
         spellCheck={false}
       />
@@ -163,6 +170,8 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  // §7.6 权限原则：只读用户不显示上传/编辑/删除
+  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
 
   const { data: treeData, isLoading } = useQuery({
     queryKey: knowledgeKeys.files(kb.id),
@@ -203,11 +212,13 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
       <div className="w-72 shrink-0 flex flex-col rounded-xl bg-white shadow-sm overflow-hidden">
         <div className="flex items-center justify-between px-3 py-2.5 bg-surface/60 shrink-0">
           <span className="text-xs text-gray-500 font-semibold">目录</span>
-          <label className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-blue-600 hover:bg-blue-500 text-white cursor-pointer font-semibold transition">
-            {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <UploadIcon style={{ fontSize: 12 }} />}
-            上传
-            <input type="file" accept=".md,.markdown" multiple className="hidden" onChange={handleUpload} />
-          </label>
+          {canWrite && (
+            <label className="flex items-center gap-1 px-2 py-1 rounded-lg text-[10px] bg-blue-600 hover:bg-blue-500 text-white cursor-pointer font-semibold transition">
+              {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 12 }} /> : <UploadIcon style={{ fontSize: 12 }} />}
+              上传
+              <input type="file" accept=".md,.markdown" multiple className="hidden" onChange={handleUpload} />
+            </label>
+          )}
         </div>
         <div className="flex-1 overflow-y-auto p-2">
           {isLoading ? (
@@ -234,7 +245,7 @@ export default function KbTreeDetail({ kb }: { kb: KnowledgeBase }) {
               <LoaderIcon spin style={{ fontSize: 16, marginRight: 8 }} /> 加载…
             </div>
           ) : contentQ.data ? (
-            <KbFileEditor key={effectivePath} kbId={kb.id} filePath={effectivePath} initialContent={contentQ.data.content} />
+            <KbFileEditor key={effectivePath} kbId={kb.id} filePath={effectivePath} initialContent={contentQ.data.content} canWrite={canWrite} />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-400 text-sm rounded-xl bg-white shadow-sm">
               文件不存在

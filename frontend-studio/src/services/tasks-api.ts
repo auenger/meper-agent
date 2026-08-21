@@ -250,6 +250,10 @@ export interface NodeTimelineEntry {
   tool_name?: string
   args?: Record<string, unknown>
   id?: string
+  /** 工具执行状态（tool_result）——结构化判错依据，优先于文本嗅探 */
+  status?: 'success' | 'error'
+  /** 关联 tool_call 的 id（配对用） */
+  tool_call_id?: string
 }
 
 export interface NodeTimelineResponse {

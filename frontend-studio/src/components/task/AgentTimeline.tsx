@@ -43,7 +43,10 @@ function toTimelineEntries(entries: NodeTimelineEntry[]): TimelineEntry[] {
       if (e.tool_name) pending.set(e.tool_name, { idx, entry })
     } else if (e.type === 'tool_result') {
       const p = e.tool_name ? pending.get(e.tool_name) : undefined
-      const isError = (e.content ?? '').startsWith('Error')
+      // 优先结构化 status；无 status 的旧数据才回退文本嗅探
+      // （嗅探只认 "Error" 开头——内容中间含 error 字样的正常数据不得误判）
+      const isError =
+        e.status != null ? e.status === 'error' : (e.content ?? '').startsWith('Error')
       if (p) {
         result[p.idx] = { ...p.entry, result: e.content, toolStatus: isError ? 'error' : 'success' }
         if (e.tool_name) pending.delete(e.tool_name)

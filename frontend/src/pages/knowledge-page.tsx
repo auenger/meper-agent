@@ -18,6 +18,7 @@ import {
   knowledgeApi, knowledgeKeys,
   type KnowledgeBase, type KbType,
 } from '../services/knowledge-api'
+import { useAuthStore } from '../stores/auth-store'
 
 /* ─── Helpers ─── */
 
@@ -49,10 +50,12 @@ function KbCard({
   kb,
   onDelete,
   onOpen,
+  canWrite,
 }: {
   kb: KnowledgeBase
   onDelete: (kb: KnowledgeBase) => void
   onOpen: (kb: KnowledgeBase) => void
+  canWrite: boolean
 }) {
   const type = (kb.type === 'vector' ? 'vector' : 'tree') as KbType
   return (
@@ -80,15 +83,16 @@ function KbCard({
               <span className="text-[10px] text-gray-400 font-mono">{kb.id}</span>
             </div>
           </div>
-          {/* delete on hover */}
-          <Popconfirm
-            title="删除知识库"
-            description="知识库内所有内容将被清除，被 Agent 引用时将拒绝删除。"
-            okText="删除"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
-            onConfirm={(e) => { e?.stopPropagation(); onDelete(kb) }}
-          >
+          {/* delete on hover —— 仅 knowledge:write（§7.6 权限原则） */}
+          {canWrite && (
+            <Popconfirm
+              title="删除知识库"
+              description="知识库内所有内容将被清除，被 Agent 引用时将拒绝删除。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={(e) => { e?.stopPropagation(); onDelete(kb) }}
+            >
             <button
               onClick={(e) => e.stopPropagation()}
               className="p-1 px-1.5 bg-gray-50 border border-gray-200 rounded-lg text-red-400 hover:text-red-500 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition cursor-pointer"
@@ -96,7 +100,8 @@ function KbCard({
             >
               <DeleteOutlined style={{ fontSize: 13 }} />
             </button>
-          </Popconfirm>
+            </Popconfirm>
+          )}
         </div>
         <p className="text-xs text-gray-500 leading-relaxed min-h-[32px] line-clamp-2">
           {kb.description || '（无描述）'}
@@ -119,6 +124,9 @@ export default function KnowledgePage() {
   const { message } = AntdApp.useApp()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+
+  // §7.6 权限原则：只读用户（knowledge:read）不显示写操作
+  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')
@@ -172,20 +180,23 @@ export default function KnowledgePage() {
             文档树（Agent 用 kb_glob/grep/read 探索）与向量库（Agent/工作流 用 kb_search 检索）
           </p>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          创建知识库
-        </Button>
+        {/* 创建仅 knowledge:write（§7.6 权限原则：只读用户不显示写入口） */}
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            创建知识库
+          </Button>
+        )}
       </div>
 
       {/* Card grid */}
       {isLoading ? (
         <div className="flex justify-center py-16"><Spin /></div>
       ) : kbs.length === 0 ? (
-        <Empty description="还没有知识库，点击右上角创建" />
+        <Empty description={canWrite ? '还没有知识库，点击右上角创建' : '还没有知识库'} />
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
           {kbs.map((kb) => (
-            <KbCard key={kb.id} kb={kb} onDelete={handleDelete} onOpen={handleOpen} />
+            <KbCard key={kb.id} kb={kb} onDelete={handleDelete} onOpen={handleOpen} canWrite={canWrite} />
           ))}
         </div>
       )}

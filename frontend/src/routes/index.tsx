@@ -5,6 +5,7 @@
  */
 import AppLayout from '../components/AppLayout'
 import { ProtectedRoute } from './protected-routes'
+import { PermissionRoute } from './permission-route'
 import DashboardPage from '../pages/dashboard-page'
 import AgentsPage from '../pages/agents-page'
 import AgentDetailPage from '../pages/agent-detail-page'
@@ -26,6 +27,7 @@ import ChannelsPage from '../pages/channels-page'
 import UsersPage from '../pages/users-page'
 import RolesPage from '../pages/roles-page'
 import SettingsPage from '../pages/settings-page'
+import UserSkillDetailPage from '../pages/user-skill-detail-page'
 import { DesignSystemPage } from '../pages/design-system-page'
 import DesignReferencePage from '../pages/design-reference-page'
 import { LoginPage } from '../pages/login-page'
@@ -39,26 +41,27 @@ export const routes = [
         children: [
           { path: '/', element: <DashboardPage /> },
           { path: '/dashboard', element: <DashboardPage /> },
-          { path: '/agents', element: <AgentsPage /> },
-          { path: '/agents/:id', element: <AgentDetailPage /> },
-          { path: '/models', element: <ModelsPage /> },
+          { path: '/agents', element: <PermissionRoute perm="agent:read"><AgentsPage /></PermissionRoute> },
+          { path: '/agents/:id', element: <PermissionRoute perm="agent:read"><AgentDetailPage /></PermissionRoute> },
+          { path: '/models', element: <PermissionRoute perm="model:read"><ModelsPage /></PermissionRoute> },
           { path: '/skills', element: <SkillsPage /> },
-          { path: '/mcp', element: <McpPage /> },
+          { path: '/mcp', element: <PermissionRoute perm="mcp:read"><McpPage /></PermissionRoute> },
           { path: '/external-auth', element: <ExternalAuthPage /> },
-          { path: '/tasks', element: <TasksPage /> },
-          { path: '/workflows', element: <WorkflowsPage /> },
-          { path: '/workflows/:id', element: <WorkflowDetailPage /> },
-          { path: '/tools', element: <ToolsPage /> },
-          { path: '/knowledge', element: <KnowledgePage /> },
-          { path: '/knowledge/:id', element: <KnowledgeDetailPage /> },
+          { path: '/tasks', element: <PermissionRoute perm="task:read"><TasksPage /></PermissionRoute> },
+          { path: '/workflows', element: <PermissionRoute perm="workflow:read"><WorkflowsPage /></PermissionRoute> },
+          { path: '/workflows/:id', element: <PermissionRoute perm="workflow:read"><WorkflowDetailPage /></PermissionRoute> },
+          { path: '/tools', element: <PermissionRoute perm="tool:read"><ToolsPage /></PermissionRoute> },
+          { path: '/knowledge', element: <PermissionRoute perm="knowledge:read"><KnowledgePage /></PermissionRoute> },
+          { path: '/knowledge/:id', element: <PermissionRoute perm="knowledge:read"><KnowledgeDetailPage /></PermissionRoute> },
           { path: '/skills/:id', element: <SkillDetailPage /> },
-          { path: '/execution-stats', element: <ExecutionStatsPage /> },
-          { path: '/api-keys', element: <ApiKeysPage /> },
-          { path: '/credentials', element: <CredentialsPage /> },
-          { path: '/channels', element: <ChannelsPage /> },
-          { path: '/users', element: <UsersPage /> },
-          { path: '/roles', element: <RolesPage /> },
-          { path: '/settings', element: <SettingsPage /> },
+          { path: '/my-skills/:id', element: <UserSkillDetailPage /> },
+          { path: '/execution-stats', element: <PermissionRoute perm="apikey:manage"><ExecutionStatsPage /></PermissionRoute> },
+          { path: '/api-keys', element: <PermissionRoute perm="apikey:manage"><ApiKeysPage /></PermissionRoute> },
+          { path: '/credentials', element: <PermissionRoute perm="tool:read"><CredentialsPage /></PermissionRoute> },
+          { path: '/channels', element: <PermissionRoute perm="tool:read"><ChannelsPage /></PermissionRoute> },
+          { path: '/users', element: <PermissionRoute perm="user:read"><UsersPage /></PermissionRoute> },
+          { path: '/roles', element: <PermissionRoute perm="user:read"><RolesPage /></PermissionRoute> },
+          { path: '/settings', element: <PermissionRoute perm="settings:manage"><SettingsPage /></PermissionRoute> },
         ],
       },
     ],

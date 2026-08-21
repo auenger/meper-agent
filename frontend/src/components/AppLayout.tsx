@@ -19,6 +19,7 @@ import {
   SearchOutlined,
   QuestionCircleOutlined,
   UserOutlined,
+  HighlightOutlined,
 } from '@ant-design/icons'
 import { Avatar, Dropdown } from 'antd'
 import type { MenuProps } from 'antd'
@@ -76,11 +77,16 @@ const GROUPS: NavGroup[] = [
     permission: 'knowledge:read',
   },
   {
+    // 技能 ≠ 工具（§7.6 逻辑单市）：技能广场/我的技能/我的记忆是所有登录
+    // 用户的基础能力——独立菜单、不挂权限（skill:read 只是管理门槛，
+    // 页面内管理操作按角色渲染）
+    key: 'skills', label: '技能', icon: <HighlightOutlined />, single: true, path: '/skills',
+  },
+  {
     key: 'tools', label: '工具', icon: <ToolOutlined />,
     children: [
       { label: '工具', path: '/tools', key: 'tools', permission: 'tool:read' },
       { label: 'MCP', path: '/mcp', key: 'mcp', permission: 'mcp:read' },
-      { label: 'Skill', path: '/skills', key: 'skills', permission: 'skill:read' },
       { label: '凭据', path: '/credentials', key: 'credentials', permission: 'tool:read' },
       { label: '渠道', path: '/channels', key: 'channels', permission: 'tool:read' },
     ],
@@ -112,24 +118,13 @@ const GROUPS: NavGroup[] = [
 ]
 
 /* ─── Path → group lookup ─── */
-const PATH_TO_GROUP: Record<string, string> = {
-  '/dashboard': 'dashboard',
-  '/agents': 'agent',
-  '/models': 'agent',
-  '/workflows': 'workflow',
-  '/tasks': 'workflow',
-  '/tools': 'tools',
-  '/mcp': 'tools',
-  '/external-auth': 'ext-auth',
-  '/skills': 'tools',
-  '/channels': 'tools',
-  '/knowledge': 'knowledge',
-  '/users': 'users',
-  '/roles': 'users',
-  '/api-keys': 'system',
-  '/execution-stats': 'system',
-  '/settings': 'system',
-}
+// 从 GROUPS 派生（手维护表已两次漏项：/skills/:id、/credentials——漏项导致 fallback dashboard 高亮错位）
+const PATH_TO_GROUP: Record<string, string> = Object.fromEntries(
+  GROUPS.flatMap((g) => [
+    ...(g.single && g.path ? [[g.path, g.key] as const] : []),
+    ...(g.children ?? []).map((c) => [c.path, g.key] as const),
+  ]),
+)
 
 export default function AppLayout() {
   const { t } = useTheme()
@@ -166,14 +161,17 @@ export default function AppLayout() {
 
   /* ─── Resolve active group & child ─── */
   // Support dynamic routes like /agents/:id → group "agent", /workflows/:id → group "workflow",
-  // /knowledge/:id → group "knowledge"
+  // /knowledge/:id → group "knowledge", /skills/:id & /my-skills/:id → group "tools"
+  // （详情页前缀不归一化会 fallback 到 dashboard——导航高亮错位）
   const basePath = currentPath.startsWith('/agents/')
     ? '/agents'
     : currentPath.startsWith('/workflows/')
       ? '/workflows'
       : currentPath.startsWith('/knowledge/')
         ? '/knowledge'
-        : currentPath
+        : currentPath.startsWith('/skills/') || currentPath.startsWith('/my-skills/')
+          ? '/skills'
+          : currentPath
   const activeGroupKey = PATH_TO_GROUP[basePath] || 'dashboard'
   const activeGroup = visibleGroups.find((g) => g.key === activeGroupKey)
 

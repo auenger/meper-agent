@@ -117,10 +117,13 @@ function agentMessageToDisplay(rec: MessageRecord, agentName: string, avatar: st
       }
     } else if (entry.type === 'tool_result') {
       const name = entry.tool_name ?? '';
-      // 优先用后端的 status 字段判错，回退正则。
+      // 真正的 fallback：status 存在时以它为准（success 时内容含 error 字样
+      // 也不得误判——此前实现是 ||，正常返回的文档片段/日志被标失败）；
+      // 仅旧数据（无 status）才文本嗅探。
       const isError =
-        entry.status === 'error' ||
-        (typeof entry.content === 'string' && /\b(error|fail)/i.test(entry.content));
+        entry.status != null
+          ? entry.status === 'error'
+          : typeof entry.content === 'string' && /\b(error|fail)/i.test(entry.content);
       // Prefer tool_call_id; fall back to tool_name for older records.
       const mapKey = entry.tool_call_id || name;
       const pendingIdx = mapKey ? pendingToolCalls.get(mapKey) : undefined;

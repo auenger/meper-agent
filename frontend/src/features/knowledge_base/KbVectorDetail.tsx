@@ -22,6 +22,7 @@ import {
   type KnowledgeBase, type KbDocument, type KbDocStatus, type KbChunkStrategy,
   type KbSearchResultItem, type KbChunkItem,
 } from '../../services/knowledge-api'
+import { useAuthStore } from '../../stores/auth-store'
 
 /* ─── helpers ─── */
 
@@ -57,12 +58,14 @@ function DocRow({
   onDelete,
   onView,
   reindexing,
+  canWrite,
 }: {
   doc: KbDocument
   onReindex: () => void
   onDelete: () => void
   onView: () => void
   reindexing: boolean
+  canWrite: boolean
 }) {
   const meta = STATUS_META[doc.parse_status] ?? STATUS_META.pending
   const inFlight = IN_FLIGHT.includes(doc.parse_status)
@@ -98,7 +101,7 @@ function DocRow({
               <EyeOutlined style={{ fontSize: 13 }} />
             </button>
           )}
-          {doc.parse_status === 'failed' && (
+          {canWrite && doc.parse_status === 'failed' && (
             <button
               onClick={onReindex}
               className="p-1 rounded text-amber-500 hover:text-amber-600 hover:bg-amber-50 transition cursor-pointer"
@@ -107,18 +110,20 @@ function DocRow({
               <ReloadOutlined spin={reindexing} style={{ fontSize: 13 }} />
             </button>
           )}
-          <Popconfirm
-            title="删除文档" description={`删除 ${doc.name}？该文档的所有切片和向量将被清除。`}
-            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
-            onConfirm={onDelete}
-          >
-            <button
-              className="p-1 rounded text-rose-500 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
-              title="删除"
+          {canWrite && (
+            <Popconfirm
+              title="删除文档" description={`删除 ${doc.name}？该文档的所有切片和向量将被清除。`}
+              okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+              onConfirm={onDelete}
             >
-              <DeleteOutlined style={{ fontSize: 13 }} />
-            </button>
-          </Popconfirm>
+              <button
+                className="p-1 rounded text-rose-500 hover:text-rose-600 hover:bg-rose-50 transition cursor-pointer"
+                title="删除"
+              >
+                <DeleteOutlined style={{ fontSize: 13 }} />
+              </button>
+            </Popconfirm>
+          )}
         </div>
       </div>
       {inFlight && (
@@ -142,6 +147,8 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
   const [searchResults, setSearchResults] = useState<KbSearchResultItem[] | null>(null)
   const [viewDoc, setViewDoc] = useState<KbDocument | null>(null)
   const [chunkStrategy, setChunkStrategy] = useState<KbChunkStrategy>('recursive')
+  // §7.6 权限原则：只读用户不显示上传/删除/重索引（切分策略仅上传时生效，一并隐藏）
+  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
 
   // Chunks for the currently-viewed document (read-only viewer).
   const chunksQ = useQuery({
@@ -215,20 +222,24 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
             >
               <ReloadOutlined spin={docsQ.isFetching} style={{ fontSize: 14 }} />
             </button>
-            <Segmented
-              size="small"
-              value={chunkStrategy}
-              onChange={(v) => setChunkStrategy(v as KbChunkStrategy)}
-              options={[
-                { label: '递归切分', value: 'recursive' },
-                { label: '结构切分', value: 'structure' },
-              ]}
-            />
-            <label className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition">
-              {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 13 }} /> : <UploadOutlined style={{ fontSize: 13 }} />}
-              上传
-              <input type="file" accept=".pdf,.docx,.md,.markdown,.txt" multiple className="hidden" onChange={handleUpload} />
-            </label>
+            {canWrite && (
+              <>
+                <Segmented
+                  size="small"
+                  value={chunkStrategy}
+                  onChange={(v) => setChunkStrategy(v as KbChunkStrategy)}
+                  options={[
+                    { label: '递归切分', value: 'recursive' },
+                    { label: '结构切分', value: 'structure' },
+                  ]}
+                />
+                <label className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white font-semibold cursor-pointer transition">
+                  {uploadM.isPending ? <LoaderIcon spin style={{ fontSize: 13 }} /> : <UploadOutlined style={{ fontSize: 13 }} />}
+                  上传
+                  <input type="file" accept=".pdf,.docx,.md,.markdown,.txt" multiple className="hidden" onChange={handleUpload} />
+                </label>
+              </>
+            )}
           </div>
         </div>
 
@@ -247,6 +258,7 @@ export default function KbVectorDetail({ kb }: { kb: KnowledgeBase }) {
                   onDelete={() => deleteDocM.mutate(doc.id)}
                   onView={() => setViewDoc(doc)}
                   reindexing={reindexM.isPending}
+                  canWrite={canWrite}
                 />
               ))}
             </div>

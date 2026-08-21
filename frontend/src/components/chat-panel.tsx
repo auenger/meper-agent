@@ -33,6 +33,8 @@ import {
   PaperClipOutlined,
   CloseOutlined,
   DatabaseOutlined,
+  LikeOutlined,
+  LikeFilled,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
 import { parseBackendDate } from '../lib/format'
@@ -49,6 +51,7 @@ import {
   type Session,
   type SessionFileEntry,
 } from '../services/session-api'
+import { userSkillsApi, type SessionFeedbackItem } from '../services/user-skills-api'
 import WorkflowProposalCard, { type WorkflowProposal } from './workflow-proposal-card'
 import TaskCreatedCard, { type TaskCreated } from './task-created-card'
 import TaskResultCard, { type TaskResult } from './task-result-card'
@@ -239,6 +242,7 @@ function historyToMessages(records: MessageRecord[]): Message[] {
     role: rec.role,
     content: rec.content ?? '',
     time: rec.created_at ? parseBackendDate(rec.created_at).toLocaleTimeString('zh-CN', { hour12: false }) : '',
+    requestId: rec.request_id || undefined,
     timeline: rec.role === 'agent' && rec.timeline_entries?.length
       ? historyEntryToTimeline(rec.timeline_entries)
       : undefined,
@@ -264,6 +268,10 @@ export default function ChatPanel({
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isStreaming, setIsStreaming] = useState(false)
+  /** 消息级反馈刷新键：流结束/切换会话时递增（§8.2 v2） */
+  const [feedbackKey, setFeedbackKey] = useState(0)
+  /** 会话各轮反馈态（request_id → value/skills） */
+  const [feedbackMap, setFeedbackMap] = useState<Record<string, SessionFeedbackItem>>({})
   const [isLoadingHistory, setIsLoadingHistory] = useState(false)
   const [enableThinking, setEnableThinking] = useState(false)
   const [currentSessionId, setCurrentSessionId] = useState<string | undefined>(sessionIdProp)
@@ -493,6 +501,43 @@ export default function ChatPanel({
 
     return () => { cancelled = true }
   }, [currentSessionId, scrollToBottom])
+
+  /* ─── 消息级反馈数据（§8.2 v2）：会话切换 / 流结束时拉取 ─── */
+  useEffect(() => {
+    let cancelled = false
+    if (!currentSessionId) {
+      return
+    }
+    userSkillsApi
+      .sessionFeedback(currentSessionId)
+      .then((items) => {
+        if (cancelled) return
+        const map: Record<string, SessionFeedbackItem> = {}
+        for (const it of items) map[it.request_id] = it
+        setFeedbackMap(map)
+      })
+      .catch(() => { /* 旧后端无此端点——静默 */ })
+    return () => { cancelled = true }
+  }, [currentSessionId, feedbackKey])
+
+  /** 消息级投票：一轮一票、最新动作为准（同向提示、反向改票） */
+  const handleVoteMessage = useCallback(async (requestId: string, value: 1 | -1) => {
+    if (!currentSessionId) return
+    const current = feedbackMap[requestId]?.value ?? 0
+    if (current === value) {
+      message.info('已投过此票，点击反向按钮可改票')
+      return
+    }
+    try {
+      await userSkillsApi.voteMessage(currentSessionId, requestId, value)
+      setFeedbackMap((prev) => ({
+        ...prev,
+        [requestId]: { ...(prev[requestId] ?? { request_id: requestId, value: 0, skills: [] }), value },
+      }))
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : '投票失败')
+    }
+  }, [currentSessionId, feedbackMap])
 
   /* ─── SSE stream handler ─── */
 
@@ -1057,6 +1102,7 @@ export default function ChatPanel({
         flushDelta()
       }
       setIsStreaming(false)
+      setFeedbackKey((k) => k + 1)  // 本轮可能 load 了新技能——刷新消息反馈态
       abortRef.current = null
     }
   }, [input, isStreaming, isUploading, agentId, enableThinking, currentSessionId, onSessionChange, scrollToBottom, refreshSessionList, refreshSessionFiles, appendDelta, flushDelta, pendingFiles, messages])
@@ -1281,12 +1327,41 @@ export default function ChatPanel({
                           )
                         })}
                       </div>
-                      <div className="flex items-center gap-2 mt-2">
+                      <div className="flex items-center gap-2 mt-2 flex-wrap">
                         <span className="text-[10px] text-[#94A3B8]">{msg.time}</span>
                         {msg.usage && msg.usage.total_tokens != null && msg.usage.total_tokens > 0 && (
                           <span className="text-[10px] text-[#94A3B8] flex items-center gap-1">
                             · {msg.usage.total_tokens.toLocaleString()} tokens
                             {msg.usage.llm_calls != null && msg.usage.llm_calls > 1 && ` · ${msg.usage.llm_calls} 轮`}
+                          </span>
+                        )}
+                        {/* 消息级反馈（§8.2 v2）：赞回复→本轮使用的技能派生加分（技能加分后台静默派生，不展示技能名） */}
+                        {!isStreaming && msg.requestId && (
+                          <span className="flex items-center gap-1 ml-1">
+                            <Tooltip title={feedbackMap[msg.requestId]?.value === 1 ? '已点过赞' : '这轮回复有帮助'}>
+                              <button
+                                aria-label="msg-vote-up"
+                                onClick={() => handleVoteMessage(msg.requestId!, 1)}
+                                className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
+                                  feedbackMap[msg.requestId]?.value === 1 ? 'text-[#0EA5E9]' : 'text-[#94A3B8] hover:text-[#0EA5E9]'
+                                }`}
+                              >
+                                {feedbackMap[msg.requestId]?.value === 1
+                                  ? <LikeFilled style={{ fontSize: 15 }} />
+                                  : <LikeOutlined style={{ fontSize: 15 }} />}
+                              </button>
+                            </Tooltip>
+                            <Tooltip title={feedbackMap[msg.requestId]?.value === -1 ? '已点过踩' : '这轮回复没帮助'}>
+                              <button
+                                aria-label="msg-vote-down"
+                                onClick={() => handleVoteMessage(msg.requestId!, -1)}
+                                className={`border-0 bg-transparent rounded-lg w-7 h-7 flex items-center justify-center cursor-pointer transition-colors hover:bg-gray-100 ${
+                                  feedbackMap[msg.requestId]?.value === -1 ? 'text-[#EF4444]' : 'text-[#94A3B8] hover:text-[#EF4444]'
+                                }`}
+                              >
+                                <LikeOutlined style={{ fontSize: 15, transform: 'rotate(180deg)' }} />
+                              </button>
+                            </Tooltip>
                           </span>
                         )}
                       </div>

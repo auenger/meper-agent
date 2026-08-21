@@ -24,6 +24,8 @@ export interface MessageRecord {
   session_id: string
   role: 'user' | 'agent'
   content?: string
+  /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键 */
+  request_id?: string
   /** Structured timeline events stored in agent messages */
   timeline_entries: TimelineEntryData[]
   /** File IDs attached to this message */

@@ -15,6 +15,7 @@ import {
   ArrowLeftOutlined, BookOutlined, SearchOutlined, EditOutlined,
 } from '@ant-design/icons'
 import { knowledgeApi, knowledgeKeys, type KbType } from '../services/knowledge-api'
+import { useAuthStore } from '../stores/auth-store'
 import KbTreeDetail from '../features/knowledge_base/KbTreeDetail'
 import KbVectorDetail from '../features/knowledge_base/KbVectorDetail'
 
@@ -33,6 +34,9 @@ export default function KnowledgeDetailPage() {
     queryFn: () => knowledgeApi.get(id!),
     enabled: !!id,
   })
+
+  // §7.6 权限原则：只读用户（knowledge:read）不显示写操作
+  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
 
   const editM = useMutation({
     mutationFn: () =>
@@ -99,9 +103,12 @@ export default function KnowledgeDetailPage() {
               : '绑定到 Agent 后，可用 kb_glob / kb_grep / kb_read 探索')}
           </p>
         </div>
-        <Button type="text" icon={<EditOutlined />} onClick={openEdit} title="编辑">
-          编辑
-        </Button>
+        {/* 编辑按 knowledge:write 渲染（只读用户不显示，§7.6 权限原则） */}
+        {canWrite && (
+          <Button type="text" icon={<EditOutlined />} onClick={openEdit} title="编辑">
+            编辑
+          </Button>
+        )}
       </div>
 
       {/* Body — fills remaining height; cards scroll internally */}
