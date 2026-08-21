@@ -20,9 +20,11 @@ from app.models.base import utc_now
 from app.models.voice_config import (
     COLLECTION,
     CONFIG_DOC_ID,
+    AliyunConfig,
     ASRConfig,
     TTSConfig,
     VoiceConfig,
+    ZhipuConfig,
 )
 
 
@@ -37,9 +39,15 @@ class VoiceConfigService:
 
     @staticmethod
     async def is_configured() -> bool:
-        """Whether voice is usable (master ASR/TTS credential present)."""
+        """Whether voice is usable for the currently selected provider."""
         cfg = await VoiceConfigService.get_config()
-        return bool(cfg and cfg.api_key_enc)
+        if cfg is None:
+            return False
+        if cfg.active_provider == "zhipu":
+            return bool(cfg.zhipu.api_key_enc)
+        if cfg.active_provider == "aliyun":
+            return bool(cfg.aliyun.api_key_enc)
+        return bool(cfg.api_key_enc)
 
     @staticmethod
     async def save_config(body) -> VoiceConfig:
@@ -53,13 +61,39 @@ class VoiceConfigService:
                 return encrypt_secret(new_key, master_key)
             return old_enc or ""
 
+        old_zhipu = existing.zhipu if existing else ZhipuConfig()
+        old_aliyun = existing.aliyun if existing else AliyunConfig()
         cfg = VoiceConfig(
+            active_provider=body.active_provider,
             api_key_enc=resolve_api_key(
                 body.api_key, existing.api_key_enc if existing else ""
             ),
             asr=ASRConfig(),
             tts=TTSConfig(
                 voice_type=body.tts.voice_type,
+            ),
+            zhipu=ZhipuConfig(
+                api_key_enc=resolve_api_key(
+                    body.zhipu.api_key, old_zhipu.api_key_enc
+                ),
+                asr_model=body.zhipu.asr_model,
+                asr_url=body.zhipu.asr_url,
+                tts_model=body.zhipu.tts_model,
+                tts_url=body.zhipu.tts_url,
+                voice_type=body.zhipu.voice_type,
+                speed=body.zhipu.speed,
+                volume=body.zhipu.volume,
+            ),
+            aliyun=AliyunConfig(
+                api_key_enc=resolve_api_key(
+                    body.aliyun.api_key, old_aliyun.api_key_enc
+                ),
+                asr_model=body.aliyun.asr_model,
+                asr_url=body.aliyun.asr_url,
+                tts_model=body.aliyun.tts_model,
+                tts_url=body.aliyun.tts_url,
+                voice_type=body.aliyun.voice_type,
+                language_type=body.aliyun.language_type,
             ),
             audio={
                 "input_rate": body.audio.input_rate,
@@ -105,6 +139,7 @@ class VoiceConfigService:
                 return "****"
 
         return {
+            "active_provider": cfg.active_provider,
             "api_key_masked": mask(cfg.api_key_enc),
             "asr": {
                 "resource_id": cfg.asr.resource_id,
@@ -114,6 +149,25 @@ class VoiceConfigService:
                 "resource_id": cfg.tts.resource_id,
                 "url": cfg.tts.url,
                 "voice_type": cfg.tts.voice_type,
+            },
+            "zhipu": {
+                "api_key_masked": mask(cfg.zhipu.api_key_enc),
+                "asr_model": cfg.zhipu.asr_model,
+                "asr_url": cfg.zhipu.asr_url,
+                "tts_model": cfg.zhipu.tts_model,
+                "tts_url": cfg.zhipu.tts_url,
+                "voice_type": cfg.zhipu.voice_type,
+                "speed": cfg.zhipu.speed,
+                "volume": cfg.zhipu.volume,
+            },
+            "aliyun": {
+                "api_key_masked": mask(cfg.aliyun.api_key_enc),
+                "asr_model": cfg.aliyun.asr_model,
+                "asr_url": cfg.aliyun.asr_url,
+                "tts_model": cfg.aliyun.tts_model,
+                "tts_url": cfg.aliyun.tts_url,
+                "voice_type": cfg.aliyun.voice_type,
+                "language_type": cfg.aliyun.language_type,
             },
             "audio": {
                 "input_rate": cfg.audio.input_rate,

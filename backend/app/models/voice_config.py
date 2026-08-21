@@ -7,6 +7,8 @@ and masked in API responses (mirrors the Model / credential pattern).
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.base import utc_now
@@ -37,13 +39,42 @@ class VADConfig(BaseModel):
     silence_ms: int = 600
 
 
+class ZhipuConfig(BaseModel):
+    api_key_enc: str = ""
+    asr_model: str = "glm-asr-2512"
+    asr_url: str = "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions"
+    tts_model: str = "glm-tts"
+    tts_url: str = "https://open.bigmodel.cn/api/paas/v4/audio/speech"
+    voice_type: str = "tongtong"
+    speed: float = 1.0
+    volume: float = 1.0
+
+
+class AliyunConfig(BaseModel):
+    api_key_enc: str = ""
+    asr_model: str = "qwen3-asr-flash"
+    asr_url: str = (
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    )
+    tts_model: str = "qwen3-tts-flash"
+    tts_url: str = (
+        "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
+        "multimodal-generation/generation"
+    )
+    voice_type: str = "Cherry"
+    language_type: str = "Chinese"
+
+
 class VoiceConfig(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     id: str = Field(default=CONFIG_DOC_ID, alias="_id")
+    active_provider: Literal["volcano", "zhipu", "aliyun"] = "volcano"
     api_key_enc: str = ""  # Agent Plan dedicated API Key, AES-256-GCM encrypted
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
+    zhipu: ZhipuConfig = Field(default_factory=ZhipuConfig)
+    aliyun: AliyunConfig = Field(default_factory=AliyunConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     vad: VADConfig = Field(default_factory=VADConfig)
     last_test_success: bool | None = None

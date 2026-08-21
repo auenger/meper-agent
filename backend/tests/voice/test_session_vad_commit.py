@@ -44,6 +44,12 @@ class FakeTTS:
         pass
 
 
+class FakeBatchASR(FakeASR):
+    async def close(self) -> None:
+        self.closed = True
+        await self.callbacks["on_partial"]("批量识别结果")
+
+
 def runtime_config() -> VoiceRuntimeConfig:
     return VoiceRuntimeConfig(
         asr=ASRRuntime(api_key="key", resource_id="asr", url="wss://asr"),
@@ -84,6 +90,28 @@ async def test_vad_commit_finalizes_partial_and_rotates_asr() -> None:
     assert clients[0].closed is True
     assert clients[1].opened is True
     assert {"type": P.SERVER_TRANSCRIPT_FINAL, "content": "你好"} in ws.messages
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_ptt_release_waits_for_batch_asr_result() -> None:
+    ws = FakeWebSocket()
+    session = VoiceSession(
+        ws,  # type: ignore[arg-type]
+        "user-1",
+        cfg=runtime_config(),
+        asr_factory=FakeBatchASR,  # type: ignore[arg-type]
+        tts_factory=FakeTTS,  # type: ignore[arg-type]
+    )
+    session._ptt = True
+    await session._start_listening()
+
+    await session._release()
+
+    assert {
+        "type": P.SERVER_TRANSCRIPT_FINAL,
+        "content": "批量识别结果",
+    } in ws.messages
     await session.close()
 
 

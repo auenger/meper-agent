@@ -21,7 +21,7 @@ from app.schemas.voice_config import (
 )
 from app.services.voice_config_service import VoiceConfigService
 from app.voice.config import get_runtime_config
-from app.voice.providers.volcano import VolcanoASRClient, VolcanoTTSClient
+from app.voice.providers.factory import create_asr_client, create_tts_client
 
 router = APIRouter(
     prefix="/voice/config",
@@ -46,11 +46,15 @@ async def save_voice_config(body: VoiceConfigUpdate) -> VoiceConfigResponse:
 
 @router.post("/test", summary="Test ASR/TTS connectivity")
 async def test_voice_config() -> dict:
-    """Validate the saved key with real Agent Plan ASR/TTS handshakes."""
+    """Validate the saved key with the currently selected provider."""
     cfg = await VoiceConfigService.get_config()
     if cfg is None:
         return {"success": False, "message": "尚未配置语音凭证"}
-    if not cfg.api_key_enc:
+    if cfg.active_provider == "zhipu" and not cfg.zhipu.api_key_enc:
+        return {"success": False, "message": "未配置智谱 API Key"}
+    if cfg.active_provider == "aliyun" and not cfg.aliyun.api_key_enc:
+        return {"success": False, "message": "未配置阿里百炼 API Key"}
+    if cfg.active_provider == "volcano" and not cfg.api_key_enc:
         return {"success": False, "message": "未配置 Agent Plan 专属 API Key"}
 
     messages: list[str] = []
@@ -59,7 +63,7 @@ async def test_voice_config() -> dict:
     tts = None
     try:
         runtime = await get_runtime_config()
-        asr = VolcanoASRClient(runtime.asr)
+        asr = create_asr_client(runtime)
         await asr.open()
         messages.append("ASR 连接成功")
     except Exception as exc:
@@ -70,8 +74,16 @@ async def test_voice_config() -> dict:
             await asr.close()
     try:
         runtime = await get_runtime_config()
-        tts = VolcanoTTSClient(runtime.tts)
-        await tts.probe()
+        tts = create_tts_client(runtime)
+        probe = getattr(tts, "probe", None)
+        if probe is not None:
+            await probe()
+        else:
+            audio_bytes = 0
+            async for chunk in tts.synth_stream("语音连接测试"):
+                audio_bytes += len(chunk)
+            if audio_bytes == 0:
+                raise RuntimeError("TTS 连接成功，但没有返回音频数据")
         messages.append("TTS 连接成功")
     except Exception as exc:
         success = False
@@ -85,7 +97,7 @@ async def test_voice_config() -> dict:
 
 
 def pcm16_to_wav(pcm: bytes, *, sample_rate: int = 24000) -> bytes:
-    """Wrap mono PCM16 returned by Seed TTS in a browser-playable WAV file."""
+    """Wrap mono PCM16 returned by TTS in a browser-playable WAV file."""
     output = io.BytesIO()
     with wave.open(output, "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -103,10 +115,13 @@ async def preview_voice(body: VoicePreviewRequest) -> Response:
     if not voice_type or not text:
         raise HTTPException(status_code=422, detail="音色和试听文本不能为空")
 
-    tts: VolcanoTTSClient | None = None
+    tts = None
     try:
         runtime = await get_runtime_config()
-        tts = VolcanoTTSClient(replace(runtime.tts, voice_type=voice_type))
+        preview_runtime = replace(
+            runtime, tts=replace(runtime.tts, voice_type=voice_type)
+        )
+        tts = create_tts_client(preview_runtime)
         pcm = bytearray()
         async for chunk in tts.synth_stream(text):
             pcm.extend(chunk)

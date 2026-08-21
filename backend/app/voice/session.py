@@ -302,9 +302,9 @@ class VoiceSession:
         """
         if not self._ptt:
             return
+        await self._close_asr()
         text = self._last_asr_partial.strip()
         self._last_asr_partial = ""
-        await self._close_asr()
         if not text:
             # Held the button without speaking — quietly return to idle.
             await self._set_state(P.STATE_IDLE)
