@@ -119,6 +119,49 @@ async def create_indexes() -> None:
     )
     logger.info("Created indexes: idx_channel_configs_owner, idx_channel_configs_agent, idx_channel_configs_provider_name, uq_inbound_logs_channel_msg, idx_inbound_logs_status_time")
 
+    # ── User skills & memory (v6 用户级技能与记忆) ──
+    await db.user_skills.create_index(
+        [("owner_user_id", 1), ("name", 1)],
+        name="uq_user_skills_owner_name",
+        unique=True,
+    )
+    await db.user_skills.create_index("status", name="idx_user_skills_status")
+    await db.user_skill_bindings.create_index(
+        [("user_id", 1), ("skill_id", 1)],
+        name="uq_user_skill_bindings",
+        unique=True,
+    )
+    await db.user_profiles.create_index(
+        "user_id", name="uq_user_profiles_user", unique=True,
+    )
+    await db.skill_logs.create_index(
+        [("user_id", 1), ("created_at", -1)], name="idx_skill_logs_user_time",
+    )
+    await db.skill_logs.create_index(
+        [("kind", 1), ("name", 1)], name="idx_skill_logs_kind_name",
+    )
+    # 轮次查询（消息级反馈按 request_id 取本轮技能，§8.2 v2）
+    await db.skill_logs.create_index(
+        [("user_id", 1), ("session_id", 1), ("request_id", 1), ("kind", 1)],
+        name="idx_skill_logs_round",
+    )
+    # 消息级反馈：一轮一票的事实源键必须唯一（并发改票双写的最后防线）
+    await db.message_feedback.create_index(
+        [("user_id", 1), ("session_id", 1), ("request_id", 1)],
+        name="uq_message_feedback_round",
+        unique=True,
+    )
+    await db.user_skills.create_index(
+        [("status", 1), ("stats.up", -1)],
+        name="idx_user_skills_marketplace",
+    )
+    logger.info(
+        "Created indexes: uq_user_skills_owner_name, idx_user_skills_status, "
+        "uq_user_skill_bindings, uq_user_profiles_user, idx_skill_logs_*, "
+        "idx_user_skills_marketplace, "
+        "idx_skill_logs_round, uq_message_feedback_round"
+    )
+
 
 if __name__ == "__main__":
     import asyncio

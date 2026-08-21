@@ -74,6 +74,10 @@ class Agent(BaseModel):
         default=False,
         description="Whether this Agent may be used for realtime voice conversations",
     )
+    user_skills_enabled: bool = Field(
+        default=True,
+        description="是否向会话注入当前用户的个人技能（False=纯净模式，§5.2）",
+    )
     max_retry: int = Field(default=3, ge=0, le=10, description="Max LLM call retries on failure")
     max_tokens: int = Field(default=0, ge=0, description="Session token budget (0 = use global DEFAULT_SESSION_MAX_TOKENS)")
     status: AgentStatus = Field(default=AgentStatus.DRAFT)

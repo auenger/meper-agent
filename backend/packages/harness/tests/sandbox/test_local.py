@@ -80,6 +80,70 @@ def test_write_file_path_traversal_blocked(tmp_path):
         sb.write_file("../../../evil.txt", "data")
 
 
+def test_edit_file_success(tmp_path):
+    """唯一匹配 → 替换成功，返回成功消息。"""
+    (tmp_path / "app.py").write_text("def foo():\n    return 1\n", encoding="utf-8")
+    sb = _make_sandbox(tmp_path)
+    msg = sb.edit_file("app.py", "return 1", "return 42")
+    assert "Successfully edited" in msg
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "def foo():\n    return 42\n"
+
+
+def test_edit_file_not_found_string(tmp_path):
+    """old_string 未出现 → ValueError（含提示）。"""
+    (tmp_path / "app.py").write_text("print('x')\n", encoding="utf-8")
+    sb = _make_sandbox(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        sb.edit_file("app.py", "return 1", "return 2")
+
+
+def test_edit_file_multiple_matches_error(tmp_path):
+    """多处匹配且非 replace_all → ValueError（含次数）。"""
+    (tmp_path / "a.txt").write_text("x = 1\ny = 1\n", encoding="utf-8")
+    sb = _make_sandbox(tmp_path)
+    with pytest.raises(ValueError, match="2 times"):
+        sb.edit_file("a.txt", "1", "2")
+    # 文件未被改动
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "x = 1\ny = 1\n"
+
+
+def test_edit_file_replace_all(tmp_path):
+    """replace_all=True → 全部替换。"""
+    (tmp_path / "a.txt").write_text("x = 1\ny = 1\n", encoding="utf-8")
+    sb = _make_sandbox(tmp_path)
+    msg = sb.edit_file("a.txt", "1", "2", replace_all=True)
+    assert "2 replacements" in msg
+    assert (tmp_path / "a.txt").read_text(encoding="utf-8") == "x = 2\ny = 2\n"
+
+
+def test_edit_file_missing_file(tmp_path):
+    sb = _make_sandbox(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        sb.edit_file("nonexistent.txt", "a", "b")
+
+
+def test_edit_file_path_traversal_blocked(tmp_path):
+    """路径越权：编辑 work_dir 外的文件应被拒。"""
+    sb = _make_sandbox(tmp_path)
+    with pytest.raises((PermissionError, ValueError)):
+        sb.edit_file("../../../etc/passwd", "a", "b")
+
+
+def test_edit_file_large_file_not_truncated(tmp_path):
+    """超过 read 截断阈值的大文件仍能完整编辑（尾部不丢失）。"""
+    sb = LocalSandbox(
+        sandbox_id="t", work_dir=tmp_path, output_dir=tmp_path / "output",
+        max_output_chars=100,
+    )
+    # 尾部标记在截断阈值之外
+    body = "line\n" * 100 + "TAIL_MARKER"
+    (tmp_path / "big.txt").write_text(body, encoding="utf-8")
+    sb.edit_file("big.txt", "TAIL_MARKER", "TAIL_EDITED")
+    content = (tmp_path / "big.txt").read_text(encoding="utf-8")
+    assert content.endswith("TAIL_EDITED")
+    assert len(content) == len(body)
+
+
 def test_glob_matches(tmp_path):
     (tmp_path / "a.py").write_text("")
     (tmp_path / "b.py").write_text("")

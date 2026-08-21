@@ -290,3 +290,50 @@ async def test_consumed_oversized_tool_not_raises() -> None:
     # 不应抛异常(已消费的工具会被压缩,不是报错)。
     patch = await compress_node({"messages": msgs, "agent_id": "a", "request_id": "r"}, config)
     assert patch != {}  # 正常返回压缩 patch
+
+
+# ---------------------------------------------------------------------------
+# B.3-3：存量 SystemMessage 摘要 → 迁移为 HumanMessage（替代旧"回卷"）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_legacy_system_summary_migrated_to_history() -> None:
+    """B.3-3：存量 SystemMessage(id=llm_summary) 压缩时迁移为 HumanMessage 并留在历史区。"""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+
+    class _MockLLM:
+        async def ainvoke(self, messages, _config=None):
+            return AIMessage(content="新结构化摘要")
+
+    # sys + 旧 SystemMessage 摘要 + 8 轮长历史。
+    # 尺寸设计：~3.2k tokens，窗口 4000 → 超阈值(2800)但未达硬上限(3600)，
+    # 不触发兜底丢弃（丢弃会从 outer 头部扔消息，干扰迁移断言）。
+    msgs: list = [SystemMessage(content="AGENT PROMPT", id="sys")]
+    msgs.append(SystemMessage(content="用户此前要求整理 Q3 报销", id="llm_summary"))
+    for i in range(8):
+        msgs.append(HumanMessage(content=f"问题{i}" + "长" * 800, id=f"h{i}"))
+        msgs.append(HumanMessage(content=f"答{i}" + "长" * 800, id=f"a{i}"))
+
+    config = {
+        "configurable": {
+            "llm": _MockLLM(),
+            "context_window": 4_000,
+            "protected_turns": 5,
+        },
+    }
+    patch = await compress_node(
+        {"messages": msgs, "agent_id": "a", "request_id": "r", "session_id": "mig_test_unique"},
+        config,
+    )
+    assert patch != {}
+    result = _patch_msgs(patch)
+
+    # system 区只剩主 prompt——旧摘要已迁出
+    system_msgs = [m for m in result if isinstance(m, SystemMessage)]
+    assert [getattr(m, "id", "") for m in system_msgs] == ["sys"]
+
+    # 迁移后的 HumanMessage 摘要留在历史区（内容保留，参与下次再压缩）
+    migrated = [m for m in result if getattr(m, "id", "") == "llm_summary"]
+    assert migrated and isinstance(migrated[0], HumanMessage)
+    assert "Q3 报销" in migrated[0].content

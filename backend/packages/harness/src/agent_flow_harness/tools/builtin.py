@@ -1,14 +1,13 @@
 """内建工具汇总 — harness 自带的三层能力型/文件shell 工具清单。
 
 本模块集中定义 ``BUILTIN_TOOLS``（name → BaseTool 实例），作为"能力清单"
-供应用层按需取用。注意：``BUILTIN_TOOLS`` 本身只是一个注册表，**不会**被
-自动注入到任何 Agent —— 实际注入哪些内建工具，由应用层
-``app.engine.harness_integration.context.resolve_harness_context`` 按 Agent 的
+供调用方按需取用。注意：``BUILTIN_TOOLS`` 本身只是一个注册表，**不会**被
+自动注入到任何 Agent —— 实际注入哪些内建工具，由调用方按自己的
 ``builtin_config`` 白名单（opt-in）决定。
 
-三层工具模型（SPEC §Always）：
+三层工具模型：
 - 第一层（能力型）：delegate_to_subagent / ask_clarification / tool_search
-- 第二层（文件/shell）：bash / read / write / glob / grep（委托 Sandbox）
+- 第二层（文件/shell）：bash / read / write / edit / glob / grep（委托 Sandbox）
 - 编排层：run_code（代码即工具编排 — 代码内经 tools.call 批量/链式
   调用其他工具，工具表由宿主经 ToolBridgeContext 注入）
 
@@ -41,9 +40,9 @@ def _load_builtin_tools() -> dict[str, "BaseTool"]:
     tools: dict[str, BaseTool] = {}
 
     # 第二层：文件/shell 工具（委托 Sandbox）
-    from agent_flow_harness.sandbox.tools import bash, glob, grep, read, write
+    from agent_flow_harness.sandbox.tools import bash, edit, glob, grep, read, write
 
-    for t in (bash, read, write, glob, grep):
+    for t in (bash, read, write, edit, glob, grep):
         tools[t.name] = t
 
     # 第一层：能力型工具

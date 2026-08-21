@@ -23,11 +23,16 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_SUMMARY_PROMPT = """请将以下对话历史压缩为简洁摘要，保留：
-1. 用户的核心意图和需求
-2. 关键决策和结论
-3. 重要的错误信息或失败尝试
-丢弃闲聊和冗余细节。用中文，不超过 500 字。
+_SUMMARY_PROMPT = """请将以下对话历史压缩为结构化摘要，用于后续对话的上下文延续。严格按以下六段输出（每段 1-3 句，没有则写"无"）：
+
+1. 用户的核心意图与需求：
+2. 关键决策与结论：
+3. 重要错误与修复（含失败尝试）：
+4. 进行中的任务与未完成项：
+5. 当前工作状态与建议的下一步：
+6. 关键文件/数据引用（recall 引用标记原样保留，便于重取）：
+
+要求：优先保留任务连续性关键信息；丢弃闲聊与冗余细节；[此前摘要] 是更早历史的浓缩，其中信息须合并进对应段落继续保留（不得丢弃）；用中文。
 
 对话历史：
 {history}"""
@@ -52,6 +57,8 @@ def render_history_for_summary(
 ) -> str:
     """渲染历史给摘要 LLM:非工具原文,工具结果只留引用。
 
+    - 摘要消息(id="llm_summary"/"summary",任何形态)或 SystemMessage:
+      [此前摘要] {原文} —— 修复硬丢失 bug:旧摘要必须参与再摘要,不能静默跳过
     - HumanMessage: [用户] {原文}
     - AIMessage(有tool_calls): [助手] 已调用 {name}({参数概要})
     - AIMessage(有content): [助手] {原文}
@@ -61,11 +68,16 @@ def render_history_for_summary(
         reference_formatter: app 层注入的引用标记生成器(与 compress_tool_outputs
             共用同一个)。None 时只写"[工具结果] 已返回"(harness 不硬编码工具名)。
     """
-    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
     parts: list[str] = []
     for m in messages:
-        if isinstance(m, HumanMessage):
+        mid = getattr(m, "id", "") or ""
+        content = str(m.content)
+        if mid in ("llm_summary", "summary") or isinstance(m, SystemMessage):
+            if content.strip():
+                parts.append(f"[此前摘要]\n{content}")
+        elif isinstance(m, HumanMessage):
             content = str(m.content)
             if content.strip():
                 parts.append(f"[用户] {content}")
@@ -140,11 +152,15 @@ def apply_cached_summary(
 ) -> "tuple[list[BaseMessage], bool]":
     """按消息 ID 精确回填:用摘要替换它覆盖的消息,其余保留。
 
+    摘要是 **HumanMessage**（Claude Code 同款,B.3-3）:
+    - 天然属于历史区,下次压缩自然重吸收,回卷特判可删
+    - 不受 _system_messages_first 重排影响
+    - 配框架文本防归因混淆（模型不会当成用户发言）
     返回 (回填后的列表, 是否真的插入了摘要)。
     covered_ids 里的 None/空串已被过滤(在 compress_history_with_llm 里),
     所以无 id 的消息不会被误匹配。
     """
-    from langchain_core.messages import SystemMessage
+    from langchain_core.messages import HumanMessage
 
     covered = set(result.covered_ids)
     rebuilt: list[BaseMessage] = []
@@ -153,8 +169,8 @@ def apply_cached_summary(
         mid = _get_msg_id(m)
         if mid is not None and mid in covered:
             if not inserted:
-                rebuilt.append(SystemMessage(
-                    content=f"[对话历史摘要]\n{result.summary_text}",
+                rebuilt.append(HumanMessage(
+                    content=f"[系统生成的此前对话摘要，非用户发言]\n{result.summary_text}",
                     id="llm_summary",
                 ))
                 inserted = True

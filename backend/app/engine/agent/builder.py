@@ -26,11 +26,14 @@ from app.models.compat import (
 # ---------------------------------------------------------------------------
 
 
-async def build_skill_declaration(tool_ids: list[str]) -> str:
+async def build_skill_declaration(tool_ids: list[str], exclude_names: set[str] | None = None) -> str:
     """Build the Skill declaration text for the system prompt.
 
     Queries MongoDB for each tool ID and formats a markdown list
     of available Skills (name + description).
+
+    exclude_names：与用户个人技能同名的官方技能被遮蔽（§7.4 个人优先解析），
+    从官方声明中剔除，避免 prompt 里同名技能出现两份互相矛盾的描述。
     """
     if not tool_ids:
         return ""
@@ -52,13 +55,15 @@ async def build_skill_declaration(tool_ids: list[str]) -> str:
     ]
     for doc in skill_docs:
         name = doc.get("name", "unknown")
+        if exclude_names and name in exclude_names:
+            continue
         desc = doc.get("description", "")
         lines.append(f"- **{name}**: {desc}")
 
     return "\n".join(lines)
 
 
-async def build_tool_declaration(agent: dict) -> str:
+async def build_tool_declaration(agent: dict, exclude_names: set[str] | None = None) -> str:
     """Build the complete tool declaration text for the system prompt.
 
     Generates declaration sections for all tool categories:
@@ -73,7 +78,7 @@ async def build_tool_declaration(agent: dict) -> str:
 
     skill_ids = resolve_skill_ids(agent)
     if skill_ids:
-        skill_decl = await build_skill_declaration(skill_ids)
+        skill_decl = await build_skill_declaration(skill_ids, exclude_names=exclude_names)
         if skill_decl:
             sections.append(skill_decl)
 
@@ -187,15 +192,16 @@ async def _build_kb_declaration(kb_ids: list[str]) -> str:
     return "\n".join(lines)
 
 
-async def build_system_prompt(agent_doc: dict) -> str:
+async def build_system_prompt(agent_doc: dict, exclude_skill_names: set[str] | None = None) -> str:
     """Build the fully assembled system prompt for an Agent.
 
     Delegates to the slot renderer which handles PromptTemplate-based
-    prompt composition.
+    prompt composition. exclude_skill_names 透传给技能声明——
+    被用户个人技能遮蔽的同名官方技能不进官方列表（§7.4）。
     """
     from app.engine.agent.slot_renderer import render_system_prompt_full
 
-    return await render_system_prompt_full(agent_doc)
+    return await render_system_prompt_full(agent_doc, exclude_skill_names=exclude_skill_names)
 
 
 async def _build_mcp_tool_declaration(mcp_connection_ids: list[str]) -> str:

@@ -101,12 +101,20 @@ class Settings(BaseSettings):
     TRIGGER_SCHEDULER_POLL_INTERVAL: int = 10
 
     # Skill filesystem — root directory where Skill files are materialized.
-    # Each Skill lives under ``{SKILLS_CONTAINER_DIR}/{skill_name}/``.
+    # Each official Skill lives under ``{SKILLS_CONTAINER_DIR}/{skill_name}/``.
+    # 用户个人技能住 ``{HOMES_CONTAINER_DIR}/{uid}/skills/{name}/``（用户资产根，
+    # 与 workspace 同级隔离但持久——不参与 workspace 的定期清理；沙箱挂载
+    # 时官方池与当前用户的 skills 子目录各自只读挂入，无跨用户泄漏）。
     # None = derive from SKILLS_HOST_DIR (local dev).
     # Docker: set explicitly by docker-compose (e.g. /data/skills).
     SKILLS_CONTAINER_DIR: str | None = None
     # Host-side path for Skills (the one users configure in .env).
     SKILLS_HOST_DIR: str = "~/.agent-flow/data/skills"
+
+    # 用户资产根（个人技能等持久数据）：``{HOMES_CONTAINER_DIR}/{uid}/skills/{name}/``。
+    # None = derive from SKILLS_HOST_DIR 的同级目录 ``{parent}/homes``。
+    HOMES_CONTAINER_DIR: str | None = None
+    HOMES_HOST_DIR: str = "~/.agent-flow/data/homes"
 
     # Workspace filesystem — root directory for per-Session workspaces.
     # Layout: ``{WORKSPACES_CONTAINER_DIR}/{user_id}/{session_id}/{input,output,tmp}``.

@@ -47,11 +47,14 @@ DEFAULT_SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "agent:read", "agent:invoke",
         "task:read",
         "execution:read:own",
+        "knowledge:read",  # 权限原则：平台资源只读浏览对全员开放（管理仍限 admin/developer）
         "model:read",
     ],
     "viewer": [
         "agent:read",
         "task:read",
+        "execution:read:own",  # 个人数据（自己的执行日志）：登录即可读
+        "knowledge:read",  # 权限原则：平台资源只读浏览对全员开放
         "model:read",
     ],
 }
@@ -99,6 +102,15 @@ _BACKFILL_V1_MARKER = "backfill_application_perms_v1"
 _BACKFILL_V1_TARGETS: dict[str, list[str]] = {
     "admin": ["application:read", "application:write"],
     "developer": ["application:read", "application:write"],
+}
+
+# v2: 权限原则重构（§7.6）——个人数据放开 + 平台资源只读全员开放：
+# - viewer 缺 execution:read:own（自己的执行日志是个人数据，登录即可读）
+# - operator/viewer 缺 knowledge:read（知识库只读浏览对全员开放，管理仍限管理角色）
+_BACKFILL_V2_MARKER = "backfill_user_scoped_perms_v2"
+_BACKFILL_V2_TARGETS: dict[str, list[str]] = {
+    "viewer": ["execution:read:own", "knowledge:read"],
+    "operator": ["knowledge:read"],
 }
 
 
@@ -210,6 +222,36 @@ class RoleService:
             _BACKFILL_V1_MARKER,
             patched,
         )
+
+    @staticmethod
+    async def _backfill_permissions(
+        marker: str, targets: dict[str, list[str]],
+    ) -> None:
+        """Generic marker-guarded permission backfill (shared by v1/v2)."""
+        markers = get_database()[_MIGRATION_COLLECTION]
+        if await markers.find_one({"_id": marker}) is not None:
+            return
+
+        col = RoleService._collection()
+        patched: list[str] = []
+        for role_name, missing in targets.items():
+            result = await col.update_one(
+                {"name": role_name, "role_type": RoleType.SYSTEM.value},
+                {"$addToSet": {"permissions": {"$each": missing}}},
+            )
+            if result.modified_count > 0:
+                patched.append(role_name)
+
+        await markers.update_one(
+            {"_id": marker},
+            {"$set": {"executed_at": utc_now().isoformat(), "patched_roles": patched}},
+            upsert=True,
+        )
+
+        for role_name in patched:
+            await RoleService.invalidate_cache(role_name)
+
+        logger.info("role_permissions_backfilled marker={} patched_roles={}", marker, patched)
 
     # ------------------------------------------------------------------
     # Read operations

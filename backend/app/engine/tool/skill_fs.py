@@ -36,6 +36,8 @@ def _skills_dir() -> Path:
     return Path(settings.SKILLS_CONTAINER_DIR).expanduser()
 
 
+
+
 def get_skill_base_path(name: str) -> Path:
     """Return the absolute path for a Skill directory.
 

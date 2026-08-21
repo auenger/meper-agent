@@ -70,7 +70,7 @@ def test_render_ai_text_original() -> None:
 
 
 def test_apply_summary_replaces_covered_by_id() -> None:
-    """按ID精确替换被覆盖的消息,插入摘要。"""
+    """按ID精确替换被覆盖的消息,插入摘要（HumanMessage 形态，B.3-3）。"""
     messages = [
         SystemMessage(content="sys", id="sys"),
         HumanMessage(content="q1", id="h1"),   # covered
@@ -82,8 +82,10 @@ def test_apply_summary_replaces_covered_by_id() -> None:
     assert inserted
     assert len(rebuilt) == 3  # sys + summary + h2
     assert isinstance(rebuilt[0], SystemMessage) and rebuilt[0].content == "sys"
-    assert isinstance(rebuilt[1], SystemMessage) and rebuilt[1].id == "llm_summary"
+    # 摘要是 HumanMessage + 框架声明（防归因混淆），id 保持 llm_summary
+    assert isinstance(rebuilt[1], HumanMessage) and rebuilt[1].id == "llm_summary"
     assert "摘要内容" in rebuilt[1].content
+    assert "非用户发言" in rebuilt[1].content
     assert rebuilt[2].content == "q2"
 
 
@@ -172,3 +174,56 @@ async def test_compress_history_with_llm_mock() -> None:
     assert result.covered_ids == ["m1", "m2"]
     # running 标记清除。
     assert not cache.is_running("test_session")
+
+
+# ---------------------------------------------------------------------------
+# B.3 修复：render 摘要分支（硬丢失 bug）+ 结构化模板
+# ---------------------------------------------------------------------------
+
+
+def test_render_legacy_system_summary_not_lost() -> None:
+    """B.3-2 修复：SystemMessage 形态的旧摘要不再被静默跳过（硬丢失 bug）。"""
+    msgs = [
+        SystemMessage(content="用户此前要求整理 Q3 报销单", id="llm_summary"),
+        HumanMessage(content="继续处理第 3 张", id="h1"),
+    ]
+    result = render_history_for_summary(msgs)
+    assert "[此前摘要]" in result
+    assert "Q3 报销单" in result  # 旧摘要内容参与再摘要，不再蒸发
+
+
+def test_render_human_summary_not_misattributed() -> None:
+    """B.3-3：HumanMessage 形态的新摘要（id=llm_summary）渲染为 [此前摘要] 而非 [用户]。"""
+    msgs = [
+        HumanMessage(content="[系统生成的此前对话摘要，非用户发言]\n1. 意图：xxx", id="llm_summary"),
+        HumanMessage(content="真正的用户消息", id="h1"),
+    ]
+    result = render_history_for_summary(msgs)
+    assert result.count("[此前摘要]") == 1
+    assert "[用户] 真正的用户消息" in result
+    # 摘要不能被当成 [用户] 发言
+    assert "[用户] [系统生成的此前对话摘要" not in result
+
+
+def test_render_other_system_message_also_included() -> None:
+    """其他 SystemMessage（无摘要 id）同样进 [此前摘要] 分支，不再丢失。"""
+    msgs = [SystemMessage(content="某中间件注入的系统级说明", id="x")]
+    result = render_history_for_summary(msgs)
+    assert "[此前摘要]" in result and "系统级说明" in result
+
+
+def test_summary_prompt_structured_six_sections() -> None:
+    """B.3-1：模板为 Claude 式六段结构化，且不再限制 500 字。"""
+    from agent_flow_harness.context_engineering.llm_summary import _SUMMARY_PROMPT
+
+    for section in (
+        "核心意图与需求",
+        "关键决策与结论",
+        "重要错误与修复",
+        "进行中的任务与未完成项",
+        "当前工作状态与建议的下一步",
+        "关键文件/数据引用",
+        "[此前摘要]",  # 明确要求旧摘要信息合并保留
+    ):
+        assert section in _SUMMARY_PROMPT, section
+    assert "500" not in _SUMMARY_PROMPT  # 硬上限已移除

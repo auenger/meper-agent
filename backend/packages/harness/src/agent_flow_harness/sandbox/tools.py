@@ -1,4 +1,4 @@
-"""文件/shell 工具 — bash/read/write/glob/grep（零 I/O，全部委托 Sandbox）。
+"""文件/shell 工具 — bash/read/write/edit/glob/grep（零 I/O，全部委托 Sandbox）。
 
 三层工具模型第二层。工具代码从不直接 subprocess/open，全部委托注入的
 Sandbox 方法。异常被 catch 转错误字符串返回（AC8 异常隔离）。
@@ -41,6 +41,15 @@ class _ReadArgs(BaseModel):
 class _WriteArgs(BaseModel):
     path: str = Field(..., description="文件路径（相对于 output 目录）")
     content: str = Field(..., description="文件内容")
+
+
+class _EditArgs(BaseModel):
+    path: str = Field(..., description="要编辑的文件路径")
+    old_string: str = Field(..., description="要替换的原文本（必须在文件中唯一，除非 replace_all=true）")
+    new_string: str = Field(..., description="替换后的新文本")
+    replace_all: bool = Field(
+        False, description="替换所有匹配项。默认 false（要求 old_string 唯一）"
+    )
 
 
 class _GlobArgs(BaseModel):
@@ -98,6 +107,17 @@ async def _write(path: str, content: str) -> str:
         return f"Error writing file: {exc}"
 
 
+async def _edit(path: str, old_string: str, new_string: str, replace_all: bool = False) -> str:
+    """就地编辑文件（字符串替换）。委托 sandbox.edit_file。"""
+    sandbox = _get_sandbox_safe()
+    if sandbox is None:
+        return "Error: sandbox not initialized."
+    try:
+        return sandbox.edit_file(path, old_string, new_string, replace_all=replace_all)
+    except Exception as exc:
+        return f"Error editing file: {exc}"
+
+
 async def _glob(path: str, pattern: str) -> str:
     """文件匹配。委托 sandbox.glob。"""
     sandbox = _get_sandbox_safe()
@@ -139,6 +159,11 @@ write = StructuredTool.from_function(
     description="写入文件内容到 output 目录（用户可见/可下载）。当用户要求生成、创建、保存或导出任何文件时使用此工具。",
     args_schema=_WriteArgs, coroutine=_write,
 )
+edit = StructuredTool.from_function(
+    _edit, name="edit",
+    description="就地编辑已有文件：将文件中 old_string 精确替换为 new_string。old_string 必须与文件内容完全一致（含空格缩进）且在文件中唯一；多处匹配时提供更长上下文或设 replace_all=true。生成新文件请用 write。",
+    args_schema=_EditArgs, coroutine=_edit,
+)
 glob = StructuredTool.from_function(
     _glob, name="glob", description="按 glob 模式匹配文件。",
     args_schema=_GlobArgs, coroutine=_glob,
@@ -149,4 +174,4 @@ grep = StructuredTool.from_function(
 )
 
 
-__all__ = ["bash", "read", "write", "glob", "grep"]
+__all__ = ["bash", "read", "write", "edit", "glob", "grep"]

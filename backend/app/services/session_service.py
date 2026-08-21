@@ -206,6 +206,7 @@ class MessageService:
         timeline_entries: list[dict] | None = None,
         file_ids: list[str] | None = None,
         token_usage: dict | None = None,
+        request_id: str = "",
     ) -> dict:
         """Add a message to a session.
 
@@ -216,6 +217,8 @@ class MessageService:
                 and store text in ``timeline_entries`` instead.
             timeline_entries: Structured timeline events (for agent messages).
             file_ids: Associated FileRef IDs for uploaded attachments.
+            request_id: 本轮执行请求 id——消息级反馈（§8.2）按它关联本轮
+                load 的技能（与 skill_logs.request_id 同键）。
 
         Returns:
             Created message document.
@@ -238,6 +241,8 @@ class MessageService:
             "file_ids": msg.file_ids,
             "created_at": msg.created_at,
         }
+        if request_id:
+            doc["request_id"] = request_id
         if token_usage:
             doc["token_usage"] = token_usage
         if role == "user":
@@ -265,12 +270,16 @@ class MessageService:
         timeline_entries: list[dict],
         *,
         token_usage: dict | None = None,
+        request_id: str = "",
     ) -> None:
         """Append timeline entries to the last agent message in this session.
 
         Used by resume so that tool_result (user's answer) ends up in the
         same message as the original tool_call, keeping the conversation
         history consistent for frontend rendering.
+
+        request_id: 更新为本轮（resume）的请求 id——消息级反馈（§8.2）
+        以最后 request 为轮次键，否则 resume 段 load 的技能与反馈断链。
         """
         col = MessageService._collection()
         # Find the last agent message
@@ -284,15 +293,17 @@ class MessageService:
                 session_id=session_id, role="agent",
                 timeline_entries=timeline_entries,
                 token_usage=token_usage or {},
+                request_id=request_id,
             )
             return
 
         # Atomically append entries + merge token_usage
         update_doc: dict[str, Any] = {
             "$push": {"timeline_entries": {"$each": timeline_entries}},
+            "$set": {"request_id": request_id or last_msg.get("request_id", "")},
         }
         if token_usage:
-            update_doc["$set"] = {"token_usage": token_usage}
+            update_doc["$set"]["token_usage"] = token_usage
         await col.update_one({"_id": last_msg["_id"]}, update_doc)
 
     @staticmethod

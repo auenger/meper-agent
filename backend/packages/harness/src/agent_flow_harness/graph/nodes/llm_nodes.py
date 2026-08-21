@@ -378,14 +378,25 @@ def _compress_by_turns(
     # ③ 达阈值 → 工具压缩(同步)。
     system_msgs, history = split_system_history(messages)
 
-    # 回卷:把已有的LLM摘要(id="llm_summary")和旧机械摘要(id="summary")从
-    # system_msgs 摘出并入 outer(可压缩区)。否则 split_system_history 会把它们
-    # 当不可变 system 收集→摘要累积成多条→违背"无退化"原则。
-    for summary_id in ("llm_summary", "summary"):
-        prior = [m for m in system_msgs if getattr(m, "id", "") == summary_id]
-        if prior:
-            system_msgs = [m for m in system_msgs if getattr(m, "id", "") != summary_id]
-            history = [*prior, *history]
+    # 摘要迁移（B.3-3）：新的 llm_summary 是 HumanMessage——天然在历史区，
+    # 下次压缩自然重吸收（render 以 [此前摘要] 分支喂给摘要 LLM，不再硬丢失）。
+    # 存量 SystemMessage 形态的旧摘要仍会被 split_system_history 收进 system 区
+    # ——在此迁移为 HumanMessage（保留 id 与内容），交还历史区参与再压缩。
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    migrated: list[Any] = []
+    kept_system: list[Any] = []
+    for m in system_msgs:
+        if getattr(m, "id", "") in ("llm_summary", "summary"):
+            migrated.append(_HumanMessage(
+                content=str(m.content),
+                id=getattr(m, "id", "") or "llm_summary",
+            ))
+        else:
+            kept_system.append(m)
+    if migrated:
+        system_msgs = kept_system
+        history = [*migrated, *history]
 
     outer, recent = split_by_turns(history, protected_turns)
 

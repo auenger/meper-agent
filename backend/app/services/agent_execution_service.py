@@ -70,7 +70,7 @@ class AgentExecutionService:
         start_time_ms = _now_ms()
 
         # Build messages (system prompt + user input with file attachments)
-        system_text = await _build_system_prompt_checked(exec_doc)
+        system_text = await _build_system_prompt_checked(exec_doc, user_id)
         user_content = await _build_user_content(body, user_id, session_id)
         initial_messages = _assemble_messages(system_text, user_content)
 
@@ -115,6 +115,7 @@ class AgentExecutionService:
         )
         await MessageService.add_message(
             session_id=session_id, role="agent", timeline_entries=timeline,
+            request_id=request_id,
         )
 
         return ExecutionResponse(
@@ -155,7 +156,7 @@ class AgentExecutionService:
         request_id = str(uuid.uuid4())
         call_chain = [*(external_call_chain or []), agent_id]
 
-        system_text = await _build_system_prompt_checked(exec_doc)
+        system_text = await _build_system_prompt_checked(exec_doc, user_id)
 
         event_queue: asyncio.Queue[str | None] = asyncio.Queue()
         collected_timeline: list[dict] = []
@@ -206,6 +207,7 @@ class AgentExecutionService:
                     await _persist_agent_message(
                         session_id, collected_timeline,
                         token_usage=result.get("usage"),
+                        request_id=request_id,
                     )
                 # Unified execution log (all channels).
                 with contextlib.suppress(Exception):
@@ -289,6 +291,7 @@ class AgentExecutionService:
                         extra_filter_types=("interrupt",),
                         token_usage=result.get("usage"),
                         append_to_last_agent=True,
+                        request_id=request_id,
                     )
                 # Unified execution log (all channels).
                 # Failure is non-fatal — must not block the terminal done event.
@@ -331,12 +334,50 @@ async def _resolve_session(agent_id: str, body: ExecutionRequest, user_id: str) 
     return session_id
 
 
-async def _build_system_prompt_checked(exec_doc: dict) -> str:
-    """Build system prompt, raising ValidationError on slot issues."""
+async def _build_system_prompt_checked(exec_doc: dict, user_id: str = "") -> str:
+    """Build system prompt, raising ValidationError on slot issues.
+
+    v6 用户技能与记忆注入（§5.3）：全部住主 system prompt 末尾
+    （用户技能名列表 + 构建规范段 + <user_preferences> 记忆块）——
+    位于 llm_summary 压缩块之前，压缩免疫；每请求重建、下一轮生效。
+    IM 渠道（channel: 前缀）由 build_user_sections 内部门控跳过。
+
+    官方/个人重名（§7.4）：个人技能遮蔽同名官方技能——解析层
+    （SkillManager 双根个人优先）与注入层（官方声明剔除被遮蔽名）
+    双重保证，prompt 中同名技能只出现一份（个人版）。
+    """
+    personal_skills: list[dict] = []
+    if user_id and exec_doc.get("user_skills_enabled", True):
+        try:
+            from app.engine.user_skills.tools import is_channel_user
+
+            if not is_channel_user(user_id):
+                from app.services.user_skill_service import UserSkillService
+
+                personal_skills = await UserSkillService.enabled_skills(user_id)
+        except Exception:  # noqa: BLE001 — 查询失败按无个人技能处理
+            personal_skills = []
+
+    shadow_names = {s["effective_name"] for s in personal_skills} or None
+
     try:
-        return await build_system_prompt(exec_doc)
+        system_text = await build_system_prompt(exec_doc, exclude_skill_names=shadow_names)
     except ValueError as exc:
         raise ValidationError(code="AGENT_PROMPT_SLOT_MISSING", message=str(exc)) from exc
+
+    if user_id:
+        try:
+            from app.engine.user_skills.injection import build_user_sections
+
+            user_sections = await build_user_sections(user_id, exec_doc, skills=personal_skills or None)
+            if user_sections:
+                system_text = f"{system_text}\n{user_sections}"
+        except Exception:  # noqa: BLE001 — 注入失败不阻断主流程
+            import structlog
+
+            structlog.get_logger(__name__).exception("user_sections_inject_failed",
+                                                     user_id=user_id)
+    return system_text
 
 
 async def _build_user_content(body: ExecutionRequest, user_id: str, session_id: str) -> str:
@@ -501,6 +542,7 @@ async def _persist_agent_message(
     extra_filter_types: tuple[str, ...] = (),
     token_usage: dict | None = None,
     append_to_last_agent: bool = False,
+    request_id: str = "",
 ) -> None:
     """Filter transient events and persist the agent message.
 
@@ -508,6 +550,7 @@ async def _persist_agent_message(
         append_to_last_agent: If True, append to the last agent message instead
             of creating a new one. Used by resume so that tool_call and
             tool_result for ask_clarification end up in the same message.
+        request_id: 本轮请求 id——消息级反馈（§8.2）的轮次键。
     """
     filter_types = _TRANSIENT_EVENT_TYPES + extra_filter_types
     persistence_timeline = [
@@ -519,12 +562,14 @@ async def _persist_agent_message(
             if append_to_last_agent:
                 await MessageService.append_to_last_agent_message(
                     session_id, persistence_timeline, token_usage=token_usage or {},
+                    request_id=request_id,
                 )
             else:
                 await MessageService.add_message(
                     session_id=session_id, role="agent",
                     timeline_entries=persistence_timeline,
                     token_usage=token_usage or {},
+                    request_id=request_id,
                 )
             # Accumulate token usage on the session
             if token_usage and token_usage.get("total_tokens"):

@@ -26,6 +26,9 @@ class _StubSandbox(Sandbox):
     def write_file(self, path, content):
         pass
 
+    def edit_file(self, path, old_string, new_string, *, replace_all=False):
+        return "edited"
+
     def write_to_output(self, path, content):
         pass
 

@@ -24,6 +24,7 @@ from app.api.v1.sessions import router as sessions_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.tools import router as tools_router
 from app.api.v1.triggers import router as triggers_router
+from app.api.v1.user_skills import router as user_skills_router
 from app.api.v1.voice_config import router as voice_config_router
 from app.api.v1.webhooks import router as webhooks_router
 from app.api.v1.workflow_registry import router as workflow_registry_router
@@ -48,6 +49,7 @@ api_v1_router.include_router(sessions_router)
 api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(tools_router)
 api_v1_router.include_router(triggers_router)
+api_v1_router.include_router(user_skills_router)
 api_v1_router.include_router(mcp_router)
 api_v1_router.include_router(mcp_categories_router)
 api_v1_router.include_router(mcp_tokens_router)

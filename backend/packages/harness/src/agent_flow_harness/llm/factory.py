@@ -5,7 +5,7 @@ auth-kwargs, thinking adaptation) in :mod:`agent_flow_harness.llm.providers`
 and :mod:`agent_flow_harness.llm.thinking`. It deliberately does **not** own
 model-table resolution: looking up a model document, decrypting its API key,
 and reading agent ``temperature_override`` is backend infrastructure that
-stays in the application layer (SPEC §70 — no DB / crypto coupling in harness).
+stays in the application layer (harness rule: no DB / crypto coupling here).
 
 This module exposes a thin facade so callers build clients through one
 harness entry point:

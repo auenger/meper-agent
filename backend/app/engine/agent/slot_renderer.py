@@ -89,6 +89,7 @@ async def render_system_prompt_full(
     node_slot_overrides: dict[str, str] | None = None,
     variable_pool: dict[str, Any] | None = None,
     strict: bool = True,
+    exclude_skill_names: set[str] | None = None,
 ) -> str:
     """Render the full system prompt from Agent's prompt_slots.
 
@@ -192,7 +193,7 @@ async def render_system_prompt_full(
     # ── Always append tool_declaration at the end ──
     from app.engine.agent.builder import build_tool_declaration
 
-    tool_decl = await build_tool_declaration(agent_doc)
+    tool_decl = await build_tool_declaration(agent_doc, exclude_names=exclude_skill_names)
     if tool_decl:
         parts.append(tool_decl)
 

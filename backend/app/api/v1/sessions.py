@@ -74,6 +74,7 @@ def _msg_to_response(doc: dict) -> MessageResponse:
         files=[],  # Populated separately when needed
         token_usage=doc.get("token_usage") or {},
         created_at=doc.get("created_at", ""),
+        request_id=doc.get("request_id", ""),
     )
 
 

@@ -73,9 +73,11 @@ APP_USER="appuser"
 # Derived from the *_CONTAINER_DIR settings with sane defaults.
 WORKSPACES_DIR="${WORKSPACES_CONTAINER_DIR:-/data/workspaces}"
 SKILLS_DIR="${SKILLS_CONTAINER_DIR:-/data/skills}"
+HOMES_DIR="${HOMES_CONTAINER_DIR:-/data/homes}"
 KB_DIR="${KB_CONTAINER_DIR:-/data/knowledge_bases}"
+AVATARS_DIR="${AVATARS_CONTAINER_DIR:-/data/avatars}"
 
-for dir in "$WORKSPACES_DIR" "$SKILLS_DIR" "$KB_DIR" /app/logs; do
+for dir in "$WORKSPACES_DIR" "$SKILLS_DIR" "$HOMES_DIR" "$KB_DIR" "$AVATARS_DIR" /app/logs; do
     mkdir -p "$dir"
     chown -R "$APP_USER":"$APP_USER" "$dir"
 done

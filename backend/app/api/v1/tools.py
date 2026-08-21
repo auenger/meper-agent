@@ -302,7 +302,7 @@ async def create_custom_tool(
 )
 async def upload_tools(
     files: list[UploadFile] = File(..., description="Skill Markdown 文件（支持多文件/文件夹上传）"),
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    creator: UserResponse = Depends(require_any_role("admin", "developer")),
 ) -> ToolUploadResponse:
     """Upload one or more Markdown Skill files to register tools. (AC3)
 
@@ -422,7 +422,7 @@ async def upload_tools(
         # Parse directory
         try:
             parsed_dir = parse_skill_directory(valid_files, dir_name)
-            doc = await ToolService.create_tool_from_directory(parsed_dir, dir_name)
+            doc = await ToolService.create_tool_from_directory(parsed_dir, dir_name, created_by=creator.id)
             created.append(_doc_to_response(doc))
             processed_dirs.add(dir_name)
         except SkillParseError as exc:
@@ -473,7 +473,7 @@ async def upload_tools(
             continue
 
         try:
-            doc = await ToolService.create_tool_from_parsed(parsed, source_file=filename)
+            doc = await ToolService.create_tool_from_parsed(parsed, source_file=filename, created_by=creator.id)
             created.append(_doc_to_response(doc))
         except ConflictError:
             errors.append(

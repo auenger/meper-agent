@@ -48,6 +48,8 @@ class MessageResponse(BaseModel):
     files: list[FileRefResponse] = []
     token_usage: dict = Field(default_factory=dict)
     created_at: str
+    # 本轮执行请求 id——消息级反馈（§8.2）的轮次键；缺它刷新后前端拿不到按钮
+    request_id: str = ""
 
     model_config = {"populate_by_name": True}
 

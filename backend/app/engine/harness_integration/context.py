@@ -26,7 +26,7 @@ def get_checkpointer() -> Any:
 # 端点 `/api/v1/tools/builtin` 与 `resolve_harness_context` 共同引用此名单,
 # 保证「端点展示的 = 运行时注入的」。
 _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
-    "bash", "read", "write", "glob", "grep", "ask_clarification",
+    "bash", "read", "write", "edit", "glob", "grep", "ask_clarification",
     "run_code", "parse_file",
 )
 
@@ -35,7 +35,7 @@ _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
 # run_code(代码即工具编排)默认启用:新建 Agent 的 DEFAULT_BUILTIN_CONFIG
 # 自动包含;存量 Agent 在配置页手动勾选后生效。
 _CONFIGURABLE_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
-    {"bash", "read", "write", "glob", "grep", "run_code", "parse_file"}
+    {"bash", "read", "write", "edit", "glob", "grep", "run_code", "parse_file"}
 )
 
 # run_code 代码内可桥接调用的工具排除名单(不进 tools_map)。
@@ -44,11 +44,11 @@ _CONFIGURABLE_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
 #   无法挂起 graph(会退化为异常),失去人机协同语义;
 # - delegate_to_subagent / load_skill:子代理/技能加载改变执行上下文,
 #   不适合在代码内嵌套;
-# - bash/read/write/glob/grep:文件 shell 敏感面,代码内用不到。
+# - bash/read/write/edit/glob/grep:文件 shell 敏感面,代码内用不到。
 _RUN_CODE_EXCLUDED_TOOLS: frozenset[str] = frozenset({
     "run_code", "ask_clarification", "confirm_workflow",
     "delegate_to_subagent", "load_skill",
-    "bash", "read", "write", "glob", "grep",
+    "bash", "read", "write", "edit", "glob", "grep",
 })
 
 # 新建 Agent 时默认启用的内建工具(白名单语义:列表中的工具才会注入)。
@@ -97,7 +97,7 @@ def _resolve_builtin_tools(agent: dict) -> list:
 
     task/workflow 工具始终注入;harness 内建工具与 app 层 parse_file 按
     builtin_config 白名单过滤(ask_clarification 等不可配工具始终注入)。
-    bash 选中时连带 read/write。
+    bash 选中时连带 read/write/edit。
     run_code 受全局开关 RUN_CODE_ENABLED 控制,关闭时视为未配置。
     """
     from agent_flow_harness import BUILTIN_TOOLS
@@ -114,7 +114,7 @@ def _resolve_builtin_tools(agent: dict) -> list:
     if not settings.RUN_CODE_ENABLED:
         builtin_config.discard("run_code")
     if "bash" in builtin_config:
-        builtin_config |= {"read", "write"}
+        builtin_config |= {"read", "write", "edit"}
 
     for name in _INJECTED_BUILTIN_TOOL_NAMES:
         # parse_file 是 app 层工具,harness 注册表取不到,补 PARSE_TOOL_BY_NAME 查找。
@@ -128,8 +128,20 @@ def _resolve_builtin_tools(agent: dict) -> list:
     return tools
 
 
-async def _resolve_skill_tools(agent: dict) -> list:
-    """解析 Skill 工具(load_skill),用 harness SkillManager。"""
+async def _resolve_skill_tools(
+    agent: dict,
+    user_id: str = "",
+    session_id: str = "",
+    loaded_tracker: set | None = None,
+    request_id: str = "",
+) -> list:
+    """解析 Skill 工具(load_skill),用 harness SkillManager。
+
+    平台用户（非渠道）且 agent 开启 user_skills_enabled 时扩展为双根：
+    个人目录（users/{uid}/{name}）+ 全局池；重名解析个人优先（§5.2）。
+    on_skill_loaded 回调做 load_count 埋点 + 先读后写 tracker；
+    request_id 随 load 日志落库——消息级反馈（§8.2）的轮次键。
+    """
     from pathlib import Path
 
     from agent_flow_harness import SkillManager
@@ -138,20 +150,92 @@ async def _resolve_skill_tools(agent: dict) -> list:
     from app.models.compat import resolve_skill_ids
 
     skill_ids = resolve_skill_ids(agent)
-    if not skill_ids:
-        return []
 
     from app.services.tool_service import ToolService
 
     skills_dir = Path(settings.SKILLS_CONTAINER_DIR).expanduser()
+
+    allowed_names: set[str] = set()
+    official_load_ids: dict[str, str] = {}  # name → tool_id（官方埋点，§7.6 积分统一）
+    if skill_ids:
+        skill_docs = await ToolService.get_tools_by_ids(skill_ids)
+        for d in skill_docs:
+            if d.get("name"):
+                allowed_names.add(d["name"])
+                official_load_ids[d["name"]] = d["_id"]
+
+    # 双根扩展：用户个人技能（平台用户 + agent 开关）
+    extra_skill_files: dict[str, Path] = {}
+    extra_skill_ids: dict[str, str] = {}
+    user_enabled = (
+        user_id and not user_id.startswith("channel:")
+        and agent.get("user_skills_enabled", True)
+    )
+    if user_enabled:
+        from app.services.user_skill_service import UserSkillService
+
+        for s in await UserSkillService.enabled_skills(user_id):
+            # load_skill 键 = effective_name（安装别名或原名，§7.4）
+            key = s.get("effective_name") or s.get("name", "")
+            content_path = s.get("content_path")  # 按 owner/全局池解析（§7.6 修复路径 bug）
+            if key and content_path and key not in extra_skill_files:
+                extra_skill_files[key] = Path(content_path)
+                extra_skill_ids[key] = s.get("_id", "")
+                allowed_names.add(key)
+
+    if not allowed_names:
+        return []
+
+    def _on_skill_loaded(name: str) -> None:
+        """load 回调：tracker（先读后写）+ load_count 埋点（用户/官方统一，§7.6）。
+
+        埋点 fire-and-forget，但必须有异常观察（L-2）——Mongo 抖动时 load
+        日志丢失直接影响该轮投票的技能派发，静默丢不可接受。
+        """
+        if loaded_tracker is not None:
+            loaded_tracker.add(name)
+        import asyncio
+
+        from app.services.user_skill_service import UserSkillService
+
+        try:
+            loop = asyncio.get_running_loop()
+            usk_id = extra_skill_ids.get(name)
+            tool_id = official_load_ids.get(name)
+            coro = (
+                UserSkillService.record_load(
+                    skill_id=usk_id, name=name, user_id=user_id, session_id=session_id,
+                    request_id=request_id,
+                )
+                if usk_id
+                else UserSkillService.record_official_load(
+                    tool_id=tool_id, name=name, user_id=user_id, session_id=session_id,
+                    request_id=request_id,
+                )
+                if tool_id
+                else None
+            )
+            if coro is None:
+                return
+
+            def _on_done(task: asyncio.Task) -> None:
+                if not task.cancelled() and task.exception() is not None:
+                    logger.error(
+                        "skill_load_tracking_failed",
+                        skill=name, user_id=user_id, session_id=session_id,
+                        error=repr(task.exception()),
+                    )
+
+            loop.create_task(coro).add_done_callback(_on_done)
+        except RuntimeError:
+            pass  # 无运行循环（如 preview）——跳过埋点
+
     skill_mgr = SkillManager(
         skills_dir=skills_dir,
         base_path_prefix=settings.SANDBOX_CONTAINER_SKILLS_DIR if settings.SANDBOX_ENABLED else None,
+        extra_skill_files=extra_skill_files or None,
+        on_skill_loaded=_on_skill_loaded,
     )
-    skill_docs = await ToolService.get_tools_by_ids(skill_ids)
-    allowed_names = {d.get("name") for d in skill_docs if d.get("name")}
-    if not allowed_names:
-        return []
     skill_mgr.set_allowed(allowed_names)
     return [skill_mgr.make_load_tool()]
 
@@ -267,19 +351,44 @@ async def _resolve_custom_tools(agent: dict) -> tuple[list, list[dict]]:
     return all_tools, errors
 
 
-async def resolve_all_tools(agent: dict) -> tuple[list, list[dict]]:
+async def resolve_all_tools(
+    agent: dict,
+    user_id: str = "",
+    session_id: str = "",
+    loaded_tracker: set | None = None,
+    request_id: str = "",
+) -> tuple[list, list[dict]]:
     """统一工具解析入口 —— 运行时和 preview 共用。
+
+    传 user_id（平台用户）时额外装配：load_skill 双根（个人技能）+
+    skill_manage / memory 常驻工具（§2）；preview 不传则保持原工具集。
 
     Returns:
         (all_tools, load_errors)
     """
     all_tools = _resolve_builtin_tools(agent)
-    all_tools.extend(await _resolve_skill_tools(agent))
+    all_tools.extend(
+        await _resolve_skill_tools(agent, user_id, session_id, loaded_tracker, request_id=request_id)
+    )
     all_tools.extend(await _resolve_kb_tools(agent))
     mcp_tools, mcp_errors = await _resolve_mcp_tools(agent)
     all_tools.extend(mcp_tools)
     custom_tools, custom_errors = await _resolve_custom_tools(agent)
     all_tools.extend(custom_tools)
+    if user_id and not user_id.startswith("channel:"):
+        from app.db.mongodb import get_database
+        from app.engine.user_skills.tools import make_user_skill_tools
+
+        # 管理员无个人技能：会话内 create 直接产出官方（§7.6）——按角色装配
+        is_admin = False
+        user_doc = await get_database()["users"].find_one(
+            {"_id": user_id}, {"role": 1}
+        )
+        if user_doc and (user_doc.get("role") or "") in ("admin", "developer"):
+            is_admin = True
+        all_tools.extend(
+            make_user_skill_tools(user_id, session_id, loaded_tracker or set(), is_admin=is_admin)
+        )
     errors = mcp_errors + custom_errors
     return all_tools, errors
 
@@ -344,8 +453,16 @@ async def resolve_harness_context(
     model_ref = agent.get("default_model") or (agent.get("llm_config") or {}).get("default_model", "")
     context_window = await get_context_window_async(model_ref)
 
-    # 2. 工具解析:统一调用 resolve_all_tools(与 preview 共用,消除双路径不一致)
-    all_tools, load_errors = await resolve_all_tools(agent)
+    # 2. 工具解析:统一调用 resolve_all_tools(与 preview 共用,消除双路径不一致)。
+    #    平台用户额外装配个人技能双根 + skill_manage/memory 工具(§2)。
+    loaded_tracker: set[str] = set()
+    all_tools, load_errors = await resolve_all_tools(
+        agent,
+        user_id=state.get("user_id", ""),
+        session_id=state.get("session_id", ""),
+        loaded_tracker=loaded_tracker,
+        request_id=state.get("request_id", ""),
+    )
 
     # 3. 构造 agent_doc(含 token budget guard 防止会话被滥用)
     agent_max_tokens = int(agent.get("max_tokens") or 0)

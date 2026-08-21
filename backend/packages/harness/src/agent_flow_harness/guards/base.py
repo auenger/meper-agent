@@ -5,7 +5,7 @@ LangGraph nodes (``[guard_in] -> react -> [guard_out] -> END``). It decides
 whether a step may run (``check_in``) and whether the step's output is
 accepted (``check_out``), returning a :class:`GuardResult`.
 
-Guard vs Middleware (SPEC §9): a Guard *blocks* the flow; a Middleware
+Guard vs Middleware: a Guard *blocks* the flow; a Middleware
 *observes/rewrites* without blocking.
 """
 

@@ -88,6 +88,44 @@ class LocalSandbox(Sandbox):
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content, encoding="utf-8")
 
+    def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> str:
+        """就地编辑 work_dir 内文件：读全文（不截断）→ 唯一性校验 → 替换写回。"""
+        resolved = self._safe_resolve(path, for_write=False)
+        if not resolved.exists():
+            raise FileNotFoundError(f"File not found: {path}")
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+
+        count = content.count(old_string)
+        if count == 0:
+            raise ValueError(
+                f"old_string not found in '{path}'. "
+                "Read the file again and retry with an exact match (including whitespace)."
+            )
+        if count > 1 and not replace_all:
+            raise ValueError(
+                f"old_string appears {count} times in '{path}'. "
+                "Provide a longer, more unique old_string, or set replace_all=true."
+            )
+
+        new_content = (
+            content.replace(old_string, new_string)
+            if replace_all
+            else content.replace(old_string, new_string, 1)
+        )
+        resolved.write_text(new_content, encoding="utf-8")
+        occurrences = count if replace_all else 1
+        return (
+            f"Successfully edited '{path}' "
+            f"({occurrences} replacement{'s' if occurrences > 1 else ''})."
+        )
+
     def glob(self, path: str, pattern: str) -> list[str]:
         base = self._safe_resolve(path, for_write=False)
         if not base.exists():

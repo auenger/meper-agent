@@ -61,6 +61,7 @@ async def init_critical_path() -> None:
 
 async def ensure_all_indexes() -> TriggerRepository:
     """Create indexes for all collections (parallelized, idempotent)."""
+    from app.db.indexes import create_indexes
     from app.db.mongodb import get_database
     from app.services.api_key_service import (
         ApiKeyService,  # noqa: F401 (avoid eager import cycle)
@@ -76,6 +77,10 @@ async def ensure_all_indexes() -> TriggerRepository:
         RoleService.ensure_indexes(),
         ApiKeyService.ensure_indexes(),
         ExecutionLogService.ensure_indexes(),
+        # 全量核心索引（users/agents/tools/kb/user_skills/skill_logs/
+        # message_feedback 等）——此前只能手动 python -m app.db.indexes，
+        # 新环境部署会缺（含消息反馈唯一索引的并发防线）
+        create_indexes(),
         return_exceptions=True,
     )
 
@@ -84,6 +89,15 @@ async def ensure_all_indexes() -> TriggerRepository:
     # Backfill stale system-role permission lists written by older code
     # (marker-guarded, runs once per database).
     await RoleService.backfill_system_role_permissions()
+    # v2（§7.6 权限原则）：viewer 补 execution:read:own（个人数据），
+    # operator/viewer 补 knowledge:read（平台资源只读全员开放）
+    await RoleService._backfill_permissions(
+        "backfill_user_scoped_perms_v2",
+        {
+            "viewer": ["execution:read:own", "knowledge:read"],
+            "operator": ["knowledge:read"],
+        },
+    )
     # Backfill misclassified ext-call execution logs (marker-guarded, once).
     await ExecutionLogService.backfill_source_channel()
     return trigger_repo

@@ -138,6 +138,7 @@ class ToolService:
     async def create_tool_from_parsed(
         parsed: ParsedSkill,
         source_file: str = "",
+        created_by: str = "",
     ) -> dict:
         """Create a Tool from a parsed Markdown Skill. (AC3)
 
@@ -148,6 +149,7 @@ class ToolService:
         Args:
             parsed: Parsed skill data (name/description/schemas/instructions).
             source_file: Original filename.
+            created_by: 创建者平台用户 id（广场展示真实创建者，§7.6）。
 
         Returns:
             Created Tool MongoDB document.
@@ -167,6 +169,8 @@ class ToolService:
             "source_file": source_file,
             "version": 1,
             "tags": [],
+            "created_by": created_by,
+            "stats": {"load_count": 0, "up": 0, "down": 0},
             "created_at": now_iso,
             "updated_at": now_iso,
         }
@@ -193,6 +197,7 @@ class ToolService:
     async def create_tool_from_directory(
         parsed_dir: ParsedSkillDirectory,
         directory_name: str = "",
+        created_by: str = "",
     ) -> dict:
         """Create a Tool from a parsed Skill directory package.
 
@@ -231,6 +236,8 @@ class ToolService:
             "source_file": directory_name,
             "version": 1,
             "tags": [],
+            "created_by": created_by,
+            "stats": {"load_count": 0, "up": 0, "down": 0},
             "created_at": now_iso,
             "updated_at": now_iso,
         }

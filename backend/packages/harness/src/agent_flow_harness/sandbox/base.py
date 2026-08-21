@@ -54,6 +54,22 @@ class Sandbox(ABC):
         ...
 
     @abstractmethod
+    def edit_file(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        *,
+        replace_all: bool = False,
+    ) -> str:
+        """就地编辑 work_dir 内文件（字符串替换）。
+
+        old_string 在文件中必须唯一（replace_all=False 时），否则抛
+        ValueError 说明匹配次数；未匹配抛 ValueError。返回成功消息。
+        """
+        ...
+
+    @abstractmethod
     def glob(self, path: str, pattern: str) -> list[str]:
         """glob 文件匹配。"""
         ...
