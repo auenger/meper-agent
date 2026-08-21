@@ -56,7 +56,11 @@ async def test_preview_uses_temporary_voice_without_saving(monkeypatch) -> None:
             return None
 
     monkeypatch.setattr(voice_config, "get_runtime_config", fake_runtime)
-    monkeypatch.setattr(voice_config, "VolcanoTTSClient", FakeTTSClient)
+    monkeypatch.setattr(
+        voice_config,
+        "create_tts_client",
+        lambda cfg: FakeTTSClient(cfg.tts),
+    )
 
     response = await voice_config.preview_voice(
         VoicePreviewRequest(voice_type="preview-voice", text="试听内容")

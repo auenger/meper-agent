@@ -28,7 +28,7 @@ from app.core.security import get_current_user
 from app.services.voice_config_service import VoiceConfigService
 from app.services.voice_ticket_service import consume_ticket
 from app.voice.config import get_runtime_config
-from app.voice.providers.volcano import VolcanoASRClient, VolcanoTTSClient
+from app.voice.providers.factory import create_asr_client, create_tts_client
 from app.voice.session import VoiceSession
 
 router = APIRouter(tags=["voice"])
@@ -70,8 +70,8 @@ async def voice_realtime(websocket: WebSocket, token: str = "", ticket: str = ""
         websocket,
         user_id,
         cfg=cfg,
-        asr_factory=lambda: VolcanoASRClient(cfg.asr),
-        tts_factory=lambda: VolcanoTTSClient(cfg.tts),
+        asr_factory=lambda: create_asr_client(cfg),
+        tts_factory=lambda: create_tts_client(cfg),
         principal=principal,
     )
     logger.info(

@@ -25,7 +25,6 @@ interface TurnMsg {
   role: 'user' | 'agent'
   text: string
 }
-
 export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark' | 'light' }) {
   const [voiceState, setVoiceState] = useState<string>('idle')
   const [connected, setConnected] = useState(false)
@@ -218,7 +217,7 @@ export function VoiceHomepage({ agents, theme }: { agents: Agent[]; theme: 'dark
         </div>
 
         <div className={`text-xs ${dark ? 'text-[#71717a]' : 'text-slate-400'}`}>
-          {recorder.recording ? '松开结束，Agent 会语音回复' : '按住麦克风（或空格）说话，松开自动发送（需配置火山 ASR/TTS 凭证）'}
+          {recorder.recording ? '松开结束，Agent 会语音回复' : '按住麦克风（或空格）说话，松开自动发送（需配置语音 ASR/TTS 凭证）'}
         </div>
         {(recorder.error || errorMsg) && (
           <div className="text-xs text-rose-500">{recorder.error || errorMsg}</div>

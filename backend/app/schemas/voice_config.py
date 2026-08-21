@@ -6,6 +6,8 @@ encrypted value). Response: the key is masked, never plaintext.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -28,10 +30,53 @@ class VADConfigUpdate(BaseModel):
     silence_ms: int = 600
 
 
+class ZhipuConfigUpdate(BaseModel):
+    api_key: str | None = Field(default=None, description="留空=不修改")
+    asr_model: str = Field(default="glm-asr-2512", min_length=1, max_length=200)
+    asr_url: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+        min_length=1,
+        max_length=2000,
+    )
+    tts_model: str = Field(default="glm-tts", min_length=1, max_length=200)
+    tts_url: str = Field(
+        default="https://open.bigmodel.cn/api/paas/v4/audio/speech",
+        min_length=1,
+        max_length=2000,
+    )
+    voice_type: str = Field(default="tongtong", min_length=1, max_length=200)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    volume: float = Field(default=1.0, ge=0.0, le=2.0)
+
+
+class AliyunConfigUpdate(BaseModel):
+    api_key: str | None = Field(default=None, description="留空=不修改")
+    asr_model: str = Field(default="qwen3-asr-flash", min_length=1, max_length=200)
+    asr_url: str = Field(
+        default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+        min_length=1,
+        max_length=2000,
+    )
+    tts_model: str = Field(default="qwen3-tts-flash", min_length=1, max_length=200)
+    tts_url: str = Field(
+        default=(
+            "https://dashscope.aliyuncs.com/api/v1/services/aigc/"
+            "multimodal-generation/generation"
+        ),
+        min_length=1,
+        max_length=2000,
+    )
+    voice_type: str = Field(default="Cherry", min_length=1, max_length=200)
+    language_type: str = Field(default="Chinese", min_length=1, max_length=50)
+
+
 class VoiceConfigUpdate(BaseModel):
+    active_provider: Literal["volcano", "zhipu", "aliyun"] = "volcano"
     api_key: str | None = Field(default=None, description="留空=不修改")
     asr: ASRConfigUpdate = Field(default_factory=ASRConfigUpdate)
     tts: TTSConfigUpdate = Field(default_factory=TTSConfigUpdate)
+    zhipu: ZhipuConfigUpdate = Field(default_factory=ZhipuConfigUpdate)
+    aliyun: AliyunConfigUpdate = Field(default_factory=AliyunConfigUpdate)
     audio: AudioConfigUpdate = Field(default_factory=AudioConfigUpdate)
     vad: VADConfigUpdate = Field(default_factory=VADConfigUpdate)
 
@@ -66,10 +111,34 @@ class VADConfigResponse(BaseModel):
     silence_ms: int
 
 
+class ZhipuConfigResponse(BaseModel):
+    api_key_masked: str
+    asr_model: str
+    asr_url: str
+    tts_model: str
+    tts_url: str
+    voice_type: str
+    speed: float
+    volume: float
+
+
+class AliyunConfigResponse(BaseModel):
+    api_key_masked: str
+    asr_model: str
+    asr_url: str
+    tts_model: str
+    tts_url: str
+    voice_type: str
+    language_type: str
+
+
 class VoiceConfigResponse(BaseModel):
+    active_provider: Literal["volcano", "zhipu", "aliyun"]
     api_key_masked: str
     asr: ASRConfigResponse
     tts: TTSConfigResponse
+    zhipu: ZhipuConfigResponse
+    aliyun: AliyunConfigResponse
     audio: AudioConfigResponse
     vad: VADConfigResponse
     last_test_success: bool | None

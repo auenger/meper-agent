@@ -205,7 +205,7 @@ export function AgentEditorPage({
             <span>
               <span className="block text-xs font-semibold text-[#f4f4f5]">允许语音对话</span>
               <span className="mt-0.5 block text-[11px] leading-relaxed text-[#71717a]">
-                还需配置全局火山语音凭证，两个条件满足后才显示麦克风入口。
+                还需配置全局语音凭证，两个条件满足后才显示麦克风入口。
               </span>
             </span>
           </span>
@@ -401,7 +401,6 @@ const ToolGroup: FC<{ title: string; hint?: string; children: ReactNode }> = ({ 
     {hint ? <p className="text-[11px] text-[#52525b] italic">{hint}</p> : <div className="flex flex-wrap gap-1.5">{children}</div>}
   </div>
 );
-
 const ToolChip: FC<{ label: string; checked: boolean; onToggle: () => void }> = ({ label, checked, onToggle }) => (
   <button
     type="button"

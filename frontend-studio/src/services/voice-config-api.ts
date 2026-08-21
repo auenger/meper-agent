@@ -18,11 +18,33 @@ export interface VoiceTTSConfig {
 }
 export interface VoiceAudioConfig { input_rate: number; output_rate: number }
 export interface VoiceVADConfig { mode: string; threshold: number; silence_ms: number }
-
+export type VoiceProvider = 'volcano' | 'zhipu' | 'aliyun'
+export interface ZhipuVoiceConfig {
+  api_key_masked: string
+  asr_model: string
+  asr_url: string
+  tts_model: string
+  tts_url: string
+  voice_type: string
+  speed: number
+  volume: number
+}
+export interface AliyunVoiceConfig {
+  api_key_masked: string
+  asr_model: string
+  asr_url: string
+  tts_model: string
+  tts_url: string
+  voice_type: string
+  language_type: string
+}
 export interface VoiceConfig {
+  active_provider: VoiceProvider
   api_key_masked: string
   asr: VoiceASRConfig
   tts: VoiceTTSConfig
+  zhipu: ZhipuVoiceConfig
+  aliyun: AliyunVoiceConfig
   audio: VoiceAudioConfig
   vad: VoiceVADConfig
   last_test_success: boolean | null
@@ -30,9 +52,29 @@ export interface VoiceConfig {
 }
 
 export interface VoiceConfigInput {
+  active_provider: VoiceProvider
   api_key: string | null
   asr: Record<string, never>
   tts: { voice_type: string }
+  zhipu: {
+    api_key: string | null
+    asr_model: string
+    asr_url: string
+    tts_model: string
+    tts_url: string
+    voice_type: string
+    speed: number
+    volume: number
+  }
+  aliyun: {
+    api_key: string | null
+    asr_model: string
+    asr_url: string
+    tts_model: string
+    tts_url: string
+    voice_type: string
+    language_type: string
+  }
   audio: { input_rate: number; output_rate: number }
   vad: { mode: string; threshold: number; silence_ms: number }
 }
