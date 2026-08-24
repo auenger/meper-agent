@@ -82,9 +82,41 @@ export interface NodeStageInfo {
   nodeType: string
   state: NodeExecState
   events: TimelineEvent[]
+  /** events 中被 rewind 废弃的旧轮事件（渲染时降透明 + 「已废弃」徽标） */
+  superseded?: Set<TimelineEvent>
   duration?: string
   /** 节点标签（可选，来自事件 data.node_label） */
   label?: string
   /** 节点 token 消耗（agent 节点 node_complete 事件 data.usage.total_tokens） */
   tokenTotal?: number
+}
+
+/**
+ * 计算被 rewind 退回重跑废弃的旧轮事件索引：某 node_complete / node_failed
+ * 事件的 node_id 出现在其后 rewoun 事件的 data.rewound_nodes 里，说明该轮
+ * 已被退回重跑覆盖。废弃事件仅作展示（降透明 + 「已废弃」徽标）；状态推导 /
+ * 耗时 / token 统计应先剔除（否则重跑后旧轮记录会把节点误显示为
+ * 「已完成 / 失败」）。天然支持多轮 rewind：每轮只被其后的 rewoun 覆盖，
+ * 最新一轮之后无 rewoun，保留。
+ */
+export function computeSupersededEventIdxs(timeline: TimelineEvent[]): Set<number> {
+  const superseded = new Set<number>()
+  for (let i = 0; i < timeline.length; i++) {
+    const evt = timeline[i]
+    if (evt.event_type !== 'node_complete' && evt.event_type !== 'node_failed') continue
+    const nodeId = evt.data?.node_id
+    if (typeof nodeId !== 'string' || !nodeId) continue
+    for (let j = i + 1; j < timeline.length; j++) {
+      const later = timeline[j]
+      if (later.event_type !== 'rewoun') continue
+      const rewound = Array.isArray(later.data?.rewound_nodes)
+        ? (later.data.rewound_nodes as unknown[])
+        : []
+      if (rewound.includes(nodeId)) {
+        superseded.add(i)
+        break
+      }
+    }
+  }
+  return superseded
 }

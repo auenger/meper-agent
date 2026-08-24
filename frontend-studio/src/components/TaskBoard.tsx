@@ -24,6 +24,7 @@ import { userApi } from '../services/user-api'
 import { useAuthStore } from '../stores/auth-store'
 import { TASK_STATUS_STYLES } from '../constants/task-status'
 import { TaskBoardCard } from './task/TaskBoardCard'
+import { RewindModal } from './task/RewindModal'
 import { Modal, Select, Button } from './ui'
 import { confirmDialog } from './ui/confirm'
 import { getErrorMessage } from '../lib/api-client'
@@ -44,6 +45,9 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
   const [createOpen, setCreateOpen] = useState(false)
   const [newTask, setNewTask] = useState<{ entryId: string; input: string }>({ entryId: '', input: '' })
   const [actionError, setActionError] = useState<string | null>(null)
+
+  /* ─── Rewind modal state（看板卡片「退回重跑」打开的共享弹窗） ─── */
+  const [rewindTask, setRewindTask] = useState<TaskSummary | null>(null)
 
   /* ─── 6 列并发列表查询（按 status 分桶，刷新由 WS task_status 事件驱动） ─── */
   const boardQueries = useQueries({
@@ -361,6 +365,7 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
                         onRetry={handleRetry}
                         onDelete={handleDelete}
                         onApprovalSubmit={handleApprovalSubmit}
+                        onRewind={setRewindTask}
                         interveneLoading={intervene.isPending}
                         deleteLoading={removeTask.isPending}
                       />
@@ -372,6 +377,16 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
           })
         )}
       </div>
+
+      {/* ─── 退回重跑 Modal（卡片「退回重跑」打开，与详情页共享组件） ─── */}
+      {rewindTask && (
+        <RewindModal
+          task={rewindTask}
+          open={!!rewindTask}
+          onClose={() => setRewindTask(null)}
+          resolveTemplateId={resolveTemplateId}
+        />
+      )}
 
       {/* ─── 新建任务 Modal ─── */}
       <Modal

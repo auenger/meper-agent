@@ -22,7 +22,7 @@ import {
 import { tasksApi, taskKeys, type TaskDetail, type TimelineEvent, type NodeTimelineEntry } from '../../services/tasks-api'
 import { useQuery } from '@tanstack/react-query'
 import { workflowsApi, workflowKeys } from '../../services/workflows-api'
-import { getNodeExecState, hasTaskRejectSignal, type NodeExecState, type NodeStageInfo } from './task-flow-utils'
+import { getNodeExecState, hasTaskRejectSignal, computeSupersededEventIdxs, type NodeExecState, type NodeStageInfo } from './task-flow-utils'
 import { DataView } from './DataView'
 import { Spin } from '../ui'
 import AgentTimeline from './AgentTimeline'
@@ -87,6 +87,8 @@ const EVENT_META: Record<string, { label: string; color: string }> = {
   intervene_cancel: { label: '人工取消', color: '#EF4444' },
   intervene_resume: { label: '人工恢复', color: '#3B82F6' },
   intervene_retry: { label: '人工重试', color: '#F59E0B' },
+  // rewind 退回重跑（后端事件名即 rewoun）：data 含 rewound_nodes
+  rewoun: { label: '已退回重跑', color: '#F59E0B' },
 }
 
 /** 审批已完成事件类型集合（用于过滤冗余的 waiting_human / human node_complete） */
@@ -278,14 +280,20 @@ export function TaskFlowTimeline({ task, theme = 'dark', resolveTemplateId }: Ta
                       {stage.events.map((evt, idx) => {
                         const emeta = EVENT_META[evt.event_type] ?? { label: evt.event_type, color: '#94A3B8' }
                         const label = nodeEventLabel(evt)
+                        // rewind 废弃的旧轮记录：降透明 + 徽标（详细 data 保留，
+                        // 其 output_summary 是旧轮输出的唯一线索）
+                        const superseded = stage.superseded?.has(evt) ?? false
                         // 冗余字段过滤：node_id/node_type/node_label/usage 已在卡片头部
                         // 消费、output_summary 已在「节点输出」分区渲染（节点无完整输出时
                         // 保留作唯一线索），过滤后为空的事件不再渲染「详细数据」区块。
                         const filteredData = filterEventData(evt, output !== undefined)
                         return (
-                          <div key={idx} className="text-[10px]">
+                          <div key={idx} className={`text-[10px]${superseded ? ' opacity-50' : ''}`}>
                             <div className="flex items-baseline gap-1.5 flex-wrap">
                               <span className="font-medium" style={{ color: emeta.color }}>{label}</span>
+                              {superseded && (
+                                <span className="text-[9px] text-[#a1a1aa] bg-[#27272a] rounded px-1 py-0.5">已废弃</span>
+                              )}
                               <span className={mutedText}>{fmtTime(evt.timestamp)}</span>
                               {evt.actor && evt.actor !== 'system' && (
                                 <span className={mutedText}>· {evt.actor}</span>
@@ -459,28 +467,39 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
   const hasAnyApproval = timeline.some((e) => APPROVE_TYPES.has(e.event_type))
   // 任务级拒绝信号（reject / 超时 auto_reject·fail），兜底无法归属节点的存量事件
   const taskRejected = hasTaskRejectSignal(timeline)
+  // rewind 废弃的旧轮事件（node_complete/node_failed 被其后 rewoun 覆盖）：
+  // 展示保留（标记「已废弃」），状态推导 / 耗时 / token 剔除，避免旧轮误导
+  const supersededIdxs = computeSupersededEventIdxs(timeline)
 
   // 收集每个节点的相关事件 + 首次出现顺序（全量收集，不做状态相关过滤）
   const order: string[] = []
   const eventsByNode = new Map<string, TimelineEvent[]>()
+  const supersededByNode = new Map<string, Set<TimelineEvent>>()
   const typeByNode = new Map<string, string>()
 
-  for (const evt of timeline) {
+  timeline.forEach((evt, idx) => {
     const nodeId = typeof evt.data?.node_id === 'string' ? evt.data.node_id : undefined
     const nodeType = typeof evt.data?.node_type === 'string' ? evt.data.node_type : undefined
-    if (!nodeId) continue
+    if (!nodeId) return
     if (!eventsByNode.has(nodeId)) {
       eventsByNode.set(nodeId, [])
       order.push(nodeId)
     }
     // 展示过滤：存在审批完成事件时，waiting_human 纯冗余（不参与状态推导，可安全跳过）
-    if (hasAnyApproval && evt.event_type === 'waiting_human') continue
+    if (hasAnyApproval && evt.event_type === 'waiting_human') return
     eventsByNode.get(nodeId)!.push(evt)
+    if (supersededIdxs.has(idx)) {
+      const set = supersededByNode.get(nodeId) ?? new Set<TimelineEvent>()
+      set.add(evt)
+      supersededByNode.set(nodeId, set)
+    }
     if (nodeType) typeByNode.set(nodeId, nodeType)
-  }
+  })
 
   return order.map((nodeId) => {
     const evts = eventsByNode.get(nodeId)!
+    const superseded = supersededByNode.get(nodeId)
+    const liveEvts = superseded ? evts.filter((e) => !superseded.has(e)) : evts
     const nodeType = typeByNode.get(nodeId) ?? 'agent'
     // 决策兜底：存量任务的 reject 事件不带 node_id，无法归属到节点，
     // 用 variables 里的 decision 字段识别被拒绝的 human 节点
@@ -491,9 +510,11 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
         : undefined
     // 任务级拒绝兜底：存量超时事件（timeout auto_reject/fail）同样不带 node_id，
     // 暂停节点凭任务级信号判为已拒绝（超时 fail 不清空 checkpoint）
-    const state = getNodeExecState(evts, nodeId === pausedNode, decision, taskRejected)
-    const startEvt = evts.find((e) => e.event_type === 'node_start')
-    const endEvt = evts.find((e) => e.event_type === 'node_complete' || e.event_type === 'node_failed')
+    const state = getNodeExecState(liveEvts, nodeId === pausedNode, decision, taskRejected)
+    // 耗时取「最新一轮」（过滤废弃后最后一个 start / end）——rewind 多轮重跑下，
+    // 旧轮起点配新轮终点会把耗时算成跨轮总长
+    const startEvt = [...liveEvts].reverse().find((e) => e.event_type === 'node_start')
+    const endEvt = [...liveEvts].reverse().find((e) => e.event_type === 'node_complete' || e.event_type === 'node_failed')
     const duration = (startEvt && endEvt) ? humanDuration(startEvt.timestamp, endEvt.timestamp) : undefined
     const label = typeof evts[0]?.data?.node_label === 'string' ? evts[0].data.node_label as string : ''
     // 节点 token 用量（仅 agent 节点的 node_complete 事件 data.usage 携带）
@@ -503,7 +524,7 @@ function buildStages(task: TaskDetail): NodeStageInfo[] {
     const displayEvents = hasAnyApproval && nodeType === 'human'
       ? evts.filter((e) => e.event_type !== 'node_complete')
       : evts
-    return { nodeId, nodeType, state, events: displayEvents, duration, label, tokenTotal }
+    return { nodeId, nodeType, state, events: displayEvents, superseded, duration, label, tokenTotal }
   })
 }
 

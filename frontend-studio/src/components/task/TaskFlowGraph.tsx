@@ -20,7 +20,7 @@ import { workflowsApi, workflowKeys } from '../../services/workflows-api'
 import type { TaskDetail } from '../../services/tasks-api'
 import { toXyflowNodes, deriveXyflowEdgesFromNodes } from '../../features/workflow-editor/utils/canvas-converters'
 import WorkflowBaseNode from '../../features/workflow-editor/custom-nodes/WorkflowBaseNode'
-import { getNodeExecState, hasTaskRejectSignal, STATE_COLOR, type NodeExecState } from './task-flow-utils'
+import { getNodeExecState, hasTaskRejectSignal, computeSupersededEventIdxs, STATE_COLOR, type NodeExecState } from './task-flow-utils'
 
 /** 只读节点类型注册表（复用 WorkflowBaseNode） */
 const nodeTypes = { workflow: WorkflowBaseNode }
@@ -51,17 +51,21 @@ export function TaskFlowGraph({ task, theme = 'dark', resolveTemplateId }: TaskF
   // 推导每个 node_id 的执行状态：扫描 timeline 的 node_* 事件 + checkpoint.paused_at_node
   // + variables[node_id].decision（存量 reject 事件无 node_id 的兜底）
   // + 任务级拒绝信号（存量超时事件无 node_id 的兜底）
+  // rewind 废弃的旧轮 node_complete/node_failed 先剔除，否则重跑窗口内
+  // 节点仍显示旧轮的「已完成 / 失败」
   const stateByNode = useMemo(() => {
     const map = new Map<string, NodeExecState>()
-    const eventsByNode = new Map<string, typeof task.timeline>()
-    for (const evt of task.timeline ?? []) {
+    const timeline = task.timeline ?? []
+    const supersededIdxs = computeSupersededEventIdxs(timeline)
+    const eventsByNode = new Map<string, typeof timeline>()
+    timeline.forEach((evt, idx) => {
       const nodeId = typeof evt.data?.node_id === 'string' ? evt.data.node_id : undefined
-      if (!nodeId) continue
+      if (!nodeId || supersededIdxs.has(idx)) return
       if (!eventsByNode.has(nodeId)) eventsByNode.set(nodeId, [])
       eventsByNode.get(nodeId)!.push(evt)
-    }
+    })
     const pausedNode = task.checkpoint?.paused_at_node
-    const taskRejected = hasTaskRejectSignal(task.timeline ?? [])
+    const taskRejected = hasTaskRejectSignal(timeline)
     for (const [nodeId, evts] of eventsByNode) {
       const nodeVars = task.variables?.[nodeId]
       const decision =
