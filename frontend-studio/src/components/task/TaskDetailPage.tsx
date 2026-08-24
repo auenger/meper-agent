@@ -16,7 +16,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  ChevronLeft, Ban, RotateCcw, Trash2, Check, X, AlertTriangle, PanelRight, ChevronDown, Workflow,
+  ChevronLeft, Ban, RotateCcw, Trash2, Check, X, AlertTriangle, PanelRight, ChevronDown, Workflow, Undo2,
 } from 'lucide-react'
 import {
   tasksApi, taskKeys,
@@ -32,6 +32,7 @@ import { confirmDialog } from '../ui/confirm'
 import { TaskOutputFiles } from './TaskOutputFiles'
 import { TaskFlowTimeline } from './TaskFlowTimeline'
 import { TaskFlowGraph } from './TaskFlowGraph'
+import { RewindModal } from './RewindModal'
 import { APPROVAL_ACCENT } from './TaskBoardCard'
 import { DataView, DataViewEnhanceProvider } from './DataView'
 import { ApprovalView } from '../approval-view/ApprovalView'
@@ -201,6 +202,9 @@ export function TaskDetailPage({ taskId, mode, onBack, theme = 'dark' }: TaskDet
 
   /* ─── 右侧栏折叠 ─── */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+
+  /* ─── 退回重跑弹窗 ─── */
+  const [rewindOpen, setRewindOpen] = useState(false)
   const [basicOpen, setBasicOpen] = useState(true)
   const [inputOpen, setInputOpen] = useState(true)
   const [outputOpen, setOutputOpen] = useState(true)
@@ -257,6 +261,10 @@ export function TaskDetailPage({ taskId, mode, onBack, theme = 'dark' }: TaskDet
                     className="!bg-[#8B5CF6] !border-[#8B5CF6] hover:!bg-[#7c4fe0]">通过</Button>
                   <Button danger size="small" icon={<X className="w-3.5 h-3.5" />} onClick={() => openApproval('reject')} loading={interveneLoading}>驳回</Button>
                 </>
+              )}
+              {/* 退回重跑：无论有无 human options 都可用（对齐 frontend 老版） */}
+              {status === 'waiting_human' && (
+                <Button size="small" icon={<Undo2 className="w-3.5 h-3.5" />} onClick={() => setRewindOpen(true)} loading={interveneLoading}>退回重跑</Button>
               )}
               {status === 'failed' && (
                 <Button type="primary" size="small" icon={<RotateCcw className="w-3.5 h-3.5" />} onClick={handleRetry} loading={interveneLoading}>重试</Button>
@@ -435,6 +443,16 @@ export function TaskDetailPage({ taskId, mode, onBack, theme = 'dark' }: TaskDet
           )}
         </div>
       </div>
+
+      {/* ── 退回重跑弹窗（仅 full 模式触发；waiting_human 时操作栏可见入口） ── */}
+      {taskDetail && (
+        <RewindModal
+          task={taskDetail}
+          open={rewindOpen}
+          onClose={() => setRewindOpen(false)}
+          resolveTemplateId={resolveTemplateId}
+        />
+      )}
 
       {/* ── 审批弹窗（仅 full 模式触发） ── */}
       <Modal

@@ -15,7 +15,7 @@
  * - 整卡 onClick → 打开详情抽屉
  */
 import { useState } from 'react'
-import { Check, X, RotateCcw, Trash2, Ban, Hash, User } from 'lucide-react'
+import { Check, X, RotateCcw, Trash2, Ban, Hash, User, Undo2 } from 'lucide-react'
 import type { TaskSummary, NodeProgress, TaskStatusValue, CommentValue } from '../../services/tasks-api'
 import { TASK_STATUS_STYLES } from '../../constants/task-status'
 import { Button, Modal, Tag, Tooltip } from '../ui'
@@ -36,6 +36,8 @@ export interface TaskBoardCardProps {
   onDelete?: (task: TaskSummary) => void
   /** 看板内嵌审批：交由父级统一调 interveneMutation */
   onApprovalSubmit?: (task: TaskSummary, action: 'approve' | 'reject', comment: CommentValue) => void
+  /** 退回重跑：上抛给父级打开共享 RewindModal（卡片零逻辑） */
+  onRewind?: (task: TaskSummary) => void
   interveneLoading?: boolean
   deleteLoading?: boolean
 }
@@ -88,6 +90,7 @@ export function TaskBoardCard({
   onRetry,
   onDelete,
   onApprovalSubmit,
+  onRewind,
   interveneLoading = false,
   deleteLoading = false,
 }: TaskBoardCardProps) {
@@ -272,6 +275,16 @@ export function TaskBoardCard({
             >
               驳回
             </Button>
+            {onRewind && (
+              <Button
+                size="small"
+                icon={<Undo2 className="w-3 h-3" />}
+                onClick={() => onRewind(task)}
+                disabled={interveneLoading}
+              >
+                退回重跑
+              </Button>
+            )}
           </div>
         )}
 
