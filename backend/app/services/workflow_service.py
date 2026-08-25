@@ -14,7 +14,7 @@ from pymongo import ReturnDocument
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.db.mongodb import get_database
 from app.models.base import utc_now
-from app.models.workflow import Workflow, WorkflowStatus
+from app.models.workflow import Workflow, WorkflowNode, WorkflowStatus
 
 
 class WorkflowService:
@@ -36,14 +36,24 @@ class WorkflowService:
         description: str = "",
         tags: list[str] | None = None,
         created_by: str = "",
+        nodes: list[dict[str, Any]] | None = None,
+        edges: list[dict[str, Any]] | None = None,
     ) -> dict:
-        """Create a new Workflow template in draft status."""
+        """Create a new Workflow template in draft status.
+
+        ``nodes`` / ``edges`` 可选 — 默认为空（前端先建后画）；transfer
+        导入时直接携带完整图结构。
+        """
         wf = Workflow(
             name=name,
             description=description,
             tags=tags or [],
             created_by=created_by,
         )
+        if nodes is not None:
+            wf.nodes = [WorkflowNode(**n) for n in nodes]
+        if edges is not None:
+            wf.edges = edges
         doc = wf.model_dump(by_alias=True)
         result = await WorkflowService._collection().insert_one(doc)
 
