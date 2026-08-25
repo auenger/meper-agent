@@ -214,6 +214,7 @@ class UserService:
         username: str | None = None,
         role: str | None = None,
         status: str | None = None,
+        search: str | None = None,
     ) -> tuple[list[dict], int]:
         """List users with pagination and optional filtering. (AC1)
 
@@ -223,6 +224,8 @@ class UserService:
             username: Optional username substring filter (case-insensitive).
             role: Optional role filter (string, supports custom roles).
             status: Optional status filter.
+            search: Optional substring filter applied to username OR email
+                (用户管理页搜索框，匹配任一字段).
 
         Returns:
             Tuple of (user_docs, total_count). Password hashes are included
@@ -236,6 +239,9 @@ class UserService:
             filter_query["role"] = role
         if status:
             filter_query["status"] = status
+        if search:
+            rx = {"$regex": re.escape(search), "$options": "i"}
+            filter_query["$or"] = [{"username": rx}, {"email": rx}]
 
         total = await col.count_documents(filter_query)
         cursor = (

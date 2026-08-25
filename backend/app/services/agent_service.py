@@ -94,6 +94,7 @@ class AgentService:
         welcome_message: str = "",
         recommended_items: list[dict] | None = None,
         avatar: str = "",
+        user_skills_enabled: bool = True,
     ) -> dict:
         """Create a new Agent in draft status.
 
@@ -108,6 +109,7 @@ class AgentService:
             knowledge_base_ids: Optional list of bound knowledge base IDs.
             default_model: Model reference (model_xxx ULID or plain name).
             max_retry: Max LLM call retries on failure.
+            user_skills_enabled: 是否注入当前用户个人技能（transfer 导入用）.
 
         Returns:
             Created Agent MongoDB document.
@@ -139,6 +141,7 @@ class AgentService:
             voice_enabled=voice_enabled,
             max_retry=max_retry,
             max_tokens=max_tokens,
+            user_skills_enabled=user_skills_enabled,
             status=AgentStatus.DRAFT,
         )
 
@@ -160,6 +163,7 @@ class AgentService:
             "welcome_message": welcome_message,
             "recommended_items": recommended_items or [],
             "avatar": avatar,
+            "user_skills_enabled": agent.user_skills_enabled,
             "status": agent.status.value,
             "created_at": agent.created_at,
             "updated_at": agent.updated_at,

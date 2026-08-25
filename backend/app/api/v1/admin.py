@@ -47,6 +47,7 @@ async def list_users(
     username: str | None = Query(None, description="Filter by username (substring)"),
     role: str | None = Query(None, description="Filter by role name"),
     status: UserStatus | None = Query(None, description="Filter by status"),
+    search: str | None = Query(None, description="Search username or email (substring)"),
     _: UserResponse = Depends(require_role(UserRole.ADMIN)),
 ) -> UserListResponse:
     """List all users with pagination and optional filtering. (AC1)"""
@@ -56,6 +57,7 @@ async def list_users(
         username=username,
         role=role,
         status=status.value if status else None,
+        search=search,
     )
 
     users = [_doc_to_user_response(doc) for doc in items]

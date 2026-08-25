@@ -23,6 +23,7 @@ from app.api.v1.roles import router as roles_router
 from app.api.v1.sessions import router as sessions_router
 from app.api.v1.tasks import router as tasks_router
 from app.api.v1.tools import router as tools_router
+from app.api.v1.transfer import router as transfer_router
 from app.api.v1.triggers import router as triggers_router
 from app.api.v1.user_skills import router as user_skills_router
 from app.api.v1.voice_config import router as voice_config_router
@@ -48,6 +49,7 @@ api_v1_router.include_router(notifications_router)
 api_v1_router.include_router(sessions_router)
 api_v1_router.include_router(tasks_router)
 api_v1_router.include_router(tools_router)
+api_v1_router.include_router(transfer_router)
 api_v1_router.include_router(triggers_router)
 api_v1_router.include_router(user_skills_router)
 api_v1_router.include_router(mcp_router)

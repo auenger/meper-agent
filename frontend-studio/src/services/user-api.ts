@@ -45,6 +45,8 @@ export const userApi = {
     username?: string
     role?: string
     status?: string
+    /** 用户名/邮箱联合子串搜索（后端 $or 匹配） */
+    search?: string
   }) => apiClient.get<UserListResponse>('/api/v1/users', { params }),
 
   create: (data: CreateUserPayload) =>

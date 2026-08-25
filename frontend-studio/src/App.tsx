@@ -4,7 +4,7 @@ import {
   Sun, Moon, MessageSquare, ListTodo, Sparkles, Shield,
   Wrench, Plug, UserCog, LogOut, ChevronDown,
   PanelLeftClose, PanelLeftOpen, Clock, Mic, SlidersHorizontal,
-  Link2,
+  Link2, ArrowLeftRight,
 } from 'lucide-react';
 import { useAuthStore, REFRESH_TOKEN_KEY } from './stores/auth-store';
 import { useQuery, useQueries } from '@tanstack/react-query';
@@ -37,6 +37,7 @@ import { KnowledgeBasePage } from './components/KnowledgeBasePage';
 import { KbDetailPage } from './components/KbDetailPage';
 import { KbVectorDetailPage } from './components/KbVectorDetailPage';
 import { UserManagement } from './components/UserManagement';
+import { TransferManagementPage } from './components/transfer/TransferManagementPage';
 import { ExternalAuthPage } from './components/ExternalAuthPage';
 import { SystemSettings } from './components/SystemSettings';
 import { ModelsPage } from './components/ModelsPage';
@@ -61,6 +62,8 @@ interface NavItem {
   icon: typeof Bot;
   badge?: string;
   permission?: string;
+  /** 仅 admin 角色可见（如导入导出中心），与 permission 点过滤叠加。 */
+  adminOnly?: boolean;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -81,6 +84,8 @@ const NAV_ITEMS: NavItem[] = [
   // 外部授权：所有登录用户可见；应用管理操作按 application:write 权限在卡片上显示。
   { id: 'external-auth', label: '外部授权', icon: Link2 },
   { id: 'users', label: '用户权限', icon: Shield, permission: 'user:read' },
+  // 数据导入导出中心：资源包（afpkg）迁移入口，仅管理员可见（后端 admin/developer 双角色放行）。
+  { id: 'transfer', label: '导入导出', icon: ArrowLeftRight, adminOnly: true },
   { id: 'settings', label: '系统设置', icon: Key, permission: 'settings:manage' },
 ];
 
@@ -220,7 +225,9 @@ export default function App() {
   const has = (perm?: string) => !perm || permissions.includes(perm);
 
   const visibleNav = useMemo(() => {
-    const items = NAV_ITEMS.filter((n) => has(n.permission));
+    const items = NAV_ITEMS.filter(
+      (n) => has(n.permission) && (!n.adminOnly || authUser?.role === 'admin'),
+    );
     // Inject live counts into the badges (agents total / board active tasks / workflows total).
     return items.map((n) => {
       if (n.id === 'agents') return { ...n, badge: String(agentCount) };
@@ -228,7 +235,7 @@ export default function App() {
       if (n.id === 'workflows') return { ...n, badge: String(workflowCount) };
       return n;
     });
-  }, [permissions, agentCount, activeTaskCount, workflowCount]);
+  }, [permissions, authUser, agentCount, activeTaskCount, workflowCount]);
 
   // If the active tab got filtered out, fall back to the first visible tab.
   // profile 是非导航项的合法页面（从用户下拉菜单进入），不参与回退判断。
@@ -268,13 +275,14 @@ export default function App() {
   };
 
   return (
-    <div className={`h-screen flex overflow-hidden theme-${theme} ${theme === 'dark' ? 'bg-[#09090b] text-[#fafafa]' : 'bg-slate-50 text-slate-800'} transition-colors duration-200`}>
+    <div className={`h-dvh flex overflow-hidden theme-${theme} ${theme === 'dark' ? 'bg-[#09090b] text-[#fafafa]' : 'bg-slate-50 text-slate-800'} transition-colors duration-200`}>
 
       {/* 1. LEFT NAVIGATION RAIL BAR */}
-      <aside className={`${collapsed ? 'w-16' : 'w-64'} border-r border-solid flex flex-col justify-between shrink-0 transition-[width] duration-200 ${
+      <aside className={`${collapsed ? 'w-16' : 'w-64'} border-r border-solid flex flex-col justify-between shrink-0 overflow-hidden transition-[width] duration-200 ${
         theme === 'dark' ? 'bg-[#121214] border-[#27272a] text-[#a1a1aa]' : 'bg-white border-slate-200 text-slate-600'
       }`}>
-        <div className="flex flex-col">
+        {/* flex-1 + min-h-0：小高度视口下 nav 区内部滚动，底部用户区恒可见（不随 nav 溢出被裁） */}
+        <div className="flex flex-col flex-1 min-h-0">
           <div className={`h-16 ${collapsed ? 'flex flex-col items-center justify-center gap-1' : 'px-4 flex items-center justify-between'} border-b shrink-0 ${theme === 'dark' ? 'border-[#27272a]' : 'border-slate-100'}`}>
             {/* Logo：展开态 FullLogo（含 AgentForge 字样）；折叠态 AFLogo（纯图标）。 */}
             <img
@@ -297,7 +305,7 @@ export default function App() {
             </button>
           </div>
 
-          <nav className={`${collapsed ? 'flex flex-col items-center p-2' : 'p-4'} space-y-1`}>
+          <nav className={`${collapsed ? 'flex flex-col items-center p-2' : 'p-4'} flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1`}>
             {!collapsed && (
               <p className={`px-2 text-[10px] font-bold uppercase tracking-widest mb-2 ${theme === 'dark' ? 'text-[#71717a]' : 'text-slate-400'}`}>Main Navigator</p>
             )}
@@ -571,6 +579,7 @@ export default function App() {
           )}
 
           {activeTab === 'users' && <UserManagement />}
+          {activeTab === 'transfer' && <TransferManagementPage theme={theme} />}
           {activeTab === 'external-auth' && <ExternalAuthPage />}
 
           {activeTab === 'settings' && <SystemSettings />}

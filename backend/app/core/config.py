@@ -236,6 +236,12 @@ class Settings(BaseSettings):
             self.SKILL_AVATARS_CONTAINER_DIR = self.SKILL_AVATARS_HOST_DIR
         return self
 
+    # ── Transfer（资源导入导出 .afpkg 包）────────────────────────────────
+    # 防护上限：包体大小 / 解压后总大小 / 解压文件数（防 zip 炸弹）。
+    TRANSFER_MAX_PACKAGE_SIZE: int = 200 * 1024 * 1024   # 200 MB
+    TRANSFER_MAX_UNPACKED_SIZE: int = 500 * 1024 * 1024  # 500 MB
+    TRANSFER_MAX_FILE_COUNT: int = 10_000
+
     # ── Sandbox ──────────────────────────────────────────────────────────
     # Docker image used for bash tool sandbox execution.
     SANDBOX_IMAGE: str = "agent-sandbox:latest"
