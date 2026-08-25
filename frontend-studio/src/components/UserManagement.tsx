@@ -1,7 +1,7 @@
-import { useState, FormEvent } from 'react';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState, FormEvent, useEffect } from 'react';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
-  Users, Shield, Search, Plus, Lock, Pencil,
+  Users, Shield, Search, Plus, Lock, Pencil, ChevronLeft, ChevronRight, KeyRound, RefreshCw, Copy,
 } from 'lucide-react';
 import { userApi } from '../services/user-api';
 import { roleApi, type RoleUpdatePayload } from '../services/role-api';
@@ -34,10 +34,46 @@ function initialsOf(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+/** 每页条数（服务端分页，避免用户多时页面被表格撑高）。 */
+const PAGE_SIZE = 20;
+
+/** 生成 12 位强随机密码（大小写字母 + 数字 + 符号，浏览器 CSPRNG）。 */
+function generatePassword(): string {
+  const groups = [
+    'ABCDEFGHJKLMNPQRSTUVWXYZ', // 去掉易混淆 I O
+    'abcdefghijkmnpqrstuvwxyz', // 去掉易混淆 l o
+    '23456789',
+    '!@#$%^&*',
+  ];
+  const all = groups.join('');
+  const pick = (s: string) => s[crypto.getRandomValues(new Uint32Array(1))[0] % s.length];
+  // 每组先各取 1 位保证复杂度，其余从全集补足 12 位
+  return [...groups.map(pick), ...Array.from({ length: 12 - groups.length }, () => pick(all))]
+    .sort(() => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32 - 0.5)
+    .join('');
+}
+
 export function UserManagement() {
   const queryClient = useQueryClient();
+  // 搜索：输入框即时受控，300ms 防抖后作为服务端 search 参数（用户名/邮箱 $or）
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
+  const [page, setPage] = useState(1);
   const [selectedUserForRole, setSelectedUserForRole] = useState<string | null>(null);
+
+  // 重置密码弹窗状态（管理员代用户重置，用户忘记密码场景）
+  const [resetTarget, setResetTarget] = useState<User | null>(null);
+  const [resetPasswordValue, setResetPasswordValue] = useState('');
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetDone, setResetDone] = useState(false);
+
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSearchQuery(searchInput.trim());
+      setPage(1); // 新搜索从第一页开始
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   // New user form state
   const [isAdding, setIsAdding] = useState(false);
@@ -57,10 +93,19 @@ export function UserManagement() {
   const [roleDesc, setRoleDesc] = useState('');
   const [rolePerms, setRolePerms] = useState<Set<string>>(new Set());
 
-  const { data: usersData, isLoading } = useQuery({
-    queryKey: ['users', { page: 1, page_size: 50 }],
-    queryFn: async () => (await userApi.list({ page: 1, page_size: 50 })).data,
+  const { data: usersData, isLoading, isFetching } = useQuery({
+    queryKey: ['users', { page, page_size: PAGE_SIZE, search: searchQuery }],
+    queryFn: async () =>
+      (await userApi.list({ page, page_size: PAGE_SIZE, search: searchQuery || undefined })).data,
+    placeholderData: keepPreviousData,
   });
+
+  // 删除末页最后一条后 page 可能越界（totalPages 缩小）— 自动回拉到末页
+  useEffect(() => {
+    if (usersData && page > Math.max(1, Math.ceil(usersData.total / PAGE_SIZE))) {
+      setPage(Math.max(1, Math.ceil(usersData.total / PAGE_SIZE)));
+    }
+  }, [usersData, page]);
   const { data: rolesData } = useQuery({
     queryKey: ['roles'],
     queryFn: async () => (await roleApi.list()).data,
@@ -71,6 +116,8 @@ export function UserManagement() {
   });
 
   const users = (usersData?.items ?? []).map(toStudioUser);
+  const total = usersData?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const roles = rolesData ?? [];
   const allPerms = allPermsData?.permissions ?? [];
 
@@ -81,12 +128,6 @@ export function UserManagement() {
   const roleOptions = roles.map((r) => ({ value: r.name, label: r.display_name }));
   const roleDisplayName = (key: string): string =>
     roles.find((r) => r.name === key)?.display_name ?? key;
-
-  const filteredUsers = users.filter(
-    (u) =>
-      u.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      u.email.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
 
   const createM = useMutation({
     mutationFn: (input: { username: string; email: string; password: string; role: string }) =>
@@ -105,6 +146,44 @@ export function UserManagement() {
       queryClient.invalidateQueries({ queryKey: ['users'] });
     },
   });
+
+  const resetPwM = useMutation({
+    mutationFn: ({ id, newPassword }: { id: string; newPassword: string }) =>
+      userApi.resetPassword(id, { new_password: newPassword }),
+    onSuccess: () => {
+      setResetDone(true);
+      setResetError(null);
+      toast.success(`已重置「${resetTarget?.name ?? ''}」的密码`);
+    },
+  });
+
+  const openResetPassword = (user: User) => {
+    setResetTarget(user);
+    setResetPasswordValue(generatePassword());
+    setResetError(null);
+    setResetDone(false);
+  };
+
+  const handleResetPassword = (e: FormEvent) => {
+    e.preventDefault();
+    if (!resetTarget || resetPasswordValue.length < 8) return;
+    setResetError(null);
+    resetPwM.mutate(
+      { id: resetTarget.id, newPassword: resetPasswordValue },
+      {
+        onError: (err) => {
+          const normalized = err as NormalizedApiError;
+          setResetError(
+            normalized?.fieldErrors
+              ? Object.entries(normalized.fieldErrors)
+                  .map(([f, m]) => (f === '_form' ? m.join('；') : `${f}: ${m.join('；')}`))
+                  .join('\n')
+              : normalized?.message ?? '重置失败',
+          );
+        },
+      },
+    );
+  };
 
   const deleteM = useMutation({
     mutationFn: (id: string) => userApi.delete(id),
@@ -255,9 +334,9 @@ export function UserManagement() {
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜索团队成员..."
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="搜索用户名 / 邮箱..."
               className="pl-9 pr-4 py-1.5 w-56 text-xs bg-[#121214] border border-[#27272a] rounded-lg text-slate-300 focus:outline-none focus:border-indigo-500 font-sans"
             />
           </div>
@@ -278,7 +357,8 @@ export function UserManagement() {
         <div className="lg:col-span-2 p-5 bg-[#18181b] border border-[#27272a] rounded-xl space-y-4 shadow-lg">
           <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-1">
             <Users className="w-3.5 h-3.5 text-indigo-400" />
-            团队成员授权列表 ({filteredUsers.length})
+            团队成员授权列表
+            <span className="font-mono normal-case">（共 {total} 人{isFetching ? ' · 加载中…' : ''}）</span>
           </h3>
 
           <div className="overflow-x-auto">
@@ -294,7 +374,9 @@ export function UserManagement() {
               <tbody className="divide-y divide-[#27272a]/60">
                 {isLoading ? (
                   <tr><td colSpan={4} className="py-4 px-3 text-[#71717a]">加载中…</td></tr>
-                ) : filteredUsers.map((user) => {
+                ) : users.length === 0 ? (
+                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a]">{searchQuery ? '没有匹配的成员' : '暂无成员'}</td></tr>
+                ) : users.map((user) => {
                   return (
                     <tr key={user.id} className="hover:bg-[#121214]/60 transition-colors">
                       <td className="py-3.5 px-3">
@@ -360,6 +442,12 @@ export function UserManagement() {
                           {user.status === 'active' ? '锁定' : '激活'}
                         </button>
                         <button
+                          onClick={() => openResetPassword(user)}
+                          className="text-[10px] uppercase font-bold text-amber-400 hover:text-amber-300 hover:underline transition cursor-pointer"
+                        >
+                          重置密码
+                        </button>
+                        <button
                           onClick={() => deleteM.mutate(user.id)}
                           className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
                         >
@@ -372,6 +460,34 @@ export function UserManagement() {
               </tbody>
             </table>
           </div>
+
+          {/* 分页条：服务端分页（page/page_size → /users），翻页不清空搜索条件 */}
+          {total > 0 && (
+            <div className="flex items-center justify-between pt-1 text-[10px] text-[#71717a] font-mono">
+              <span>
+                第 {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} 条 / 共 {total} 条
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1 || isFetching}
+                  className="p-1 rounded-md border border-[#27272a] text-slate-400 hover:text-white hover:bg-[#121214] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="上一页"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-2 tabular-nums">{page} / {totalPages}</span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages || isFetching}
+                  className="p-1 rounded-md border border-[#27272a] text-slate-400 hover:text-white hover:bg-[#121214] transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title="下一页"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ROLES PANEL (管理并入此页) */}
@@ -433,6 +549,114 @@ export function UserManagement() {
           </div>
         </div>
       </div>
+
+      {/* RESET PASSWORD DIALOG（管理员代用户重置，用户忘记密码场景） */}
+      {resetTarget && (
+        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
+            <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
+              <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">
+                <KeyRound className="w-4 h-4 text-amber-400" />
+                重置密码 · {resetTarget.name}
+              </h3>
+              <button
+                onClick={() => setResetTarget(null)}
+                className="text-slate-500 hover:text-slate-300 font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {resetDone ? (
+              <div className="p-5 space-y-4 text-xs">
+                <p className="text-emerald-400 font-semibold font-sans">密码已重置，请将新密码告知该成员：</p>
+                <div className="flex items-center gap-2 p-3 bg-[#121214] border border-[#27272a] rounded-lg">
+                  <code className="flex-1 font-mono text-slate-200 break-all">{resetPasswordValue}</code>
+                  <button
+                    onClick={() => {
+                      void navigator.clipboard.writeText(resetPasswordValue);
+                      toast.success('已复制到剪贴板');
+                    }}
+                    className="p-1.5 rounded-md border border-[#27272a] text-slate-400 hover:text-white hover:bg-[#18181b] transition cursor-pointer shrink-0"
+                    title="复制"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+                <p className="text-[10px] text-[#71717a] font-sans">
+                  该成员下次登录使用新密码；如他已登录，现有会话不受影响，建议提醒其尽快修改。
+                </p>
+                <div className="flex justify-end">
+                  <button
+                    onClick={() => setResetTarget(null)}
+                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer font-semibold"
+                  >
+                    完成
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={handleResetPassword} className="p-5 space-y-4 text-xs">
+                {resetError && (
+                  <div className="px-3 py-2 rounded-lg bg-rose-950/30 border border-rose-700/40 text-rose-300 text-xs whitespace-pre-line">
+                    {resetError}
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <label className="text-slate-400 font-medium font-sans flex items-center justify-between">
+                    <span>新密码</span>
+                    <span className={`text-[10px] font-mono ${resetPasswordValue.length > 0 && resetPasswordValue.length < 8 ? 'text-rose-400' : 'text-slate-500'}`}>
+                      {resetPasswordValue.length}/8 位
+                    </span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      required
+                      minLength={8}
+                      value={resetPasswordValue}
+                      onChange={(e) => setResetPasswordValue(e.target.value)}
+                      placeholder="至少 8 位"
+                      className={`flex-1 px-3 py-2 bg-[#121214] rounded-lg text-slate-200 focus:outline-none transition font-mono ${
+                        resetPasswordValue.length > 0 && resetPasswordValue.length < 8
+                          ? 'border border-rose-700/60 focus:border-rose-500'
+                          : 'border border-[#27272a] focus:border-amber-500'
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setResetPasswordValue(generatePassword())}
+                      title="重新生成随机强密码"
+                      className="px-3 py-2 border border-[#27272a] rounded-lg text-slate-400 hover:text-white hover:bg-[#121214] transition cursor-pointer shrink-0 flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> 随机
+                    </button>
+                  </div>
+                </div>
+                <p className="text-[10px] text-[#71717a] font-sans">
+                  默认已生成 12 位随机强密码，可直接使用，也可改为自定义密码（至少 8 位）。
+                </p>
+                <div className="p-4 border-t border-[#27272a] bg-[#121214] flex justify-end gap-3 pt-4">
+                  <button
+                    type="button"
+                    onClick={() => setResetTarget(null)}
+                    className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-slate-400 hover:text-white rounded-lg cursor-pointer font-semibold"
+                  >
+                    取消
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={resetPwM.isPending || resetPasswordValue.length < 8}
+                    className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-md cursor-pointer font-sans disabled:opacity-60"
+                  >
+                    {resetPwM.isPending ? '重置中…' : '确认重置'}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* CREATE USER DIALOG MODAL */}
       {isAdding && (
