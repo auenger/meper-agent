@@ -98,7 +98,11 @@ class TestBuildToolDeclarationByContext:
     async def test_workflow_context_declaration(self):
         from app.engine.agent.builder import build_tool_declaration
 
-        decl = await build_tool_declaration(_fake_agent(), execution_context="workflow")
+        # workflow_ids 置空：workflow 列表声明会查 Mongo，与本用例无关
+        # （CI 无 MongoDB，裸查会 ServerSelectionTimeout）
+        decl = await build_tool_declaration(
+            _fake_agent(workflow_ids=[]), execution_context="workflow",
+        )
 
         # 无 Clarification 段（ask_clarification 已剥离）
         assert "Clarification" not in decl
@@ -118,7 +122,7 @@ class TestBuildToolDeclarationByContext:
         from app.engine.agent.builder import build_tool_declaration
 
         decl = await build_tool_declaration(
-            _fake_agent(builtin_config=[]), execution_context="workflow",
+            _fake_agent(builtin_config=[], workflow_ids=[]), execution_context="workflow",
         )
         assert "Autonomous Execution" in decl
 
@@ -126,7 +130,10 @@ class TestBuildToolDeclarationByContext:
     async def test_chat_context_declaration_unchanged(self):
         from app.engine.agent.builder import build_tool_declaration
 
-        decl = await build_tool_declaration(_fake_agent(), execution_context="chat")
+        # workflow_ids 置空：同上，避免查 Mongo
+        decl = await build_tool_declaration(
+            _fake_agent(workflow_ids=[]), execution_context="chat",
+        )
 
         assert "Clarification" in decl
         assert "ask_clarification" in decl
