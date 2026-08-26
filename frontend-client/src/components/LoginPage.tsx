@@ -57,7 +57,8 @@ export function LoginPage() {
       />
       <section className="login-panel" aria-labelledby="login-title">
         <div className="login-brand">
-          <img src="/AFLogo.png" alt="Agent Flow" />
+          {/* 同 ConversationSidebar：public 资源需带 vite base 前缀（/client/）。 */}
+          <img src={`${import.meta.env.BASE_URL}AFLogo.png`} alt="Agent Flow" />
           <div>
             <Typography.Title id="login-title" level={2}>
               Agent Flow

@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#f6f7f9" />
     <meta name="color-scheme" content="light dark" />
-    <link rel="icon" href="/favicon.ico" />
+    <!-- 相对路径：页面固定挂在 /client/ 下（vite base），dev 与 Caddy 生产
+         都解析为 /client/favicon.ico；绝对路径 /favicon.ico 会绕过 base 404。 -->
+    <link rel="icon" href="favicon.ico" />
     <title>Agent Flow</title>
   </head>
   <body>

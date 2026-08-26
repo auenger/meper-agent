@@ -50,7 +50,9 @@ export function ConversationSidebar(props: ConversationSidebarProps) {
   return (
     <aside className="conversation-sidebar">
       <div className="sidebar-brand">
-        <img src="/FullLogo.png" alt="Agent Flow" />
+        {/* vite base=/client/ 且 publicDir 指向 studio/public：绝对路径 /xxx 会
+            绕过 base 404，必须用 BASE_URL 拼出 /client/xxx。 */}
+        <img src={`${import.meta.env.BASE_URL}FullLogo.png`} alt="Agent Flow" />
       </div>
 
       <div className="agent-switcher">
