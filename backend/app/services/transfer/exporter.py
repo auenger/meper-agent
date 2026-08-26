@@ -270,7 +270,7 @@ def _direct_deps(
 
 
 def _agent_payload(doc: dict) -> dict:
-    from app.services.agent_service import _resolve_default_model, _resolve_max_retry
+    from app.models.compat import resolve_default_model, resolve_max_retry
 
     custom_tools, redacted = _strip_encrypted_user_args(doc.get("custom_tools") or [])
     payload = {
@@ -287,10 +287,10 @@ def _agent_payload(doc: dict) -> dict:
         "builtin_config": doc.get("builtin_config") or [],
         "workflow_ids": doc.get("workflow_ids") or [],
         "knowledge_base_ids": doc.get("knowledge_base_ids") or [],
-        "default_model": _resolve_default_model(doc),
+        "default_model": resolve_default_model(doc),
         "voice_enabled": bool(doc.get("voice_enabled", False)),
         "user_skills_enabled": bool(doc.get("user_skills_enabled", True)),
-        "max_retry": _resolve_max_retry(doc),
+        "max_retry": resolve_max_retry(doc),
         "max_tokens": doc.get("max_tokens", 0),
     }
     if redacted:
@@ -441,15 +441,15 @@ async def export_package(
         return path
 
     # 1. 无依赖类：分组 / 模型 / 自定义工具
-    for cid, doc in closure["mcp_category"].items():
+    for _cid, doc in closure["mcp_category"].items():
         _put_json("mcp_category", doc, _category_payload(doc), "mcp_categories")
-    for mid, doc in closure["model"].items():
+    for _mid, doc in closure["model"].items():
         _put_json("model", doc, _model_payload(doc), "models")
-    for tid, doc in closure["tool"].items():
+    for _tid, doc in closure["tool"].items():
         _put_json("tool", doc, _tool_payload(doc), "tools")
 
     # 2. MCP 连接
-    for cid, doc in closure["mcp_connection"].items():
+    for _cid, doc in closure["mcp_connection"].items():
         _put_json("mcp_connection", doc, _mcp_payload(doc), "mcp")
 
     # 3. Skill（元数据 + 磁盘整目录）
@@ -498,11 +498,11 @@ async def export_package(
             entries[f"kbs/{kid}/files/{f['path']}"] = content.encode("utf-8")
 
     # 5. Workflow
-    for wid, doc in closure["workflow"].items():
+    for _wid, doc in closure["workflow"].items():
         _put_json("workflow", doc, _workflow_payload(doc, mcp_tools), "workflows")
 
     # 6. Agent
-    for aid, doc in closure["agent"].items():
+    for _aid, doc in closure["agent"].items():
         _put_json("agent", doc, _agent_payload(doc), "agents")
 
     manifest = pkg.build_manifest(manifest_resources, exported_by=exported_by)

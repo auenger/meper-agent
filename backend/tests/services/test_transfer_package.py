@@ -10,7 +10,6 @@ import zipfile
 from pathlib import Path
 
 import pytest
-
 from app.core.errors import ValidationError
 from app.services.transfer import package as pkg
 
@@ -40,7 +39,7 @@ def test_build_and_extract_roundtrip(tmp_path: Path):
 
 def test_extract_rejects_zip_slip(tmp_path: Path):
     # 构造一个含 ../ 越界路径的 zip
-    evil = _zip_of({"ok.txt": b"fine"})
+    _zip_of({"ok.txt": b"fine"})
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("ok.txt", "fine")
@@ -149,3 +148,35 @@ def test_read_manifest_rejects_unknown_kind(tmp_path: Path):
     )
     with pytest.raises(ValidationError, match="不支持"):
         pkg.read_manifest(d)
+
+
+# ---------------------------------------------------------------------------
+# 回归：_agent_payload 依赖 compat 解析函数（旧 agent_service 私有函数已迁移）
+# ---------------------------------------------------------------------------
+
+
+def test_agent_payload_resolves_compat_fields():
+    """_agent_payload 正常导入并使用 compat 的 resolve_*（回归旧 import 断裂）。"""
+    from app.services.transfer.exporter import _agent_payload
+
+    doc = {
+        "_id": "agent_x",
+        "name": "回归 Agent",
+        # 扁平字段 + 旧嵌套字段同时存在时取扁平
+        "default_model": "model_new",
+        "max_retry": 5,
+        "llm_config": {"default_model": "model_old", "max_retry": 1},
+        "custom_tools": [],
+    }
+    payload = _agent_payload(doc)
+    assert payload["default_model"] == "model_new"
+    assert payload["max_retry"] == 5
+    assert payload["kind"] == "agent"
+
+    # 纯旧嵌套文档（迁移前形态）走 fallback
+    legacy = {
+        "_id": "agent_y", "name": "旧形态", "llm_config": {"default_model": "m1", "max_retry": 2},
+    }
+    p2 = _agent_payload(legacy)
+    assert p2["default_model"] == "m1"
+    assert p2["max_retry"] == 2

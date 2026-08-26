@@ -14,7 +14,7 @@ from pymongo import ReturnDocument
 from app.core.errors import ConflictError, NotFoundError, ValidationError
 from app.db.mongodb import get_database
 from app.models.base import utc_now
-from app.models.workflow import Workflow, WorkflowNode, WorkflowStatus
+from app.models.workflow import Workflow, WorkflowEdge, WorkflowNode, WorkflowStatus
 
 
 class WorkflowService:
@@ -53,7 +53,7 @@ class WorkflowService:
         if nodes is not None:
             wf.nodes = [WorkflowNode(**n) for n in nodes]
         if edges is not None:
-            wf.edges = edges
+            wf.edges = [WorkflowEdge(**e) for e in edges]
         doc = wf.model_dump(by_alias=True)
         result = await WorkflowService._collection().insert_one(doc)
 
