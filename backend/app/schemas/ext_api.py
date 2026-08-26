@@ -51,6 +51,12 @@ class ExtInvokeRequest(BaseModel):
         max_length=50000,
         description="发送给 Agent 的消息",
     )
+    display_text: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="终端用户看到的展示文本（如推荐问题按钮文案）。发给 LLM 的上下文仍是 message；"
+        "缺省时前端展示 message 本身",
+    )
     session_id: str | None = Field(
         default=None,
         description="会话 ID（不传则自动创建新会话）",
@@ -198,6 +204,7 @@ class ExtMessageResponse(BaseModel):
     id: str
     role: str
     content: str
+    display_content: str = ""
     timeline_entries: list[dict] = Field(default_factory=list)
     created_at: str
 

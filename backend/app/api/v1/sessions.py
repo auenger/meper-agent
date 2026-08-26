@@ -69,6 +69,7 @@ def _msg_to_response(doc: dict) -> MessageResponse:
         session_id=doc["session_id"],
         role=role,
         content=content,
+        display_content=doc.get("display_content", ""),
         timeline_entries=timeline,
         file_ids=doc.get("file_ids", []),
         files=[],  # Populated separately when needed

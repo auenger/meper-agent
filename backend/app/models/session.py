@@ -50,6 +50,11 @@ class Message(BaseModel):
     session_id: str = Field(..., description="Parent session ID")
     role: str = Field(..., description="Message role: 'user' or 'agent'")
     content: str = Field(default="", description="Message text content (user messages only)")
+    display_content: str = Field(
+        default="",
+        description="终端用户看到的展示文本（如推荐问题按钮文案）。空则前端回退展示 content；"
+        "发给 LLM 的上下文始终用 content，展示文本不参与执行。",
+    )
     timeline_entries: list[dict] = Field(
         default_factory=list,
         description="Structured timeline events (thinking/tool_call/tool_result/text) for agent messages",

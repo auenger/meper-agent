@@ -8,6 +8,12 @@ class ExecutionRequest(BaseModel):
     """Request body for agent invoke/stream endpoints."""
 
     input: str = Field(..., min_length=1, max_length=50000, description="User input text")
+    display_text: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="终端用户看到的展示文本（如推荐问题按钮文案）。发给 LLM 的上下文仍是 input；"
+        "缺省时前端展示 input 本身。",
+    )
     session_id: str | None = Field(default=None, description="Optional session ID for context continuity")
     enable_thinking: bool = Field(
         default=False,

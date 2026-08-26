@@ -43,6 +43,8 @@ class MessageResponse(BaseModel):
     session_id: str
     role: str
     content: str = ""
+    # 终端用户看到的展示文本（如推荐问题按钮文案）；空则前端回退展示 content
+    display_content: str = ""
     timeline_entries: list[dict] = []
     file_ids: list[str] = []
     files: list[FileRefResponse] = []

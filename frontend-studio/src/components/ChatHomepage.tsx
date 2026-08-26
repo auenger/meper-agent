@@ -435,7 +435,8 @@ function userMessageToDisplay(rec: MessageRecord): Message {
     senderName: '我',
     avatar: '👩‍💼',
     role: 'user',
-    content: rec.content,
+    // 展示文本（推荐问题按钮文案）优先，无则回退实际发送的 content。
+    content: rec.display_content || rec.content,
     timestamp: new Date(rec.created_at).toLocaleString(),
     attachment: fileRefToAttachment(rec.files?.[0]),
     attachments,

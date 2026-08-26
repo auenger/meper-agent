@@ -25,6 +25,9 @@ export interface MessageRecord {
   session_id: string
   role: 'user' | 'agent'
   content: string
+  /** 终端用户看到的展示文本（如推荐问题按钮文案）；空则回退 content。
+   *  content 是实际发给 LLM 的提示词，展示文本不参与执行。 */
+  display_content?: string
   /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键 */
   request_id?: string
   /** Structured timeline events stored in agent messages */

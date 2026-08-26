@@ -146,6 +146,7 @@ async def invoke_agent(
         input=body.message,
         session_id=body.session_id,
         enable_thinking=body.enable_thinking,
+        display_text=body.display_text,
         file_paths=body.file_paths,
         file_ids=body.file_ids,
     )
@@ -186,6 +187,7 @@ async def stream_agent(
         input=body.message,
         session_id=body.session_id,
         enable_thinking=body.enable_thinking,
+        display_text=body.display_text,
         file_paths=body.file_paths,
         file_ids=body.file_ids,
     )
@@ -385,6 +387,7 @@ async def get_session_detail(
                 id=msg["_id"],
                 role=msg["role"],
                 content=msg.get("content", ""),
+                display_content=msg.get("display_content", ""),
                 timeline_entries=msg.get("timeline_entries", []),
                 created_at=msg.get("created_at", ""),
             )

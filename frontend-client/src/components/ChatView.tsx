@@ -242,8 +242,8 @@ export function ChatView({
     })
   }
 
-  const submit = (value: string) => {
-    void send(value, files)
+  const submit = (value: string, displayValue?: string) => {
+    void send(value, files, displayValue)
     setInput('')
     setFiles([])
   }
@@ -603,7 +603,7 @@ export function ChatView({
                     key={`${index}:${item.label}`}
                     className="quick-action"
                     disabled={running || Boolean(hitl)}
-                    onClick={() => submit(item.prompt || item.label)}
+                    onClick={() => submit(item.prompt || item.label, item.label)}
                   >
                     {item.label}
                   </Button>
@@ -634,7 +634,7 @@ export function ChatView({
             <Sender
               value={input}
               onChange={setInput}
-              onSubmit={submit}
+              onSubmit={(message) => submit(message)}
               onCancel={cancel}
               onPasteFile={(pasted) => addFiles(Array.from(pasted))}
               loading={running}

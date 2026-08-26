@@ -260,7 +260,10 @@ export async function* streamMessage(
   fileIds: string[],
   filePaths: string[],
   signal: AbortSignal,
+  displayText?: string,
 ): AsyncGenerator<StreamEvent> {
+  // displayText: 终端用户看到的展示文本（如推荐问题按钮文案）。LLM 上下文
+  // 仍是 content；后端把它持久化为用户消息的 display_content，历史回填时展示。
   if (AUTH_MODE === 'apikey') {
     const response = await openStream(
       `/v1/ext/agents/${encodeURIComponent(agentId)}/invoke/stream`,
@@ -271,6 +274,7 @@ export async function* streamMessage(
         enable_thinking: true,
         ...(fileIds.length ? { file_ids: fileIds } : {}),
         ...(filePaths.length ? { file_paths: filePaths } : {}),
+        ...(displayText ? { display_text: displayText } : {}),
       },
       signal,
     )
@@ -285,6 +289,7 @@ export async function* streamMessage(
       enable_thinking: true,
       ...(fileIds.length ? { file_ids: fileIds } : {}),
       ...(filePaths.length ? { file_paths: filePaths } : {}),
+      ...(displayText ? { display_text: displayText } : {}),
     },
     signal,
   )

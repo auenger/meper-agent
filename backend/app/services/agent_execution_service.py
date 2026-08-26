@@ -324,12 +324,13 @@ async def _resolve_session(agent_id: str, body: ExecutionRequest, user_id: str) 
     session_id = body.session_id or ""
     if not session_id:
         session_doc = await SessionService.create_session(
-            user_id=user_id, agent_id=agent_id, title=body.input[:200],
+            user_id=user_id, agent_id=agent_id, title=(body.display_text or body.input)[:200],
         )
         session_id = session_doc["_id"]
     await MessageService.add_message(
         session_id=session_id, role="user",
         content=body.input, file_ids=body.file_ids or None,
+        display_content=body.display_text or "",
     )
     return session_id
 

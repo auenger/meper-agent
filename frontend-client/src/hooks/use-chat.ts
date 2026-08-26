@@ -94,7 +94,12 @@ function fromHistory(record: MessageRecord): ChatMessage {
     return {
       id: record.id,
       role: 'user',
-      content: parsed.text ? [{ type: 'text', text: parsed.text }] : [],
+      // 展示文本（推荐问题按钮文案）优先；没有则回退 content（并剥掉 file_hint 块）。
+      content: record.display_content
+        ? [{ type: 'text', text: record.display_content }]
+        : parsed.text
+          ? [{ type: 'text', text: parsed.text }]
+          : [],
       attachments: storedAttachments.length ? storedAttachments : parsed.attachments,
       charts: [],
       status: 'success',
@@ -639,10 +644,12 @@ export function useChat(
   )
 
   const send = useCallback(
-    async (text: string, files: File[]) => {
+    async (text: string, files: File[], displayText?: string) => {
       if (!agentId || !sessionId || running || hitl) return
       const trimmed = text.trim()
       if (!trimmed && files.length === 0) return
+      // 展示文本（推荐问题按钮文案）：气泡渲染它，实际发送/落库仍是 trimmed。
+      const bubbleText = displayText?.trim() || trimmed
       setRunning(true)
       const userId = genId()
       const assistantId = genId()
@@ -670,7 +677,7 @@ export function useChat(
         {
           id: userId,
           role: 'user',
-          content: trimmed ? [{ type: 'text', text: trimmed }] : [],
+          content: bubbleText ? [{ type: 'text', text: bubbleText }] : [],
           attachments,
           charts: [],
           status: 'success',
@@ -721,6 +728,7 @@ export function useChat(
             uploaded.map((file) => file.id),
             uploaded.map((file) => file.path),
             controller.signal,
+            displayText,
           ),
           acc,
         )
