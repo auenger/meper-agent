@@ -1,10 +1,10 @@
 import { useState, useRef, useEffect, FormEvent, useCallback, type MouseEvent, type ChangeEvent } from 'react';
 import { Agent, Message, type ChatAttachment, type TimelineEntry } from '../types';
 import {
-  Send, Plus, ChevronDown, Sparkles, Trash2, FileCode, CheckCircle,
+  Send, Plus, Sparkles, Trash2, FileCode, CheckCircle,
   Bot, Terminal, Loader2, Paperclip, Brain, X,
   Wrench, AlertTriangle, ChevronRight, User, Download, FileText, Image as ImageIcon, Mic,
-  ThumbsUp, ThumbsDown,
+  ThumbsUp, ThumbsDown, PanelLeftClose, PanelLeftOpen,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { userSkillsApi, type SessionFeedbackItem } from '../services/user-skills-api';
@@ -33,6 +33,9 @@ interface ChatHomepageProps {
   theme?: 'light' | 'dark';
   /** 固定 agent 模式：会话列表按该 agent 过滤，点 + 直通新建会话（不弹选择框）。 */
   fixedAgentId?: string;
+  /** 会话列表侧栏默认收起为窄轨（仅展开/新建按钮），让对话主区占满宽度。
+   *  AgentDetailPage 预览页传 true；主 chat tab 不传保持展开。 */
+  defaultSidebarCollapsed?: boolean;
 }
 
 /** Convert a stored agent message + its timeline into display Messages. */
@@ -439,7 +442,7 @@ function userMessageToDisplay(rec: MessageRecord): Message {
   };
 }
 
-export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId }: ChatHomepageProps) {
+export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId, defaultSidebarCollapsed = false }: ChatHomepageProps) {
   const qc = useQueryClient();
 
   // ── Agents (fallback fetch if not passed in) ──
@@ -532,6 +535,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
 
   const [showDropdown, setShowDropdown] = useState(false);
   const [showAgentSelectModal, setShowAgentSelectModal] = useState(false);
+  // 会话列表侧栏收起态：收起后仅剩窄轨（展开/新建按钮），对话主区拉宽。
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(defaultSidebarCollapsed);
   const [inputText, setInputText] = useState('');
   const [inputMode, setInputMode] = useState<'text' | 'voice'>('text');
   const [isStreaming, setIsStreaming] = useState(false);
@@ -1386,13 +1391,47 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-0 bg-[#121214] border-0 overflow-hidden relative w-full h-full min-h-0 flex-1">
-      {/* 1. SIDEBAR: Conversations List */}
+      {/* 1. SIDEBAR: Conversations List — collapsed narrow rail | expanded list */}
+      {sidebarCollapsed ? (
+        <div className="lg:col-span-1 min-h-0 border-r border-[#27272a] bg-[#18181b]/80 flex flex-row lg:flex-col items-center gap-3 px-2 py-3">
+          <button
+            onClick={() => setSidebarCollapsed(false)}
+            title="展开会话列表"
+            className="w-9 h-9 rounded-full bg-[#27272a]/50 border border-[#27272a] flex items-center justify-center text-[#a1a1aa] hover:text-white hover:bg-[#1f1f23] transition-colors cursor-pointer"
+          >
+            <PanelLeftOpen className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              // 固定 agent 模式：+ 直通新建；多 agent 场景先展开侧栏再选择。
+              if (fixedAgentId) {
+                const agent = agents.find((a) => a.id === fixedAgentId);
+                if (agent) void handleStartNewWithAgent(agent);
+                return;
+              }
+              setSidebarCollapsed(false);
+            }}
+            title="新建会话"
+            className="w-9 h-9 rounded-full bg-[#27272a]/50 border border-[#27272a] flex items-center justify-center hover:bg-[#1f1f23] transition-colors cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-emerald-400" />
+          </button>
+          <span
+            className="mt-auto hidden lg:block w-2 h-2 rounded-full bg-emerald-500 animate-pulse"
+            title="MEPER Agent SSE: Connected"
+          />
+        </div>
+      ) : (
       <div className="lg:col-span-3 min-h-0 border-r border-[#27272a] bg-[#18181b]/80 flex flex-col justify-between">
         <div className="flex flex-col h-full min-h-0">
           <div className="px-4 h-16 border-b border-[#27272a] flex items-center justify-between relative">
-            <div className="flex items-center gap-1.5 cursor-pointer">
+            <div
+              className="flex items-center gap-1.5 cursor-pointer group"
+              onClick={() => setSidebarCollapsed(true)}
+              title="收起会话列表"
+            >
+              <PanelLeftClose className="w-4 h-4 text-[#a1a1aa] group-hover:text-white transition-colors" />
               <span className="text-sm font-bold text-white font-sans">对话</span>
-              <ChevronDown className="w-3.5 h-3.5 text-[#a1a1aa]" />
             </div>
             <div className="relative">
               <button
@@ -1509,9 +1548,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId 
           </div>
         </div>
       </div>
+      )}
 
       {/* 2. CHAT STREAM PANEL */}
-      <div className="lg:col-span-9 min-h-0 flex flex-col h-full bg-[#121214]">
+      <div className={`${sidebarCollapsed ? 'lg:col-span-11' : 'lg:col-span-9'} min-h-0 flex flex-col h-full bg-[#121214]`}>
         <div className="px-6 h-16 border-b border-[#27272a] bg-[#18181b]/50 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-[#121214] border border-[#27272a] text-xl flex items-center justify-center overflow-hidden">

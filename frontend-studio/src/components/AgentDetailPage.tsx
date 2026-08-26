@@ -217,9 +217,10 @@ export function AgentDetailPage({
           </button>
         </aside>
 
-        {/* Right: live chat scoped to this agent */}
+        {/* Right: live chat scoped to this agent — session sidebar collapsed by
+            default so the chat column gets the full width for testing. */}
         <section className="lg:col-span-8 h-full min-h-0 overflow-hidden">
-          <ChatHomepage agents={[agent]} theme={theme} fixedAgentId={agent.id} />
+          <ChatHomepage agents={[agent]} theme={theme} fixedAgentId={agent.id} defaultSidebarCollapsed />
         </section>
       </div>
     </div>
