@@ -24,6 +24,32 @@ celery_app.conf.task_always_eager = True
 celery_app.conf.task_eager_propagates = True
 
 
+@pytest.fixture(autouse=True)
+def _reset_motor_client_singleton():
+    """每个测试前后重置 motor client 单例（跨 event-loop 复用根治）。
+
+    AsyncIOMotorClient 创建时绑定当前 event loop，而 pytest-asyncio 为每个
+    测试启用新 loop：某个测试真实触达 get_database() 后，单例就绑死在那个
+    测试的 loop 上；测试结束 loop 关闭，后续测试复用同一单例即报
+    "RuntimeError: Event loop is closed"（全量跑必现，曾长期污染
+    test_chat_context_declaration_unchanged）。每测试重置让单例在需要时
+    于当前 loop 上重建。
+    """
+    import contextlib
+
+    import app.db.mongodb as mongodb_mod
+
+    def _reset() -> None:
+        if mongodb_mod._client is not None:
+            with contextlib.suppress(Exception):
+                mongodb_mod._client.close()
+            mongodb_mod._client = None
+
+    _reset()
+    yield
+    _reset()
+
+
 @pytest.fixture
 def client() -> TestClient:
     """A FastAPI TestClient that bypasses real network IO."""
