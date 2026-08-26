@@ -5,6 +5,7 @@ import { Button, Form, Input, Modal, Select, Space, message, Tag } from 'antd'
 import { DeleteOutlined, PlusOutlined, KeyOutlined } from '@ant-design/icons'
 import type { CredentialType, Credential } from '../services/credentials-api'
 import { credentialsApi, credentialKeys } from '../services/credentials-api'
+import { usePermission } from '../hooks/use-permission'
 
 const TYPE_COLORS: Record<CredentialType, string> = {
   api_key: 'blue',
@@ -24,6 +25,8 @@ export default function CredentialsPage() {
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [form] = Form.useForm()
+  // 权限：是否可执行写操作（创建/删除凭据）
+  const canWrite = usePermission('tool:write')
 
   const { data, isLoading } = useQuery({
     queryKey: credentialKeys.list(),
@@ -95,9 +98,11 @@ export default function CredentialsPage() {
             管理工具认证凭据（API Key、Token 等），加密存储，可被多个工具共享引用。
           </p>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
-          创建凭据
-        </Button>
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+            创建凭据
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -132,11 +137,13 @@ export default function CredentialsPage() {
                 </div>
               </div>
               <Space>
-                <Button
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={() => handleDelete(cred)}
-                />
+                {canWrite && (
+                  <Button
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={() => handleDelete(cred)}
+                  />
+                )}
               </Space>
             </div>
           ))}

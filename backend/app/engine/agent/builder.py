@@ -18,6 +18,7 @@ from __future__ import annotations
 from loguru import logger
 
 from app.models.compat import (
+    resolve_default_model,
     resolve_skill_ids,  # noqa: F401 (used by build_tool_declaration)
 )
 
@@ -63,7 +64,12 @@ async def build_skill_declaration(tool_ids: list[str], exclude_names: set[str] |
     return "\n".join(lines)
 
 
-async def build_tool_declaration(agent: dict, exclude_names: set[str] | None = None) -> str:
+async def build_tool_declaration(
+    agent: dict,
+    exclude_names: set[str] | None = None,
+    *,
+    execution_context: str = "chat",
+) -> str:
     """Build the complete tool declaration text for the system prompt.
 
     Generates declaration sections for all tool categories:
@@ -73,6 +79,11 @@ async def build_tool_declaration(agent: dict, exclude_names: set[str] | None = N
     - Workflow list (listed for reference, triggered via propose/dispatch)
     - Built-in tools (directly callable)
     - Task tools (always available)
+
+    execution_context="workflow"（工作流 agent 节点，无人值守）时：
+    - Workflow 列表与 Task Management 段不生成（这些工具运行时已剥离，
+      防 dispatch 循环派发/干预父任务，声明与工具集保持一致）
+    - Built-in 段追加 Autonomous Execution 规则（禁反问 + abort_workflow）
     """
     sections: list[str] = []
 
@@ -94,20 +105,32 @@ async def build_tool_declaration(agent: dict, exclude_names: set[str] | None = N
         if mcp_decl:
             sections.append(mcp_decl)
 
-    workflow_ids = agent.get("workflow_ids") or []
-    if workflow_ids:
-        workflow_decl = await _build_workflow_tool_declaration(workflow_ids)
-        if workflow_decl:
-            sections.append(workflow_decl)
+    if execution_context != "workflow":
+        # Workflow 列表是给 chat 语义的 dispatch_workflow 用的；
+        # 工作流上下文没有该工具，声明一并省略。
+        workflow_ids = agent.get("workflow_ids") or []
+        if workflow_ids:
+            workflow_decl = await _build_workflow_tool_declaration(workflow_ids)
+            if workflow_decl:
+                sections.append(workflow_decl)
 
     builtin_config = agent.get("builtin_config") or []
     if builtin_config:
-        builtin_decl = _build_builtin_tool_declaration(builtin_config)
+        builtin_decl = _build_builtin_tool_declaration(
+            builtin_config, execution_context=execution_context,
+        )
         if builtin_decl:
             sections.append(builtin_decl)
 
-    task_decl = _build_task_tool_declaration()
-    sections.append(task_decl)
+    if execution_context == "workflow":
+        # 自主执行规则是行为契约（禁反问 + 诚实终止），不依赖 builtin_config，
+        # 无论 Agent 配了哪些内建工具都必须注入。
+        sections.append("\n".join(_build_autonomous_execution_section()))
+
+    if execution_context != "workflow":
+        # task/workflow 编排工具仅聊天上下文注入，工作流上下文已剥离。
+        task_decl = _build_task_tool_declaration()
+        sections.append(task_decl)
 
     sections.append(_build_chart_tool_declaration())
 
@@ -352,12 +375,19 @@ async def _build_workflow_tool_declaration(workflow_ids: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
+def _build_builtin_tool_declaration(
+    builtin_config: list[str],
+    *,
+    execution_context: str = "chat",
+) -> str:
     """Build built-in tool declaration section for the system prompt.
 
     Dynamically reads tool name + description from harness BUILTIN_TOOLS
     instances (plus app-level PARSE_TOOL_BY_NAME), so glob/grep (and any
     future configurable tools) are automatically included without hardcoding.
+
+    execution_context="workflow" 时省略 Clarification 段（ask_clarification
+    运行时已剥离）；自主执行规则由 build_tool_declaration 作为独立段注入。
     """
     from agent_flow_harness import BUILTIN_TOOLS
 
@@ -411,6 +441,11 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
             "description for the full API and examples.",
             "",
         ])
+
+    if execution_context == "workflow":
+        # 工作流无人值守语义：ask_clarification 已剥离，不生成 Clarification 段
+        # （自主执行规则由 build_tool_declaration 作为独立段注入）。
+        return "\n".join(lines)
 
     # ask_clarification is always available (not gated by builtin_config)
     lines.extend([
@@ -475,6 +510,40 @@ def _build_builtin_tool_declaration(builtin_config: list[str]) -> str:
     ])
 
     return "\n".join(lines)
+
+
+def _build_autonomous_execution_section() -> list[str]:
+    """工作流 agent 节点的自主执行规则段（无人值守语义，独立成段）。
+
+    与 context.py 的工具剥离配套：ask_clarification / _TASK_TOOLS 均已移除，
+    本段告诉 LLM 三条出路 —— 合理假设继续、诚实终止（abort_workflow）、
+    绝不反问。作为独立段注入（不依赖 builtin_config），声明与运行时工具集
+    保持一致，避免 LLM 幻觉调用不存在的工具。
+    """
+    return [
+        "",
+        "## Autonomous Execution (Workflow Context)",
+        "",
+        "You are running as an unattended node inside an automated workflow.",
+        "No human will answer you during execution — the workflow must keep",
+        "running without pausing to ask questions.",
+        "",
+        "- Do NOT ask the user questions, neither via tools nor in plain text.",
+        "  A question at the end of your output will not pause anything and",
+        "  no one will reply.",
+        "- If information is partial but a reasonable assumption is possible,",
+        "  proceed autonomously based on the most reasonable interpretation,",
+        "  and clearly state the assumptions you made in your final output.",
+        "- If the input is so vague or incomplete that continuing would be",
+        "  meaningless (any output would be fabricated), call the",
+        "  **abort_workflow** tool with an honest `reason` and, when helpful,",
+        "  `needed_info` describing what should be provided. The workflow",
+        "  will terminate and your reason will be shown to the user as the",
+        "  failure explanation.",
+        "- Never fabricate results or pretend to have completed work you",
+        "  could not actually do.",
+        "",
+    ]
 
 
 def _build_task_tool_declaration() -> str:
@@ -605,7 +674,7 @@ async def preview_agent(
                 "input_schema": {},
             })
 
-    model_ref = agent.get("default_model") or (agent.get("llm_config") or {}).get("default_model", "")
+    model_ref = resolve_default_model(agent)
 
     return {
         "system_prompt": system_text,

@@ -1,8 +1,9 @@
 """DockerSandbox — Docker 容器沙箱实现（比 LocalSandbox 隔离更强）。
 
 从 backend 的 SandboxExecutor 提取，去掉了 ``app.*`` 依赖，配置通过
-DockerSandboxConfig 注入。``docker`` 是可选依赖（未安装时自动 fallback
-到 subprocess）。
+DockerSandboxConfig 注入。降级策略 fail-closed：沙箱禁用或 Docker 不可用
+时默认**拒绝**执行，仅当 ``allow_local_fallback=True``（显式开发选项）才
+降级到本机 subprocess，且每次降级打 ERROR 日志。
 
 安全特性：
 - 容器只读根文件系统 + no-new-privileges
@@ -26,7 +27,11 @@ import subprocess
 import time
 from pathlib import Path
 
+import structlog
+
 from agent_flow_harness.sandbox.base import GrepMatch, Sandbox, SandboxResult
+
+logger = structlog.get_logger(__name__)
 
 
 class DockerSandboxConfig:
@@ -47,6 +52,7 @@ class DockerSandboxConfig:
         network_mode: str = "none",
         container_workspace_dir: str = "/workspace",
         container_skills_dir: str = "/skills",
+        allow_local_fallback: bool = False,
     ) -> None:
         self.image = image
         self.enabled = enabled
@@ -57,6 +63,9 @@ class DockerSandboxConfig:
         self.network_mode = network_mode
         self.container_workspace_dir = container_workspace_dir
         self.container_skills_dir = container_skills_dir
+        # Fail-closed 降级闸：False（默认）时沙箱不可用即拒绝执行；
+        # True 时降级本机 subprocess（仅限开发环境），每次降级打 ERROR。
+        self.allow_local_fallback = allow_local_fallback
 
 
 class _DockerUnavailableError(Exception):
@@ -64,10 +73,11 @@ class _DockerUnavailableError(Exception):
 
 
 class DockerSandbox(Sandbox):
-    """Docker 容器沙箱（强隔离），带 subprocess fallback。
+    """Docker 容器沙箱（强隔离），带显式开启的 subprocess fallback。
 
-    execute_command 优先用 Docker（enabled=True 且 daemon 可达），
-    否则 fallback 到 subprocess（与 LocalSandbox 相同）。
+    execute_command 优先用 Docker（enabled=True 且 daemon 可达）；沙箱不可
+    用时默认拒绝执行，仅 allow_local_fallback=True 时降级 subprocess（与
+    LocalSandbox 相同，但每次降级打 ERROR 日志）。
     read_file/write_file/glob/grep 操作宿主机 work_dir（容器挂载的目录）。
     """
 
@@ -96,22 +106,55 @@ class DockerSandbox(Sandbox):
     # ── 命令执行 ──────────────────────────────────────────────────────
 
     def execute_command(self, command: str, *, timeout: int | None = None) -> SandboxResult:
-        """执行命令：Docker（enabled）或 subprocess fallback。"""
+        """执行命令：Docker（enabled）；本机 subprocess 仅在显式允许时降级。"""
         effective_timeout = timeout if timeout is not None else self._timeout
 
         if not self._config.enabled:
-            return self._execute_subprocess(command, effective_timeout)
+            return self._fallback_or_refuse(
+                command, effective_timeout,
+                reason="sandbox disabled (enabled=False)",
+            )
 
         try:
             return self._execute_docker(command, effective_timeout)
-        except _DockerUnavailableError:
-            return self._execute_subprocess(command, effective_timeout)
+        except _DockerUnavailableError as exc:
+            return self._fallback_or_refuse(
+                command, effective_timeout,
+                reason=f"docker unavailable ({exc})",
+            )
         except Exception as exc:
             return SandboxResult(
                 stdout="",
                 stderr=f"Sandbox execution error: {exc}",
                 exit_code=1,
             )
+
+    def _fallback_or_refuse(
+        self, command: str, timeout: int, *, reason: str,
+    ) -> SandboxResult:
+        """Fail-closed 降级闸。
+
+        默认（allow_local_fallback=False）拒绝执行并返回可操作的错误信息；
+        显式开启后降级到本机 subprocess 并打 ERROR 日志——LLM 生成的命令
+        正在无隔离地跑在宿主机上，这必须可见、可告警。
+        """
+        if not self._config.allow_local_fallback:
+            return SandboxResult(
+                stdout="",
+                stderr=(
+                    f"Sandbox unavailable and local fallback is not allowed: {reason}. "
+                    "Set allow_local_fallback=True (SANDBOX_FALLBACK=local in the app) "
+                    "to permit host execution — development only."
+                ),
+                exit_code=1,
+            )
+        logger.error(
+            "sandbox_local_fallback",
+            reason=reason,
+            command_preview=command[:200],
+            hint="LLM-generated command executing on host without isolation",
+        )
+        return self._execute_subprocess(command, timeout)
 
     def _execute_docker(self, command: str, timeout: int) -> SandboxResult:
         """Docker 容器内执行（从 backend SandboxExecutor 提取）。"""

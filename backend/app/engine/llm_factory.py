@@ -49,10 +49,10 @@ async def get_llm_client(
     """
     from agent_flow_harness import build_client_from_doc, build_client_from_env
 
+    from app.models.compat import resolve_default_model
+
     doc = agent_doc or {}
-    # Backward compat: flat fields first, then legacy nested llm_config
-    legacy_llm = doc.get("llm_config") or {}
-    model_ref: str = doc.get("default_model") or legacy_llm.get("default_model", "")
+    model_ref: str = resolve_default_model(doc)
     # Temperature: runtime override > model default_params (handled by caller)
     temperature_override = doc.get("temperature_override")
 

@@ -12,7 +12,7 @@
  * - 搜索改为纯前端过滤（task.id / workflow_id includes）
  * - workflowNameMap：始终拉一次 workflow 列表，把 workflow_id 解析成可读名称
  */
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient, useQueries } from '@tanstack/react-query'
 import { Plus, Search, Loader2, Bolt, AlertTriangle, CheckCircle, XCircle } from 'lucide-react'
 import {
@@ -20,6 +20,7 @@ import {
   type TaskSummary, type TaskStatusValue, type TaskDetail, type NodeProgress,
   type CommentValue, BOARD_STATUSES, parseNodeProgress, type WorkflowRegistryEntry,
 } from '../services/tasks-api'
+import { workflowsApi, workflowKeys } from '../services/workflows-api'
 import { userApi } from '../services/user-api'
 import { useAuthStore } from '../stores/auth-store'
 import { TASK_STATUS_STYLES } from '../constants/task-status'
@@ -28,6 +29,9 @@ import { RewindModal } from './task/RewindModal'
 import { Modal, Select, Button } from './ui'
 import { confirmDialog } from './ui/confirm'
 import { getErrorMessage } from '../lib/api-client'
+import WorkflowInputForm from '../features/workflow-editor/WorkflowInputForm'
+import { buildDefaultValues, coerceValues } from '../features/workflow-editor/utils/workflow-input-values'
+import type { VariableDefinition } from '../features/workflow-editor/utils/variable-types'
 
 export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light' | 'dark'; onOpenTaskDetail?: (taskId: string) => void }) {
   const qc = useQueryClient()
@@ -45,6 +49,10 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
   const [createOpen, setCreateOpen] = useState(false)
   const [newTask, setNewTask] = useState<{ entryId: string; input: string }>({ entryId: '', input: '' })
   const [actionError, setActionError] = useState<string | null>(null)
+  // 结构化输入参数表单（选中声明了输入变量的工作流时启用，见下方 detailQuery）
+  const [inputValues, setInputValues] = useState<Record<string, unknown>>({})
+  const [inputValid, setInputValid] = useState(true)
+  const [inputTouched, setInputTouched] = useState(false)
 
   /* ─── Rewind modal state（看板卡片「退回重跑」打开的共享弹窗） ─── */
   const [rewindTask, setRewindTask] = useState<TaskSummary | null>(null)
@@ -134,6 +142,31 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
   }, [wfData])
   const workflows: WorkflowRegistryEntry[] = wfData?.items ?? []
 
+  /* ─── 新建任务：选中工作流后拉详情，读 start 节点 output_variables ───
+     与「AI 工作路线」运行链路（useWorkflowExecution）及定时任务弹窗
+     （TriggerConfigModal）对齐：声明了输入变量的工作流用结构化表单按名收集，
+     否则保留可选 prompt 透传。缓存 key 与工作流详情页共用。 */
+  const selectedTemplateId = useMemo(
+    () => (createOpen ? resolveTemplateId(newTask.entryId) : ''),
+    [createOpen, newTask.entryId, resolveTemplateId],
+  )
+  const { data: wfDetail, isLoading: wfDetailLoading } = useQuery({
+    queryKey: workflowKeys.detail(selectedTemplateId),
+    queryFn: () => workflowsApi.get(selectedTemplateId),
+    enabled: createOpen && !!selectedTemplateId,
+    staleTime: 60_000,
+  })
+  const inputVariables = useMemo(() => {
+    const startNode = (wfDetail?.nodes ?? []).find((n) => n.type === 'start')
+    return (startNode?.config?.output_variables as VariableDefinition[] | undefined) ?? []
+  }, [wfDetail])
+  const hasInputVariables = inputVariables.length > 0
+  // 切换工作流 / 变量定义载入后重置表单（默认值填充 + 清除错误态）
+  useEffect(() => {
+    setInputValues(buildDefaultValues(inputVariables))
+    setInputTouched(false)
+  }, [newTask.entryId, inputVariables])
+
   /* ─── Creator 名称映射（user:read 权限时拉一次 users 列表，把 created_by 的 user id 解析成可读 username） ─── */
   const { data: usersData } = useQuery({
     queryKey: ['users', { page: 1, page_size: 100 }],
@@ -155,11 +188,13 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
 
   /* ─── Mutations ─── */
   const createTask = useMutation({
-    mutationFn: (vars: { entryId: string; input: string }) =>
+    // structuredInput：结构化表单收集的值（有输入变量定义时优先）；
+    // 否则回退旧语义 —— 空 input 或 { prompt: 文本 } 透传给 start 节点
+    mutationFn: (vars: { entryId: string; input: string; structuredInput?: Record<string, unknown> }) =>
       // 把 registry entry _id (wfr_) 解析成模板 workflow_id (wf_) 再传给后端
       tasksApi.create({
         workflow_id: resolveTemplateId(vars.entryId),
-        input: vars.input ? { prompt: vars.input } : {},
+        input: vars.structuredInput ?? (vars.input ? { prompt: vars.input } : {}),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: taskKeys.lists() })
@@ -193,6 +228,18 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
       return
     }
     setActionError(null)
+    // 有输入变量定义：先过必填校验 + 类型强转，再按变量名提交
+    if (hasInputVariables) {
+      setInputTouched(true)
+      if (!inputValid) return
+      const res = coerceValues(inputVariables, inputValues)
+      if (res.error) {
+        setActionError(res.error)
+        return
+      }
+      createTask.mutate({ ...newTask, structuredInput: res.values })
+      return
+    }
     createTask.mutate(newTask)
   }
 
@@ -396,7 +443,13 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
         onCancel={() => setCreateOpen(false)}
         okText="创建"
         cancelText="取消"
-        okButtonProps={{ disabled: !newTask.entryId || createTask.isPending }}
+        okButtonProps={{
+          disabled:
+            !newTask.entryId ||
+            createTask.isPending ||
+            wfDetailLoading ||
+            (hasInputVariables && !inputValid),
+        }}
         width={520}
       >
         <div className="flex flex-col gap-4 py-2">
@@ -418,16 +471,36 @@ export function TaskBoard({ theme = 'dark', onOpenTaskDetail }: { theme?: 'light
             )}
           </div>
 
-          <div className="space-y-1.5">
-            <label className="text-xs text-[#a1a1aa] font-semibold">输入 (prompt，可选)</label>
-            <textarea
-              value={newTask.input}
-              onChange={(e) => setNewTask({ ...newTask, input: e.target.value })}
-              placeholder="任务的初始输入…"
-              rows={3}
-              className="w-full p-3 bg-[#121214] border border-[#27272a] rounded-lg text-[#fafafa] text-xs focus:outline-none focus:border-[#1E5EFF] transition resize-y"
-            />
-          </div>
+          {/* 输入区：加载参数定义中 / 结构化参数表单 / 可选 prompt 透传 */}
+          {wfDetailLoading ? (
+            <div className="flex items-center gap-2 text-xs text-[#71717a] py-2">
+              <Loader2 className="w-3.5 h-3.5 animate-spin" /> 加载工作流输入参数…
+            </div>
+          ) : hasInputVariables ? (
+            <div className="space-y-2">
+              <p className="text-[11px] text-[#71717a]">
+                该工作流的开始节点定义了输入变量，请填入本次运行所需的参数。未填的可选变量将使用默认值。
+              </p>
+              <WorkflowInputForm
+                variables={inputVariables}
+                value={inputValues}
+                onChange={setInputValues}
+                onValidityChange={(v) => setInputValid(v)}
+                showErrors={inputTouched}
+              />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <label className="text-xs text-[#a1a1aa] font-semibold">输入 (prompt，可选)</label>
+              <textarea
+                value={newTask.input}
+                onChange={(e) => setNewTask({ ...newTask, input: e.target.value })}
+                placeholder="任务的初始输入…"
+                rows={3}
+                className="w-full p-3 bg-[#121214] border border-[#27272a] rounded-lg text-[#fafafa] text-xs focus:outline-none focus:border-[#1E5EFF] transition resize-y"
+              />
+            </div>
+          )}
         </div>
       </Modal>
     </div>

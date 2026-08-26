@@ -30,6 +30,13 @@ from app.services.message_converters import (
     messages_to_timeline_entries,
     safe_json,
 )
+from app.services.run_registry import (
+    ActiveRun,
+    cancel_runs_by_session,
+    make_cancel_checker,
+    register_run,
+    unregister_run,
+)
 from app.services.session_service import MessageService, SessionService
 
 
@@ -60,6 +67,7 @@ class AgentExecutionService:
         """
         from app.engine.harness_integration import invoke as harness_invoke
 
+        start_time_ms = _now_ms()  # latency 基准 = 方法入口（含 get_agent/prompt 构建，与 phase 恒等式对齐）
         exec_doc = await AgentService.get_agent(agent_id)
         if exec_doc is None:
             raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
@@ -67,7 +75,6 @@ class AgentExecutionService:
         session_id = await _resolve_session(agent_id, body, user_id)
         request_id = str(uuid.uuid4())
         call_chain = [*(external_call_chain or []), agent_id]
-        start_time_ms = _now_ms()
 
         # Build messages (system prompt + user input with file attachments)
         system_text = await _build_system_prompt_checked(exec_doc, user_id)
@@ -88,6 +95,7 @@ class AgentExecutionService:
             total_tokens=session_total_tokens,
         )
 
+        prep_done_ms = _now_ms() - start_time_ms
         run_error: BaseException | None = None
         try:
             result = await harness_invoke(
@@ -102,10 +110,14 @@ class AgentExecutionService:
             raise
         finally:
             # Unified execution log (all channels).
+            # （invoke 的消息持久化在 execution log 之后，phase_timing 不含 persist）
             await _record_execution_log(
                 user_id=user_id, agent_id=agent_id, session_id=session_id,
                 request_id=request_id, start_time_ms=start_time_ms,
                 token_usage=result.get("usage"), error=run_error,
+                phase_timing=_compose_phase_timing(
+                    result.get("timing"), result.get("usage"), prep_ms=prep_done_ms,
+                ),
             )
 
         # Extract output + persist agent message
@@ -148,6 +160,10 @@ class AgentExecutionService:
         """
         from app.engine.harness_integration import stream as harness_stream
 
+        # 计时容器：start_ms = latency 基准 = 方法入口（覆盖 get_agent/prompt
+        # 构建，与 phase 恒等式对齐）；ttft_ms 由首个 token 事件记入；
+        # prep_ms/persist_ms 在 _run 内打点。
+        timing: dict[str, int] = {"start_ms": _now_ms()}
         exec_doc = await AgentService.get_agent(agent_id)
         if exec_doc is None:
             raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
@@ -162,11 +178,14 @@ class AgentExecutionService:
         collected_timeline: list[dict] = []
 
         async def _on_event(event: dict) -> None:
+            # TTFT：首个内容 token 到达时打点（只记第一次）。
+            if "ttft_ms" not in timing and event.get("type") in _TTFT_EVENT_TYPES:
+                timing["ttft_ms"] = max(0, _now_ms() - timing.get("start_ms", _now_ms()))
             collected_timeline.append(event)
             await event_queue.put(f"data: {safe_json(event)}\n\n")
 
         async def _run():
-            start_time_ms = _now_ms()
+            start_time_ms = timing["start_ms"]
             user_content = await _build_user_content(body, user_id, session_id)
             initial_messages = _assemble_messages(system_text, user_content)
             legacy_records = await _load_legacy_records(session_id, body.input)
@@ -181,19 +200,33 @@ class AgentExecutionService:
                 external_call_chain, initial_messages, execution_path="react",
                 total_tokens=session_total_tokens,
             )
+            timing["prep_ms"] = _now_ms() - timing.get("start_ms", _now_ms())
             run_error: BaseException | None = None
+            cancelled = False
             try:
                 result = await harness_stream(
                     exec_doc, initial_state,
                     on_event=_on_event,
                     enable_thinking=body.enable_thinking,
                     legacy_records=legacy_records,
+                    cancel_checker=make_cancel_checker(request_id),
                     user_token=user_token,
                 )
                 logger.info(
                     "agent_stream_completed",
                     agent_id=agent_id, request_id=request_id,
                     step_count=result.get("step_count", 0),
+                )
+            except asyncio.CancelledError:
+                # 用户 stop（mid-stream abort）。CancelledError 打断当前
+                # await 点（LLM token 流 / 工具执行），半截回复不持久化：
+                # LangGraph checkpoint 停在上一个完成的 superstep，被取消
+                # 的轮次对后续对话不可见，新消息带完整干净历史重新开始。
+                cancelled = True
+                result = {}
+                logger.info(
+                    "agent_stream_cancelled",
+                    agent_id=agent_id, request_id=request_id, session_id=session_id,
                 )
             except Exception as exc:
                 run_error = exc
@@ -203,25 +236,66 @@ class AgentExecutionService:
                 )
                 result = {}
             finally:
-                with contextlib.suppress(Exception):
-                    await _persist_agent_message(
-                        session_id, collected_timeline,
-                        token_usage=result.get("usage"),
-                        request_id=request_id,
-                    )
-                # Unified execution log (all channels).
-                with contextlib.suppress(Exception):
-                    await _record_execution_log(
-                        user_id=user_id, agent_id=agent_id, session_id=session_id,
-                        request_id=request_id, start_time_ms=start_time_ms,
-                        token_usage=result.get("usage"), error=run_error,
-                    )
+                unregister_run(request_id)
+                if not cancelled:
+                    persist_t0 = _now_ms()
+                    with contextlib.suppress(Exception):
+                        await _persist_agent_message(
+                            session_id, collected_timeline,
+                            token_usage=result.get("usage"),
+                            request_id=request_id,
+                        )
+                    timing["persist_ms"] = _now_ms() - persist_t0
+                    # Unified execution log (all channels).
+                    with contextlib.suppress(Exception):
+                        await _record_execution_log(
+                            user_id=user_id, agent_id=agent_id, session_id=session_id,
+                            request_id=request_id, start_time_ms=start_time_ms,
+                            token_usage=result.get("usage"), error=run_error,
+                            ttft_ms=timing.get("ttft_ms", 0),
+                            phase_timing=_compose_phase_timing(
+                                result.get("timing"), result.get("usage"),
+                                prep_ms=timing.get("prep_ms"),
+                                persist_ms=timing.get("persist_ms"),
+                            ),
+                        )
+                else:
+                    # 取消轮也持久化（展示层）：半截回复 + 已停止标记，刷新后可见。
+                    # 只影响 messages 展示集合，不回流模型上下文（checkpointer
+                    # 停在上一个完成步，半截回复从未进入状态）。
+                    finalized = _finalize_cancelled_timeline(collected_timeline)
+                    if finalized:
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await asyncio.shield(_persist_agent_message(
+                                session_id, finalized,
+                                request_id=request_id,
+                            ))
+                    # 取消态：写 execution_log（status=cancelled）；用
+                    # shield 保证在取消态下仍能写完（防御二次 cancel）。
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(_record_execution_log(
+                            user_id=user_id, agent_id=agent_id, session_id=session_id,
+                            request_id=request_id, start_time_ms=start_time_ms,
+                            token_usage=None, error=None, status_override="cancelled",
+                        ))
                 await _emit_stream_done(
                     event_queue, request_id=request_id, session_id=session_id,
-                    usage=result.get("usage"),
+                    usage=result.get("usage"), cancelled=cancelled,
+                    start_time_ms=start_time_ms, ttft_ms=timing.get("ttft_ms", 0),
                 )
 
-        asyncio.create_task(_run())
+        # 同 session 的 checkpointer thread 只允许一个写入者：SSE 断连后
+        # 后台仍在跑的旧 run 与新 run 并发写同一 thread 会互相覆盖
+        # checkpoint / 消息乱序。新 run 启动前取消该 session 残留的活跃
+        # run——用户主动发新消息即取代旧生成。
+        await cancel_runs_by_session(session_id)
+
+        task = asyncio.create_task(_run())
+        # 注册运行句柄：stop 端点据此 task.cancel()（mid-stream abort）。
+        register_run(ActiveRun(
+            task=task, request_id=request_id, agent_id=agent_id,
+            user_id=user_id, session_id=session_id,
+        ))
         return event_queue, request_id, session_id
 
     # ------------------------------------------------------------------
@@ -239,6 +313,8 @@ class AgentExecutionService:
         """Resume an interrupted agent and stream the continued execution."""
         from app.engine.harness_integration import resume as harness_resume
 
+        # 计时容器：与 stream() 相同（start_ms = latency 基准 = 方法入口）。
+        timing: dict[str, int] = {"start_ms": _now_ms()}
         exec_doc = await AgentService.get_agent(agent_id)
         if exec_doc is None:
             raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
@@ -256,11 +332,13 @@ class AgentExecutionService:
         collected_timeline: list[dict] = []
 
         async def _on_event(event: dict) -> None:
+            if "ttft_ms" not in timing and event.get("type") in _TTFT_EVENT_TYPES:
+                timing["ttft_ms"] = max(0, _now_ms() - timing.get("start_ms", _now_ms()))
             collected_timeline.append(event)
             await event_queue.put(f"data: {safe_json(event)}\n\n")
 
         async def _run():
-            start_time_ms = _now_ms()
+            start_time_ms = timing["start_ms"]
             # Carry over the session's cumulative token spend so the budget
             # guard enforces the per-session ceiling, consistent with invoke/stream.
             session_doc = await SessionService.get_session(session_id)
@@ -270,12 +348,23 @@ class AgentExecutionService:
                 "session_id": session_id, "user_id": user_id,
                 "total_tokens": session_total_tokens,
             }
+            timing["prep_ms"] = _now_ms() - timing.get("start_ms", _now_ms())
             run_error: BaseException | None = None
+            cancelled = False
             try:
                 result = await harness_resume(
                     exec_doc, state, _on_event, body.answer,
                     enable_thinking=body.enable_thinking,
+                    cancel_checker=make_cancel_checker(request_id),
                     user_token=user_token,
+                )
+            except asyncio.CancelledError:
+                # 与 stream() 相同的 mid-stream abort 语义（见 stream 内注释）。
+                cancelled = True
+                result = {}
+                logger.info(
+                    "agent_resume_cancelled",
+                    agent_id=agent_id, request_id=request_id, session_id=session_id,
                 )
             except Exception as exc:
                 run_error = exc
@@ -285,30 +374,68 @@ class AgentExecutionService:
                 )
                 result = {}
             finally:
-                with contextlib.suppress(Exception):
-                    await _persist_agent_message(
-                        session_id, collected_timeline,
-                        extra_filter_types=("interrupt",),
-                        token_usage=result.get("usage"),
-                        append_to_last_agent=True,
-                        request_id=request_id,
-                    )
-                # Unified execution log (all channels).
-                # Failure is non-fatal — must not block the terminal done event.
-                try:
-                    await _record_execution_log(
-                        user_id=user_id, agent_id=agent_id, session_id=session_id,
-                        request_id=request_id, start_time_ms=start_time_ms,
-                        token_usage=result.get("usage"), error=run_error,
-                    )
-                except Exception:
-                    logger.exception("agent_resume_log_error", agent_id=agent_id)
+                unregister_run(request_id)
+                if not cancelled:
+                    persist_t0 = _now_ms()
+                    with contextlib.suppress(Exception):
+                        await _persist_agent_message(
+                            session_id, collected_timeline,
+                            extra_filter_types=("interrupt",),
+                            token_usage=result.get("usage"),
+                            append_to_last_agent=True,
+                            request_id=request_id,
+                        )
+                    timing["persist_ms"] = _now_ms() - persist_t0
+                    # Unified execution log (all channels).
+                    # Failure is non-fatal — must not block the terminal done event.
+                    try:
+                        await _record_execution_log(
+                            user_id=user_id, agent_id=agent_id, session_id=session_id,
+                            request_id=request_id, start_time_ms=start_time_ms,
+                            token_usage=result.get("usage"), error=run_error,
+                            ttft_ms=timing.get("ttft_ms", 0),
+                            phase_timing=_compose_phase_timing(
+                                result.get("timing"), result.get("usage"),
+                                prep_ms=timing.get("prep_ms"),
+                                persist_ms=timing.get("persist_ms"),
+                            ),
+                        )
+                    except Exception:
+                        logger.exception("agent_resume_log_error", agent_id=agent_id)
+                else:
+                    # 取消轮也持久化（展示层）：半截回复 + 已停止标记，刷新后可见。
+                    # 只影响 messages 展示集合，不回流模型上下文（checkpointer
+                    # 停在上一个完成步，半截回复从未进入状态）。
+                    finalized = _finalize_cancelled_timeline(collected_timeline)
+                    if finalized:
+                        with contextlib.suppress(asyncio.CancelledError, Exception):
+                            await asyncio.shield(_persist_agent_message(
+                                session_id, finalized,
+                                extra_filter_types=("interrupt",),
+                                append_to_last_agent=True,
+                                request_id=request_id,
+                            ))
+                    with contextlib.suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(_record_execution_log(
+                            user_id=user_id, agent_id=agent_id, session_id=session_id,
+                            request_id=request_id, start_time_ms=start_time_ms,
+                            token_usage=None, error=None, status_override="cancelled",
+                        ))
                 await _emit_stream_done(
                     event_queue, request_id=request_id, session_id=session_id,
-                    usage=result.get("usage"),
+                    usage=result.get("usage"), cancelled=cancelled,
+                    start_time_ms=start_time_ms, ttft_ms=timing.get("ttft_ms", 0),
                 )
 
-        asyncio.create_task(_run())
+        # 与 stream 相同的并发防护：resume 也写同一 checkpointer thread。
+        await cancel_runs_by_session(session_id)
+
+        task = asyncio.create_task(_run())
+        # 注册运行句柄：resume 的流同样可被 stop 端点取消。
+        register_run(ActiveRun(
+            task=task, request_id=request_id, agent_id=agent_id,
+            user_id=user_id, session_id=session_id,
+        ))
         return event_queue, request_id, session_id
 
 
@@ -318,18 +445,120 @@ class AgentExecutionService:
 
 _TRANSIENT_EVENT_TYPES = ("text_delta", "thinking_delta", "tool_call_start", "interrupt")
 
+# TTFT 打点事件类型：首个内容 token（含 thinking）到达即计首 token 延迟。
+_TTFT_EVENT_TYPES = ("text_delta", "thinking_delta", "text", "thinking")
+
+#: 慢请求阈值（毫秒）——超过时 agent_call_timing 日志升级为 warning，便于筛选。
+_SLOW_CALL_MS = 10_000
+
+
+def _compose_phase_timing(
+    result_timing: dict | None,
+    usage: dict | None,
+    *,
+    prep_ms: int | None = None,
+    persist_ms: int | None = None,
+) -> dict | None:
+    """合成 DEBUG 阶段耗时日志字段（settings.DEBUG=false → None，不输出）。
+
+    result_timing 来自 harness execution 返回的 result["timing"]（build/exec
+    + build 子阶段）；graph_overhead = exec − llm − tool（图调度/checkpoint/
+    compress 等非 LLM 非工具开销，clamp ≥ 0）。恒等式（latency 基准与方法
+    入口对齐后严格成立）：
+    prep + build + graph_overhead + llm + tool + persist ≈ latency。
+    """
+    if result_timing is None:
+        return None
+    usage = usage or {}
+    llm_ms = int(round(float(usage.get("llm_duration") or 0) * 1000))
+    tool_ms = int(round(float(usage.get("tool_duration") or 0) * 1000))
+    exec_ms = int(result_timing.get("exec_ms") or 0)
+    fields: dict[str, int] = {
+        "prep_ms": prep_ms or 0,
+        "build_ms": int(result_timing.get("build_ms") or 0),
+        "exec_ms": exec_ms,
+        "llm_ms": llm_ms,
+        "tool_ms": tool_ms,
+        "graph_overhead_ms": max(0, exec_ms - llm_ms - tool_ms),
+        "persist_ms": persist_ms or 0,
+    }
+    # build 子阶段（build_llm_client_ms / build_tools_mcp_ms / ...）平铺并入
+    for key, val in (result_timing.get("phases") or {}).items():
+        fields[key] = int(val)
+    return fields
+
+
+def _duration_metrics(
+    usage: dict | None,
+    *,
+    start_time_ms: int | None,
+    ttft_ms: int = 0,
+) -> dict[str, int]:
+    """把 UsageMiddleware 的 usage（duration 为浮点秒）换算成毫秒级耗时拆分。
+
+    other = 总耗时 - LLM - 工具（即代码/框架延迟），clamp ≥ 0（monotonic
+    时钟与墙钟做差可能轻微为负）。start_time_ms 为 None 时 latency/other 记 0。
+    """
+    usage = usage or {}
+    llm_ms = int(round(float(usage.get("llm_duration") or 0) * 1000))
+    tool_ms = int(round(float(usage.get("tool_duration") or 0) * 1000))
+    latency_ms = max(0, _now_ms() - start_time_ms) if start_time_ms else 0
+    other_ms = max(0, latency_ms - llm_ms - tool_ms) if latency_ms else 0
+    return {
+        "total_latency_ms": latency_ms,
+        "llm_duration_ms": llm_ms,
+        "tool_duration_ms": tool_ms,
+        "other_duration_ms": other_ms,
+        "ttft_ms": ttft_ms,
+    }
+
+#: 取消标记条目——三个前端都以纯 text 渲染，语义中性（非 error）。
+_CANCELLED_MARKER = "⏹ 已停止生成"
+
+
+def _finalize_cancelled_timeline(timeline: list[dict]) -> list[dict]:
+    """取消轮的展示层收尾：拼出半截文本 + 追加停止标记。
+
+    text_delta 是瞬态事件（正常完成轮会被 _persist_agent_message 过滤），
+    取消时把最后一段未定稿的 delta 合成为 text 条目，用户刷新后仍能
+    看到半截回复和已执行的工具事件；末尾加 ⏹ 标记表明轮次被主动停止。
+
+    无任何可见内容（秒级取消、连工具都没跑）时返回空列表 → 不落库。
+    """
+    last_text_idx = -1
+    for i, e in enumerate(timeline):
+        if e.get("type") == "text":
+            last_text_idx = i
+    partial = "".join(
+        e.get("content", "") for e in timeline[last_text_idx + 1:]
+        if e.get("type") == "text_delta"
+    )
+    meaningful = bool(partial) or any(
+        e.get("type") not in _TRANSIENT_EVENT_TYPES for e in timeline
+    )
+    if not meaningful:
+        return []
+    entries = list(timeline)
+    if partial:
+        entries.append({"type": "text", "content": partial})
+    entries.append({"type": "text", "content": _CANCELLED_MARKER})
+    return entries
+
 
 async def _resolve_session(agent_id: str, body: ExecutionRequest, user_id: str) -> str:
     """Resolve or create a session, then persist the user message."""
     session_id = body.session_id or ""
+    # 展示文案（快捷指令 label）优先用于会话标题，避免后台指令泄漏到侧边栏
+    title_source = body.display_text or body.input
     if not session_id:
         session_doc = await SessionService.create_session(
-            user_id=user_id, agent_id=agent_id, title=body.input[:200],
+            user_id=user_id, agent_id=agent_id, title=title_source[:200],
         )
         session_id = session_doc["_id"]
     await MessageService.add_message(
         session_id=session_id, role="user",
         content=body.input, file_ids=body.file_ids or None,
+        display_text=body.display_text or "",
     )
     return session_id
 
@@ -527,10 +756,22 @@ async def _emit_stream_done(
     request_id: str,
     session_id: str,
     usage: dict | None,
+    cancelled: bool = False,
+    start_time_ms: int | None = None,
+    ttft_ms: int = 0,
 ) -> None:
-    """Push the terminal done event + close sentinel. Shared by stream/resume."""
+    """Push the terminal done event + close sentinel. Shared by stream/resume.
+
+    start_time_ms 提供时，把 usage 补齐为毫秒级耗时拆分（total_latency_ms /
+    llm_duration_ms / tool_duration_ms / other_duration_ms / ttft_ms），
+    前端可直接渲染「慢在哪」而无需换算。
+    """
+    usage = dict(usage or {})
+    if start_time_ms is not None:
+        m = _duration_metrics(usage, start_time_ms=start_time_ms, ttft_ms=ttft_ms)
+        usage.update(m)
     await event_queue.put(
-        f"data: {safe_json({'done': True, 'request_id': request_id, 'session_id': session_id, 'usage': usage or {}})}\n\n"
+        f"data: {safe_json({'done': True, 'cancelled': cancelled, 'request_id': request_id, 'session_id': session_id, 'usage': usage})}\n\n"
     )
     await event_queue.put(None)
 
@@ -587,6 +828,9 @@ async def _record_execution_log(
     start_time_ms: int,
     token_usage: dict | None,
     error: BaseException | None = None,
+    status_override: str | None = None,
+    ttft_ms: int = 0,
+    phase_timing: dict | None = None,
 ) -> None:
     """Write one unified execution_logs record for ANY agent call.
 
@@ -595,6 +839,12 @@ async def _record_execution_log(
     fields (api_key_id / endpoint) are pulled from the stashed
     ExtCallContext when present, and the context is marked consumed so
     the stats middleware fallback skips the duplicate write.
+
+    同时输出一行 ``agent_call_timing`` 诊断日志（毫秒级耗时拆分），用于
+    快速判断慢因：llm 高 = 模型服务慢；tool 高 = 工具慢；other 高 =
+    代码/框架延迟。超过 _SLOW_CALL_MS 时日志级别升为 warning。
+    phase_timing（DEBUG 专用，_compose_phase_timing 合成）非空时额外输出
+    ``agent_phase_timing`` 日志，把 other 拆到 prep/build/graph_overhead/persist。
 
     Failure is logged but never raised — execution logging must not
     break the user-facing request flow.
@@ -606,7 +856,35 @@ async def _record_execution_log(
 
     usage = token_usage or {}
     latency_ms = int(_time.time() * 1000) - start_time_ms
-    status = "error" if error is not None else "success"
+    metrics = _duration_metrics(usage, start_time_ms=start_time_ms, ttft_ms=ttft_ms)
+    slow = latency_ms > _SLOW_CALL_MS
+    log = logger.warning if slow else logger.info
+    log(
+        "agent_call_timing",
+        request_id=request_id, agent_id=agent_id,
+        latency_ms=latency_ms,
+        ttft_ms=metrics["ttft_ms"],
+        llm_duration_ms=metrics["llm_duration_ms"],
+        tool_duration_ms=metrics["tool_duration_ms"],
+        other_duration_ms=metrics["other_duration_ms"],
+        input_tokens=int(usage.get("input_tokens") or 0),
+        output_tokens=int(usage.get("output_tokens") or 0),
+        llm_calls=int(usage.get("llm_calls") or 0),
+        tool_calls=int(usage.get("tool_calls") or 0),
+        slow=slow,
+    )
+    if phase_timing:
+        logger.info(
+            "agent_phase_timing",
+            request_id=request_id, agent_id=agent_id, **phase_timing,
+        )
+    if status_override is not None:
+        # e.g. "cancelled"（用户 stop）——显式状态优先于 error 推断。
+        status = status_override
+        status_code = 499  # client closed request（nginx 惯例）
+    else:
+        status = "error" if error is not None else "success"
+        status_code = 500 if error is not None else 200
 
     # External calls carry api_key_id / endpoint in the stashed context.
     api_key_id = ""
@@ -625,8 +903,11 @@ async def _record_execution_log(
         api_key_id=api_key_id,
         endpoint=endpoint,
         status=status,
-        status_code=500 if error is not None else 200,
+        status_code=status_code,
         latency_ms=latency_ms,
+        llm_duration_ms=metrics["llm_duration_ms"],
+        tool_duration_ms=metrics["tool_duration_ms"],
+        ttft_ms=metrics["ttft_ms"],
         total_tokens=int(usage.get("total_tokens") or 0),
         input_tokens=int(usage.get("input_tokens") or 0),
         output_tokens=int(usage.get("output_tokens") or 0),

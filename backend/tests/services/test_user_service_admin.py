@@ -2,7 +2,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from app.core.errors import ValidationError
+from app.core.errors import ForbiddenError, ValidationError
 from app.services.user_service import UserService
 
 
@@ -50,7 +50,7 @@ def mock_collection():
         yield col
 
 
-def _make_admin_doc(_id="user_01HADMIN", username="admin", status="active"):
+def _make_admin_doc(_id="user_01HADMIN", username="admin", status="active", is_super_admin=False):
     return {
         "_id": _id,
         "username": username,
@@ -58,6 +58,7 @@ def _make_admin_doc(_id="user_01HADMIN", username="admin", status="active"):
         "password_hash": "$2b$12$hash",
         "role": "admin",
         "status": status,
+        "is_super_admin": is_super_admin,
         "created_at": "2026-01-01T00:00:00",
         "updated_at": "2026-01-01T00:00:00",
         "last_login_at": None,
@@ -243,7 +244,7 @@ class TestUpdateUser:
         assert "self" in exc.value.code.lower() or "PERMISSION" in exc.value.code
 
     async def test_cannot_disable_last_admin(self, mock_collection) -> None:
-        """Cannot disable the last admin."""
+        """Cannot disable the last admin (acting as super admin)."""
         # Only one admin in the system
         mock_collection.find_one.return_value = _make_admin_doc()
         mock_collection.count_documents.return_value = 1
@@ -253,6 +254,7 @@ class TestUpdateUser:
                 user_id="user_01HADMIN",
                 updates={"status": "disabled"},
                 current_user_id="user_02HANOTHER",
+                acting_is_super_admin=True,
             )
         assert "LAST_ADMIN" in exc.value.code
 
@@ -281,7 +283,7 @@ class TestDeleteUser:
         assert "SELF" in exc.value.code
 
     async def test_cannot_delete_last_admin(self, mock_collection) -> None:
-        """Cannot delete the last admin."""
+        """Cannot delete the last admin (acting as super admin)."""
         mock_collection.find_one.return_value = _make_admin_doc()
         mock_collection.count_documents.return_value = 1
 
@@ -289,6 +291,7 @@ class TestDeleteUser:
             await UserService.delete_user(
                 user_id="user_01HADMIN",
                 current_user_id="user_02HANOTHER",
+                acting_is_super_admin=True,
             )
         assert "LAST_ADMIN" in exc.value.code
 
@@ -336,3 +339,155 @@ class TestResetPassword:
             new_password="NewStrong5678",
         )
         assert result is False
+
+
+class TestSuperAdminGuards:
+    """Super-admin guards — a regular admin cannot manage other admins."""
+
+    async def test_regular_admin_cannot_disable_other_admin(self, mock_collection) -> None:
+        """Non-super admin disabling another admin → SUPER_ADMIN_REQUIRED."""
+        mock_collection.find_one.return_value = _make_admin_doc()
+
+        with pytest.raises(ForbiddenError) as exc:
+            await UserService.update_user(
+                user_id="user_01HADMIN",
+                updates={"status": "disabled"},
+                current_user_id="user_02HANOTHER",
+            )
+        assert exc.value.code == "SUPER_ADMIN_REQUIRED"
+
+    async def test_regular_admin_cannot_delete_other_admin(self, mock_collection) -> None:
+        """Non-super admin deleting another admin → SUPER_ADMIN_REQUIRED."""
+        mock_collection.find_one.return_value = _make_admin_doc()
+
+        with pytest.raises(ForbiddenError) as exc:
+            await UserService.delete_user(
+                user_id="user_01HADMIN",
+                current_user_id="user_02HANOTHER",
+            )
+        assert exc.value.code == "SUPER_ADMIN_REQUIRED"
+
+    async def test_regular_admin_cannot_reset_other_admin_password(self, mock_collection) -> None:
+        """Non-super admin resetting another admin's password → SUPER_ADMIN_REQUIRED
+        (prevents account takeover via password reset)."""
+        mock_collection.find_one.return_value = _make_admin_doc()
+
+        with pytest.raises(ForbiddenError) as exc:
+            await UserService.reset_password(
+                user_id="user_01HADMIN",
+                new_password="NewStrong5678",
+                current_user_id="user_02HANOTHER",
+            )
+        assert exc.value.code == "SUPER_ADMIN_REQUIRED"
+
+    async def test_any_admin_can_reset_own_password(self, mock_collection) -> None:
+        """Resetting one's OWN password is always allowed (self is exempt from
+        the super-admin guard) — super admin and regular admin alike."""
+        mock_collection.find_one.return_value = _make_admin_doc(
+            _id="user_01HADMIN", is_super_admin=True
+        )
+
+        # Super admin resetting own password.
+        result = await UserService.reset_password(
+            user_id="user_01HADMIN",
+            new_password="NewStrong5678",
+            current_user_id="user_01HADMIN",
+            acting_is_super_admin=True,
+        )
+        assert result is True
+
+        # Regular admin resetting own password.
+        mock_collection.find_one.return_value = _make_admin_doc(
+            _id="user_02HANOTHER", is_super_admin=False
+        )
+        result = await UserService.reset_password(
+            user_id="user_02HANOTHER",
+            new_password="NewStrong5678",
+            current_user_id="user_02HANOTHER",
+            acting_is_super_admin=False,
+        )
+        assert result is True
+
+    async def test_regular_admin_cannot_promote_to_admin(self, mock_collection) -> None:
+        """Non-super admin promoting anyone to admin → SUPER_ADMIN_REQUIRED."""
+        mock_collection.find_one.return_value = _make_user_doc()
+
+        with pytest.raises(ForbiddenError) as exc:
+            await UserService.update_user(
+                user_id="user_01HDEV",
+                updates={"role": "admin"},
+                current_user_id="user_02HANOTHER",
+            )
+        assert exc.value.code == "SUPER_ADMIN_REQUIRED"
+
+    async def test_super_admin_can_disable_other_admin(self, mock_collection) -> None:
+        """Super admin CAN manage other admins (with last-admin protection)."""
+        mock_collection.find_one.return_value = _make_admin_doc()
+        mock_collection.count_documents.return_value = 2  # 2 admins, 1 super
+
+        result = await UserService.update_user(
+            user_id="user_01HADMIN",
+            updates={"status": "disabled"},
+            current_user_id="user_09HSUPER",
+            acting_is_super_admin=True,
+        )
+        assert result is not None
+        mock_collection.update_one.assert_called_once()
+
+    async def test_cannot_disable_last_super_admin(self, mock_collection) -> None:
+        """The only super admin cannot be disabled even by another (super) admin."""
+        mock_collection.find_one.return_value = _make_admin_doc(is_super_admin=True)
+        # count_documents({"is_super_admin": True}) → 1 (the last one)
+        mock_collection.count_documents.return_value = 1
+
+        with pytest.raises(ValidationError) as exc:
+            await UserService.update_user(
+                user_id="user_01HADMIN",
+                updates={"status": "disabled"},
+                current_user_id="user_09HSUPER",
+                acting_is_super_admin=True,
+            )
+        assert exc.value.code == "LAST_SUPER_ADMIN_PROTECTED"
+
+    async def test_cannot_delete_last_super_admin(self, mock_collection) -> None:
+        """The only super admin cannot be deleted."""
+        mock_collection.find_one.return_value = _make_admin_doc(is_super_admin=True)
+        # First count_documents call: super admin count → 1 (the last one)
+        mock_collection.count_documents.return_value = 1
+
+        with pytest.raises(ValidationError) as exc:
+            await UserService.delete_user(
+                user_id="user_01HADMIN",
+                current_user_id="user_09HSUPER",
+                acting_is_super_admin=True,
+            )
+        assert exc.value.code == "LAST_SUPER_ADMIN_PROTECTED"
+
+
+class TestSuperAdminBackfill:
+    """Bootstrap backfill — earliest admin becomes super admin when none exists."""
+
+    async def test_backfills_earliest_admin_when_none_exists(self, mock_collection) -> None:
+        mock_collection.count_documents.return_value = 0  # no super admin
+        mock_collection.find_one.return_value = _make_admin_doc()
+
+        await UserService.ensure_super_admin_backfill()
+
+        mock_collection.update_one.assert_called_once_with(
+            {"_id": "user_01HADMIN"}, {"$set": {"is_super_admin": True}}
+        )
+
+    async def test_noop_when_super_admin_exists(self, mock_collection) -> None:
+        mock_collection.count_documents.return_value = 1
+
+        await UserService.ensure_super_admin_backfill()
+
+        mock_collection.update_one.assert_not_called()
+
+    async def test_noop_when_no_admins(self, mock_collection) -> None:
+        mock_collection.count_documents.return_value = 0
+        mock_collection.find_one.return_value = None
+
+        await UserService.ensure_super_admin_backfill()
+
+        mock_collection.update_one.assert_not_called()

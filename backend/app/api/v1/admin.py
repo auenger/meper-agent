@@ -30,6 +30,7 @@ def _doc_to_user_response(doc: dict) -> UserResponse:
         created_at=doc["created_at"],
         updated_at=doc["updated_at"],
         last_login_at=doc.get("last_login_at"),
+        is_super_admin=bool(doc.get("is_super_admin", False)),
     )
 
 
@@ -116,6 +117,7 @@ async def update_user(
         user_id=user_id,
         updates=updates,
         current_user_id=current_user.id,
+        acting_is_super_admin=current_user.is_super_admin,
     )
     if doc is None:
         from app.core.errors import NotFoundError
@@ -146,6 +148,7 @@ async def delete_user(
     deleted = await UserService.delete_user(
         user_id=user_id,
         current_user_id=current_user.id,
+        acting_is_super_admin=current_user.is_super_admin,
     )
     if not deleted:
         from app.core.errors import NotFoundError
@@ -169,12 +172,14 @@ async def delete_user(
 async def reset_password(
     user_id: str,
     body: PasswordResetRequest,
-    _: UserResponse = Depends(require_role(UserRole.ADMIN)),
+    current_user: UserResponse = Depends(require_role(UserRole.ADMIN)),
 ) -> PasswordResetResponse:
     """Reset a user's password. (AC5)"""
     ok = await UserService.reset_password(
         user_id=user_id,
         new_password=body.new_password,
+        current_user_id=current_user.id,
+        acting_is_super_admin=current_user.is_super_admin,
     )
     if not ok:
         from app.core.errors import NotFoundError

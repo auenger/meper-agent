@@ -86,6 +86,8 @@ export interface User {
   /** 后端角色 name（key，如 admin / content_editor）。直存以兼容自定义角色，
    *  显示名由 UserManagement 从动态 roles 列表解析。 */
   role: string;
+  /** 超级管理员（初始管理员）。普通管理员不可对管理员执行管理写操作。 */
+  isSuperAdmin: boolean;
   permissions: {
     'agent:write': boolean;
     'workflow:write': boolean;

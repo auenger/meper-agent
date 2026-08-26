@@ -43,10 +43,11 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
-    # CORS - comma-separated origins
-    # In development, use "*" to allow all origins; in production,
-    # restrict to explicit origins (e.g. "https://app.example.com").
-    CORS_ORIGINS: str = "*"
+    # CORS - comma-separated origins for the non-/ext API surface.
+    # /api/v1/ext/* is always permissive (third-party embeds); everything
+    # else uses this whitelist. Same-origin deployments (Caddy) need no
+    # CORS entries; list dev server origins here instead.
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -67,7 +68,7 @@ class Settings(BaseSettings):
 
     # Session token budget (cumulative tokens per session before the agent is blocked).
     # Agents can override via their own max_tokens field (0 = use this default).
-    DEFAULT_SESSION_MAX_TOKENS: int = 200_00000
+    DEFAULT_SESSION_MAX_TOKENS: int = 20_000_000
 
     # LangGraph recursion limit — the max number of supersteps per graph run.
     # Each REACT iteration (LLM call + tool execution) consumes ~2 supersteps,
@@ -253,8 +254,16 @@ class Settings(BaseSettings):
     SANDBOX_MAX_OUTPUT_BYTES: int = 50 * 1024  # 50 KB stdout/stderr cap
 
     # When True, bash runs inside Docker container.
-    # When False (default for local dev), bash runs via subprocess.
+    # When False (default), bash degrades to host subprocess execution
+    # (see SANDBOX_FALLBACK).
     SANDBOX_ENABLED: bool = False
+
+    # Fallback gate when the sandbox is disabled or Docker is unavailable.
+    # "local" (default, backward-compatible) degrades to host subprocess
+    # execution — every fallback is logged as ERROR because the isolation
+    # guarantees are gone. Set "never" to fail closed (refuse execution),
+    # e.g. in production where host execution of LLM commands is unwanted.
+    SANDBOX_FALLBACK: str = "local"
 
     # When True, legacy sessions (created before checkpointer) have their
     # MessageRecord history serialized into the thread on first access.

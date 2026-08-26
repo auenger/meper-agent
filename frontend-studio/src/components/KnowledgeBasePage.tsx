@@ -8,6 +8,7 @@ import { useState, type FormEvent } from 'react';
 import { Plus, BookOpen, Trash2, Loader2, FileText, Search } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api';
+import { usePermission } from '../hooks/use-permission';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
 import { getErrorMessage } from '../lib/api-client';
@@ -41,6 +42,8 @@ export function KnowledgeBasePage({
   onOpenKb: (kb: { id: string; name: string; type: KbType }) => void;
 }) {
   const queryClient = useQueryClient();
+  // 写权限门控：无 knowledge:write 的用户隐藏创建/删除入口（查看详情不受影响）
+  const canWrite = usePermission('knowledge:write');
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
@@ -109,13 +112,15 @@ export function KnowledgeBasePage({
             文档树（agent 探索 kb_glob/grep/read）与向量库（agent/workflow 检索 kb_search）并存。
           </p>
         </div>
-        <button
-          onClick={() => setIsCreating(true)}
-          className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition flex items-center gap-1.5 cursor-pointer"
-        >
-          <Plus className="w-4 h-4 text-emerald-400 font-bold" />
-          创建知识库
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => setIsCreating(true)}
+            className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg transition flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-emerald-400 font-bold" />
+            创建知识库
+          </button>
+        )}
       </div>
 
       {error && (
@@ -152,13 +157,15 @@ export function KnowledgeBasePage({
                       <span className="text-[10px] text-[#71717a] font-mono">{kb.id}</span>
                     </div>
                   </div>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); handleDelete(kb.id, kb.name); }}
-                    className="p-1 px-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-rose-500 hover:text-rose-400 hover:bg-rose-950/20 opacity-0 group-hover:opacity-100 transition cursor-pointer"
-                    title="删除"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
+                  {canWrite && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(kb.id, kb.name); }}
+                      className="p-1 px-1.5 bg-[#121214] border border-[#27272a] rounded-lg text-rose-500 hover:text-rose-400 hover:bg-rose-950/20 opacity-0 group-hover:opacity-100 transition cursor-pointer"
+                      title="删除"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
                 <p className="text-xs text-[#a1a1aa] leading-relaxed min-h-[32px] line-clamp-2">{kb.description || '（无描述）'}</p>
                 <div className="flex items-center gap-3 text-[10px] text-[#71717a] font-mono">

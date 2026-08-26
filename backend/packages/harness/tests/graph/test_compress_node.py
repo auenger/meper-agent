@@ -337,3 +337,144 @@ async def test_legacy_system_summary_migrated_to_history() -> None:
     migrated = [m for m in result if getattr(m, "id", "") == "llm_summary"]
     assert migrated and isinstance(migrated[0], HumanMessage)
     assert "Q3 报销" in migrated[0].content
+
+
+# ---------------------------------------------------------------------------
+# 中断标注（mid-stream 取消/崩溃保护）：三种形态 + 两个不触发场景
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_annotate_orphan_tool_call_cancelled(base_state) -> None:
+    """形态① 工具执行中被中断：孤儿 tool_call → 合成"被中断"ToolMessage，
+    而非剥离——模型知情，且结构变为完整配对（防 OpenAI 400）。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="查一下天气", id="u1"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {"command": "date"}, "id": "call_1"}],
+            id="a1",
+        ),
+        # 取消发生在工具执行中：没有 call_1 的 ToolMessage
+        HumanMessage(content="算了，换个问题", id="u2"),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+
+    # 标注触发 → 整体替换 patch（RemoveMessage 开头）
+    assert patch != {}
+    messages = patch["messages"]
+    assert isinstance(messages[0], RemoveMessage)
+    names = [type(m).__name__ for m in messages[1:]]
+    assert names == ["SystemMessage", "HumanMessage", "AIMessage", "ToolMessage", "HumanMessage"]
+    # 原始 tool_call 保留 + 合成的"被中断"结果配对
+    synthetic = messages[-2]
+    assert synthetic.tool_call_id == "call_1"
+    assert "中断" in synthetic.content
+
+
+@pytest.mark.asyncio
+async def test_annotate_tools_done_reply_interrupted(base_state) -> None:
+    """形态② 工具已完成、总结回复被中断：注入标记 AIMessage，
+    防模型把工具结果当作"已汇报过"。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="查一下天气", id="u1"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {"command": "date"}, "id": "call_1"}],
+            id="a1",
+        ),
+        ToolMessage(content="Mon Aug 24", tool_call_id="call_1", id="t1"),
+        HumanMessage(content="不用了，换个问题", id="u2"),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+    assert patch != {}
+    messages = patch["messages"]
+    marker = messages[-2]  # Tool 与新 Human 之间
+    assert isinstance(marker, AIMessage)
+    assert "中断" in marker.content
+    assert "尚未汇报" in marker.content
+
+
+@pytest.mark.asyncio
+async def test_annotate_no_output_interrupted(base_state) -> None:
+    """形态③ 未产生任何输出即被中断（连续两条 user）：注入标记。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="第一句被取消了", id="u1"),
+        HumanMessage(content="重新问", id="u2"),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+    assert patch != {}
+    messages = patch["messages"]
+    marker = messages[-2]
+    assert isinstance(marker, AIMessage)
+    assert "未产生输出" in marker.content
+
+
+@pytest.mark.asyncio
+async def test_no_annotation_for_completed_turn(base_state) -> None:
+    """正常完成的轮次（尾部带文本 AIMessage）：不标注，未达阈值空 patch。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="hi", id="u1"),
+        AIMessage(content="你好！", id="a1"),
+        HumanMessage(content="下一轮", id="u2"),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+    assert patch == {}
+
+
+@pytest.mark.asyncio
+async def test_no_annotation_without_new_human(base_state) -> None:
+    """孤儿存在但尾部不是新 Human（非新轮开始）：不注入"中断"标注；
+    配对安全网仍剥孤儿防 400，但内容里绝不能出现中断标记。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="查一下", id="u1"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {"command": "date"}, "id": "call_1"}],
+            id="a1",
+        ),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+    # 安全网剥孤儿 → 有替换补丁；但没有任何"中断"标记（annotation 未触发）
+    assert patch != {}
+    assert "中断" not in str(patch["messages"])
+
+
+@pytest.mark.asyncio
+async def test_compress_node_keeps_paired_tool_calls_under_threshold(base_state) -> None:
+    """配对完整的 tool_call/result：未达阈值时不做任何改动（回归保护）。"""
+    llm = _RecordingLLM()
+    base_state["messages"] = [
+        SystemMessage(content="sys", id="sys"),
+        HumanMessage(content="查天气", id="u1"),
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "bash", "args": {"command": "date"}, "id": "call_1"}],
+            id="a1",
+        ),
+        ToolMessage(content="Mon Aug 24 10:00:00 UTC 2026", tool_call_id="call_1", id="t1"),
+    ]
+    patch = await compress_node(
+        base_state, _config(llm, context_window=1_000_000),
+    )
+    assert patch == {}

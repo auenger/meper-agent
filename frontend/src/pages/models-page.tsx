@@ -21,6 +21,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import { parseBackendDate } from '../lib/format'
 import {
   modelApi,
@@ -94,6 +95,10 @@ const EMPTY_FORM: FormState = {
 export default function ModelsPage() {
   const { t } = useTheme()
   const queryClient = useQueryClient()
+  // 权限：添加/编辑/删除为 model:write；"测试连通性"后端为 model:read
+  // （探针不改配置），与路由同键，避免 developer（有 read 无 write）丢按钮。
+  const canWrite = usePermission('model:write')
+  const canTest = usePermission('model:read')
 
   /* ─── Filter state ─── */
   const [searchInput, setSearchInput] = useState('')
@@ -365,9 +370,11 @@ export default function ModelsPage() {
             ]}
           />
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
-          添加模型
-        </Button>
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreateModal}>
+            添加模型
+          </Button>
+        )}
       </div>
 
       {/* Loading state */}
@@ -452,26 +459,32 @@ export default function ModelsPage() {
                 <span className="text-sm text-[#64748B]">{ctxWindow}</span>
                 <span className="text-sm text-[#64748B]">{formatTime(model.updated_at)}</span>
                 <div className="flex items-center gap-0.5">
-                  <Tooltip title="测试连通性">
-                    <button
-                      onClick={() => openTestModal(model)}
-                      disabled={testMutation.isPending}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#8B5CF6] hover:bg-purple-50 transition-colors duration-150 text-xs"
-                    ><ThunderboltOutlined /></button>
-                  </Tooltip>
-                  <Tooltip title="编辑">
-                    <button
-                      onClick={() => openEditModal(model)}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
-                    ><EditOutlined /></button>
-                  </Tooltip>
-                  <Tooltip title="删除">
-                    <button
-                      onClick={() => handleDelete(model)}
-                      disabled={deleteMutation.isPending}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs"
-                    ><DeleteOutlined /></button>
-                  </Tooltip>
+                  {canTest && (
+                    <Tooltip title="测试连通性">
+                      <button
+                        onClick={() => openTestModal(model)}
+                        disabled={testMutation.isPending}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#8B5CF6] hover:bg-purple-50 transition-colors duration-150 text-xs"
+                        ><ThunderboltOutlined /></button>
+                    </Tooltip>
+                  )}
+                  {canWrite && (
+                    <Tooltip title="编辑">
+                      <button
+                        onClick={() => openEditModal(model)}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
+                        ><EditOutlined /></button>
+                    </Tooltip>
+                  )}
+                  {canWrite && (
+                    <Tooltip title="删除">
+                      <button
+                        onClick={() => handleDelete(model)}
+                        disabled={deleteMutation.isPending}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs"
+                        ><DeleteOutlined /></button>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             )

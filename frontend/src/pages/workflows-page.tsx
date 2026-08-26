@@ -26,6 +26,7 @@ import {
   ExclamationCircleOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import { workflowsApi, workflowKeys, type WorkflowSummary, type WorkflowStatusValue } from '../services/workflows-api'
 
 /* ─── Status mappings ─── */
@@ -49,6 +50,8 @@ export default function WorkflowsPage() {
   const { t } = useTheme()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  // 权限：是否可执行写操作（新建/编辑/发布/归档/删除）
+  const canWrite = usePermission('workflow:write')
 
   /* ─── Filter state ─── */
   const [searchInput, setSearchInput] = useState('')
@@ -231,9 +234,11 @@ export default function WorkflowsPage() {
             ]}
           />
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-          新建工作流
-        </Button>
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+            新建工作流
+          </Button>
+        )}
       </div>
 
       {/* Loading state */}
@@ -313,7 +318,8 @@ export default function WorkflowsPage() {
                 <div className="flex items-center justify-between pt-3 border-t border-gray-50">
                   <span className="text-[11px] text-[#94A3B8]">{formatTime(wf.updated_at)}</span>
                   <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                    {wf.status === 'draft' && (
+                    {/* 发布/归档在状态判断基础上叠加写权限 */}
+                    {canWrite && wf.status === 'draft' && (
                       <Tooltip title="发布">
                         <button
                           onClick={() => handlePublish(wf)}
@@ -322,7 +328,7 @@ export default function WorkflowsPage() {
                         ><CloudUploadOutlined /></button>
                       </Tooltip>
                     )}
-                    {wf.status === 'published' && (
+                    {canWrite && wf.status === 'published' && (
                       <Tooltip title="归档">
                         <button
                           onClick={() => handleArchive(wf)}
@@ -331,19 +337,23 @@ export default function WorkflowsPage() {
                         ><StopOutlined /></button>
                       </Tooltip>
                     )}
-                    <Tooltip title="编辑">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); navigate(`/workflows/${wf.id}`) }}
-                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
-                      ><EditOutlined /></button>
-                    </Tooltip>
-                    <Tooltip title="删除">
-                      <button
-                        onClick={() => handleDelete(wf)}
-                        disabled={deleteMutation.isPending}
-                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs"
-                      ><DeleteOutlined /></button>
-                    </Tooltip>
+                    {canWrite && (
+                      <Tooltip title="编辑">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/workflows/${wf.id}`) }}
+                          className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
+                        ><EditOutlined /></button>
+                      </Tooltip>
+                    )}
+                    {canWrite && (
+                      <Tooltip title="删除">
+                        <button
+                          onClick={() => handleDelete(wf)}
+                          disabled={deleteMutation.isPending}
+                          className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs"
+                        ><DeleteOutlined /></button>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               </div>

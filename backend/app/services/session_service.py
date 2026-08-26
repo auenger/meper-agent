@@ -207,6 +207,7 @@ class MessageService:
         file_ids: list[str] | None = None,
         token_usage: dict | None = None,
         request_id: str = "",
+        display_text: str = "",
     ) -> dict:
         """Add a message to a session.
 
@@ -219,6 +220,8 @@ class MessageService:
             file_ids: Associated FileRef IDs for uploaded attachments.
             request_id: 本轮执行请求 id——消息级反馈（§8.2）按它关联本轮
                 load 的技能（与 skill_logs.request_id 同键）。
+            display_text: 展示文案（快捷指令 label）。content 记录实际发送
+                给 AI 的内容；气泡/历史/标题展示优先本字段。
 
         Returns:
             Created message document.
@@ -227,6 +230,7 @@ class MessageService:
             session_id=session_id,
             role=role,
             content=content,
+            display_text=display_text,
             timeline_entries=timeline_entries or [],
             file_ids=file_ids or [],
         )
@@ -247,6 +251,8 @@ class MessageService:
             doc["token_usage"] = token_usage
         if role == "user":
             doc["content"] = msg.content
+            if msg.display_text:
+                doc["display_text"] = msg.display_text
 
         await MessageService._collection().insert_one(doc)
 
@@ -256,10 +262,12 @@ class MessageService:
         }
         # Only set title from user message if session title is still empty.
         # Truncate to 30 chars + ellipsis (matches the chat sidebar's width).
+        # 优先展示文案（快捷指令 label），避免后台指令泄漏到会话标题。
         if role == "user":
             session_doc = await SessionService.get_session(session_id)
             if session_doc and not session_doc.get("title"):
-                update_fields["title"] = content[:30] + ("…" if len(content) > 30 else "")
+                title_source = display_text or content
+                update_fields["title"] = title_source[:30] + ("…" if len(title_source) > 30 else "")
         await SessionService.update_session(session_id, update_fields)
 
         return doc

@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
-from app.core.security import get_current_user, require_any_role
+from app.core.security import get_current_user, require_permission
 from app.engine.tool.skill_fs import list_skill_files
 from app.schemas.tool import (
     BuiltinToolResponse,
@@ -58,10 +58,10 @@ def _basetool_to_response(tool: Any, *, configurable: bool = True) -> BuiltinToo
     "/builtin",
     response_model=list[BuiltinToolResponse],
     summary="List built-in tools",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — tool:read permission required"}},
 )
 async def list_builtin_tools(
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> list[BuiltinToolResponse]:
     """Return the built-in tools actually injected at runtime.
 
@@ -99,10 +99,10 @@ async def list_builtin_tools(
     "/app",
     response_model=list[BuiltinToolResponse],
     summary="List app-level tools (always-on task/workflow tools)",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — tool:read permission required"}},
 )
 async def list_app_tools(
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> list[BuiltinToolResponse]:
     """Return the app-level tools (task/workflow management).
 
@@ -123,10 +123,10 @@ async def list_app_tools(
     "/prebuilt",
     response_model=list[dict],
     summary="List prebuilt tools (platform-registered)",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — tool:read permission required"}},
 )
 async def list_prebuilt_tools(
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> list[dict]:
     """Return the list of prebuilt tools registered in TOOL_REGISTRY.
 
@@ -196,7 +196,7 @@ _TOOL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 async def upload_tool_avatar(
     tool_id: str,
     file: UploadFile = File(...),
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> dict:
     # tool 存在性
     if await ToolService.get_tool(tool_id) is None:
@@ -229,7 +229,7 @@ async def upload_tool_avatar(
 @router.delete("/{tool_id}/avatar", summary="Remove Skill/Tool avatar (revert to default logo)")
 async def remove_tool_avatar(
     tool_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> dict:
     if await ToolService.get_tool(tool_id) is None:
         raise NotFoundError(code="TOOL_NOT_FOUND", message=f"Tool {tool_id} 不存在")
@@ -263,13 +263,13 @@ class CustomToolCreate(BaseModel):
     status_code=201,
     summary="Create a custom tool (OpenAPI / Code / Prebuilt)",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — tool:write permission required"},
         409: {"description": "Tool name conflict"},
     },
 )
 async def create_custom_tool(
     body: CustomToolCreate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> ToolResponse:
     """Create a custom tool from user configuration (no file upload needed).
 
@@ -296,13 +296,13 @@ async def create_custom_tool(
     response_model=ToolUploadResponse,
     summary="Upload Markdown Skill file(s) or directory",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — tool:write permission required"},
         413: {"description": "File too large (>1MB) or directory too large (>10MB)"},
     },
 )
 async def upload_tools(
     files: list[UploadFile] = File(..., description="Skill Markdown 文件（支持多文件/文件夹上传）"),
-    creator: UserResponse = Depends(require_any_role("admin", "developer")),
+    creator: UserResponse = Depends(require_permission("tool:write")),
 ) -> ToolUploadResponse:
     """Upload one or more Markdown Skill files to register tools. (AC3)
 
@@ -501,7 +501,7 @@ async def upload_tools(
     "",
     response_model=ToolListResponse,
     summary="List tools",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — tool:read permission required"}},
 )
 async def list_tools(
     page: int = Query(1, ge=1, description="Page number"),
@@ -509,7 +509,7 @@ async def list_tools(
     name: str | None = Query(None, description="Filter by name (substring)"),
     source: str | None = Query(None, description="Filter by source (markdown / mcp / builtin)"),
     mcp_connection_id: str | None = Query(None, description="Filter by MCP connection ID"),
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> ToolListResponse:
     """List all tools with pagination and optional filtering. (AC4)"""
     items, total = await ToolService.list_tools(
@@ -531,13 +531,13 @@ async def list_tools(
     response_model=ToolResponse,
     summary="Get tool details",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — tool:read permission required"},
         404: {"description": "Tool not found"},
     },
 )
 async def get_tool(
     tool_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> ToolResponse:
     """Get a Tool by its ID. (AC4)"""
     from app.core.errors import NotFoundError
@@ -557,13 +557,13 @@ async def get_tool(
     response_model=SkillFileTreeResponse,
     summary="Get tool file tree",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — tool:read permission required"},
         404: {"description": "Tool not found"},
     },
 )
 async def get_tool_files(
     tool_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> SkillFileTreeResponse:
     """Get the file tree structure for a directory-based Tool.
 
@@ -598,14 +598,14 @@ async def get_tool_files(
     "/{tool_id}/files/{file_path:path}",
     summary="Get tool file content",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — tool:read permission required"},
         404: {"description": "Tool or file not found"},
     },
 )
 async def get_tool_file_content(
     tool_id: str,
     file_path: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("tool:read")),
 ) -> SkillFileResponse:
     """Get a single file's content from a Tool.
 
@@ -632,7 +632,7 @@ async def get_tool_file_content(
     response_model=SkillFileResponse,
     summary="Update tool file content",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — tool:write permission required"},
         404: {"description": "Tool or file not found"},
     },
 )
@@ -640,7 +640,7 @@ async def update_tool_file(
     tool_id: str,
     file_path: str,
     body: SkillFileUpdate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> SkillFileResponse:
     """Update a single file's content in a Tool.
 
@@ -668,14 +668,14 @@ async def update_tool_file(
     response_model=ToolResponse,
     summary="Update a tool",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — tool:write permission required"},
         404: {"description": "Tool not found"},
     },
 )
 async def update_tool(
     tool_id: str,
     body: ToolUpdate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> ToolResponse:
     """Update a Tool's editable fields (tags). Auto-increments version. (AC5)"""
     from app.core.errors import NotFoundError
@@ -698,14 +698,14 @@ async def update_tool(
     status_code=204,
     summary="Delete a tool",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — tool:write permission required"},
         404: {"description": "Tool not found"},
         409: {"description": "Tool is referenced by one or more Agents"},
     },
 )
 async def delete_tool(
     tool_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("tool:write")),
 ) -> None:
     """Delete a Tool by ID. Checks for Agent references. (AC5)"""
     from app.core.errors import NotFoundError

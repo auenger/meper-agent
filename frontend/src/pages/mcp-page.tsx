@@ -26,6 +26,7 @@ import {
   FolderOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import {
   mcpApi,
   mcpKeys,
@@ -74,6 +75,8 @@ function formatTime(iso: string) {
 export default function McpPage() {
   const { t } = useTheme()
   const queryClient = useQueryClient()
+  // 权限：是否可执行写操作（新建/编辑/测试/删除连接、分组管理）
+  const canWrite = usePermission('mcp:write')
 
   /* ─── Filter state ─── */
   const [searchInput, setSearchInput] = useState('')
@@ -406,19 +409,23 @@ export default function McpPage() {
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            icon={<FolderOutlined />}
-            onClick={() => setCategoryModalOpen(true)}
-          >
-            分组管理
-          </Button>
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={openCreateModal}
-          >
-            添加 MCP 连接
-          </Button>
+          {canWrite && (
+            <Button
+              icon={<FolderOutlined />}
+              onClick={() => setCategoryModalOpen(true)}
+            >
+              分组管理
+            </Button>
+          )}
+          {canWrite && (
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={openCreateModal}
+            >
+              添加 MCP 连接
+            </Button>
+          )}
         </div>
       </div>
 
@@ -518,15 +525,18 @@ export default function McpPage() {
 
                 {/* Actions */}
                 <div className="flex items-center gap-1">
-                  <Tooltip title="测试连接">
-                    <button
-                      onClick={() => handleTestConnection(conn)}
-                      disabled={testingConnId === conn.id}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#10B981] hover:bg-[#D1FAE5] transition-colors duration-150 text-xs disabled:opacity-40"
-                    >
-                      {testingConnId === conn.id ? <Spin size="small" /> : <ThunderboltOutlined />}
-                    </button>
-                  </Tooltip>
+                  {/* 测试连接会触发工具同步（写操作），按写权限门控 */}
+                  {canWrite && (
+                    <Tooltip title="测试连接">
+                      <button
+                        onClick={() => handleTestConnection(conn)}
+                        disabled={testingConnId === conn.id}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#10B981] hover:bg-[#D1FAE5] transition-colors duration-150 text-xs disabled:opacity-40"
+                      >
+                        {testingConnId === conn.id ? <Spin size="small" /> : <ThunderboltOutlined />}
+                      </button>
+                    </Tooltip>
+                  )}
                   <Tooltip title="查看工具">
                     <button
                       onClick={() => handleViewDetail(conn)}
@@ -536,14 +546,16 @@ export default function McpPage() {
                       <InfoCircleOutlined />
                     </button>
                   </Tooltip>
-                  <Tooltip title="编辑">
-                    <button
-                      onClick={() => openEditModal(conn)}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
-                    >
-                      <EditOutlined />
-                    </button>
-                  </Tooltip>
+                  {canWrite && (
+                    <Tooltip title="编辑">
+                      <button
+                        onClick={() => openEditModal(conn)}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#0F172A] hover:bg-gray-50 transition-colors duration-150 text-xs"
+                      >
+                        <EditOutlined />
+                      </button>
+                    </Tooltip>
+                  )}
                   {conn.status === 'error' && (
                     <Tooltip title={conn.status_message || '错误详情'}>
                       <button className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#EF4444] hover:text-[#DC2626] hover:bg-red-50 transition-colors duration-150 text-xs">
@@ -551,15 +563,17 @@ export default function McpPage() {
                       </button>
                     </Tooltip>
                   )}
-                  <Tooltip title="删除">
-                    <button
-                      onClick={() => handleDelete(conn)}
-                      disabled={deleteMutation.isPending}
-                      className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs disabled:opacity-40"
-                    >
-                      <DeleteOutlined />
-                    </button>
-                  </Tooltip>
+                  {canWrite && (
+                    <Tooltip title="删除">
+                      <button
+                        onClick={() => handleDelete(conn)}
+                        disabled={deleteMutation.isPending}
+                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center rounded text-[#94A3B8] hover:text-[#EF4444] hover:bg-gray-50 transition-colors duration-150 text-xs disabled:opacity-40"
+                      >
+                        <DeleteOutlined />
+                      </button>
+                    </Tooltip>
+                  )}
                 </div>
               </div>
             )

@@ -237,42 +237,6 @@ export function permissionsToCoarse(
   }
 }
 
-/**
- * Coarse 5-bucket booleans → expanded backend permission keys.
- * Expanding a bucket turns ON every fine key inside it; turning a bucket
- * OFF removes every fine key inside it (so toggling is idempotent).
- */
-export function coarseToPermissions(
-  coarse: User['permissions'],
-  existing: string[] = [],
-): string[] {
-  const result = new Set(existing.filter(Boolean))
-  for (const bucket of Object.keys(COARSE_PERM_BUCKETS) as CoarsePermKey[]) {
-    const on = coarse[bucket]
-    for (const key of COARSE_PERM_BUCKETS[bucket]) {
-      if (on) result.add(key)
-      else result.delete(key)
-    }
-  }
-  return [...result]
-}
-
-/**
- * Default coarse permissions for a role key. Used only for the advisory
- * permission-bucket notice in UserManagement (real perms live on the role,
- * not the user). System roles map to a fixed bucket set keyed by backend
- * name; custom roles default to all-off.
- */
-export function defaultCoarseForRole(role: string): User['permissions'] {
-  return {
-    'agent:write': role === 'admin' || role === 'developer',
-    'workflow:write': role === 'admin' || role === 'developer',
-    'skill:write': role === 'admin' || role === 'developer' || role === 'operator',
-    'apikey:manage': role === 'admin',
-    'user:manage': role === 'admin',
-  }
-}
-
 /** Backend User → studio User view model. */
 export function toStudioUser(u: BackendUser): User {
   return {
@@ -281,6 +245,7 @@ export function toStudioUser(u: BackendUser): User {
     avatar: ['👨‍💻', '👩‍💻', '👩‍💼', '🧑‍🔬', '🧙‍♂️'][Math.floor(Math.random() * 5)],
     email: u.email,
     role: u.role,
+    isSuperAdmin: Boolean(u.is_super_admin),
     permissions: permissionsToCoarse(u.permissions),
     status: u.status === 'active' ? 'active' : 'suspended',
   }

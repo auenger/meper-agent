@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage, RemoveMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 
+from agent_flow_harness.context_engineering.interruption import annotate_interruptions
 from agent_flow_harness.context_engineering.pairing import ensure_tool_pairing
 from agent_flow_harness.engine.context import extract_model_name
 from agent_flow_harness.engine.depth_guard import check_depth
@@ -95,6 +96,20 @@ async def compress_node(
     # ── 单个工具结果超过 LLM 阈值 → 直接报错(无法压缩,继续只会超窗口失败)。
     _check_oversized_tool_result(current_messages, window, state)
 
+    # ── 中断标注：新一轮开始时检测上一轮是否被中断，注入显式标记。
+    #    在所有路径分叉之前执行；标注变更必须强制产生替换补丁，
+    #    否则未达压缩阈值时标记不会写入 thread。──
+    annotate_changed = False
+    current_messages, intr = annotate_interruptions(current_messages)
+    if intr.get("changed"):
+        annotate_changed = True
+        logger.info(
+            "interruption_annotated",
+            agent_id=state.get("agent_id"),
+            request_id=state.get("request_id"),
+            case=intr.get("case", ""),
+        )
+
     # ── 可插拔 ContextStrategy 路径(高级用法,生产默认不走) ──
     if context_strategy is not None:
         before = len(current_messages)
@@ -114,6 +129,8 @@ async def compress_node(
                 threshold_tokens=threshold_tokens,
             )
             return _pack_replace(_trim_tool_outputs(current_messages, config))
+        if annotate_changed:
+            return _pack_replace(_trim_tool_outputs(current_messages, config))
         return {}
 
     # ── 内置路径:工具压缩 + 后台LLM压缩 + 丢弃兜底 ──
@@ -122,7 +139,7 @@ async def compress_node(
         hard_limit_ratio, llm, session_id, config, state,
     )
 
-    if detail["changed"]:
+    if detail["changed"] or annotate_changed:
         logger.info(
             "compress_done",
             agent_id=state.get("agent_id"),
@@ -361,6 +378,24 @@ def _compress_by_turns(
     actions_parts: list[str] = []
 
     # ① 检查缓存:有后台压缩好的摘要?
+    # ⓪ 防御性配对安全网：compress_node 入口的中断标注已把尾部孤儿转为
+    # "被取消"的 ToolMessage（完整配对）；此处再无条件跑一遍 ensure_tool_pairing，
+    # 兜住压缩路径自身可能引入的孤儿（正常对话零改动）。
+    paired = ensure_tool_pairing(messages)
+    if len(paired) != len(messages):
+        logger.info(
+            "orphan_tool_calls_stripped",
+            session_id=session_id,
+            before=len(messages),
+            after=len(paired),
+            note="state contained unanswered tool_calls (mid-stream cancel / crash)",
+        )
+        messages = paired
+        changed = True
+        actions_parts.append("孤儿tool_call清理")
+    else:
+        messages = paired
+
     cached = summary_cache.get(session_id) if session_id else None
     if cached:
         messages, inserted = apply_cached_summary(messages, cached)

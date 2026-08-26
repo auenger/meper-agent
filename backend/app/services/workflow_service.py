@@ -226,7 +226,7 @@ class WorkflowService:
             await WorkflowRegistryService.register(
                 name=doc.get("name", ""),
                 description=doc.get("description", ""),
-                input_schema=_extract_input_schema(doc.get("nodes", [])),
+                input_schema=extract_input_schema(doc.get("nodes", [])),
                 workflow_id=workflow_id,
                 has_human_node=_has_human_node(doc.get("nodes", [])),
                 version=str(new_version),
@@ -447,7 +447,7 @@ class WorkflowService:
             )
 
 
-def _extract_input_schema(nodes: list[dict]) -> dict:
+def extract_input_schema(nodes: list[dict]) -> dict:
     """Extract input schema from the start node's output_variables.
 
     The start node config stores variable definitions in ``output_variables``
@@ -477,6 +477,53 @@ def _extract_input_schema(nodes: list[dict]) -> dict:
         # Legacy fallback: older configs may store a raw input_schema dict.
         return config.get("input_schema", {})
     return {}
+
+
+def validate_workflow_input(input_data: dict, input_schema: dict) -> None:
+    """Validate input data against the workflow's input schema.
+
+    Raises ValidationError if validation fails. Shared by entry points that
+    create tasks from user-supplied input (ext invoke + manual task create)
+    so missing required fields fail fast instead of failing at runtime.
+    """
+    required = input_schema.get("required", [])
+    properties = input_schema.get("properties", {})
+
+    missing = [k for k in required if k not in input_data]
+    if missing:
+        raise ValidationError(
+            code="INPUT_VALIDATION_FAILED",
+            message=f"Input validation failed: missing required fields: {missing}",
+        )
+
+    # Type check for provided fields
+    for key, value in input_data.items():
+        if key in properties:
+            expected_type = properties[key].get("type")
+            if expected_type and not _check_type(value, expected_type):
+                raise ValidationError(
+                    code="INPUT_VALIDATION_FAILED",
+                    message=(
+                        f"Input validation failed: field '{key}' "
+                        f"expected type '{expected_type}'"
+                    ),
+                )
+
+
+def _check_type(value: object, expected_type: str) -> bool:
+    """Check if a value matches the expected JSON schema type."""
+    type_map = {
+        "string": str,
+        "integer": int,
+        "number": (int, float),
+        "boolean": bool,
+        "array": list,
+        "object": dict,
+    }
+    expected = type_map.get(expected_type)
+    if expected is None:
+        return True  # unknown type, skip check
+    return isinstance(value, expected)
 
 
 def _has_human_node(nodes: list[dict]) -> bool:

@@ -27,6 +27,7 @@ class UserResponse(BaseModel):
     updated_at: str
     last_login_at: str | None = None
     permissions: list[str] = Field(default_factory=list, description="Resolved permission keys")
+    is_super_admin: bool = Field(default=False, description="超级管理员标记（初始管理员）")
 
 
 class UserInDB(BaseModel):

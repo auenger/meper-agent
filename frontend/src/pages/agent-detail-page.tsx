@@ -14,6 +14,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button, Spin, message } from 'antd'
 import { ArrowLeftOutlined, RobotOutlined, LockOutlined } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import {
   agentApi,
   agentKeys,
@@ -30,6 +31,8 @@ export default function AgentDetailPage() {
   const formRef = useRef<AgentConfigFormHandle>(null)
   const [isSaving, setIsSaving] = useState(false)
   const queryClient = useQueryClient()
+  // 权限：是否可执行写操作（保存配置/下架）
+  const canWrite = usePermission('agent:write')
 
   /* ─── Query: agent detail ─── */
   const {
@@ -91,15 +94,17 @@ export default function AgentDetailPage() {
             <span>返回列表</span>
           </button>
           <div className="flex items-center gap-2">
-            <Button
-              type="primary"
-              onClick={() => formRef.current?.submit()}
-              loading={isSaving}
-              disabled={isPublished}
-              style={{ background: t.primary, borderColor: t.primary }}
-            >
-              保存
-            </Button>
+            {canWrite && (
+              <Button
+                type="primary"
+                onClick={() => formRef.current?.submit()}
+                loading={isSaving}
+                disabled={isPublished}
+                style={{ background: t.primary, borderColor: t.primary }}
+              >
+                保存
+              </Button>
+            )}
           </div>
         </div>
 
@@ -110,13 +115,15 @@ export default function AgentDetailPage() {
               <LockOutlined />
               此 Agent 已发布，配置不可修改。如需修改请先下架。
             </span>
-            <Button
-              size="small"
-              onClick={() => archiveMutation.mutate(agent.id)}
-              loading={archiveMutation.isPending}
-            >
-              下架为草稿
-            </Button>
+            {canWrite && (
+              <Button
+                size="small"
+                onClick={() => archiveMutation.mutate(agent.id)}
+                loading={archiveMutation.isPending}
+              >
+                下架为草稿
+              </Button>
+            )}
           </div>
         )}
 

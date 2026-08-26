@@ -36,7 +36,11 @@ ARG APP_GID=1001
 RUN groupadd -r -g ${APP_GID} appuser \
     && useradd -r -g appuser -u ${APP_UID} -m -s /bin/bash appuser \
     # gosu lets the entrypoint chown bind mounts as root, then drop to appuser.
-    && apt-get update && apt-get install -y --no-install-recommends gosu \
+    # The opencv runtime libs (libxcb/libgl/...) are required by the
+    # rapidocr-onnxruntime fallback used for scanned-PDF OCR: opencv-python's
+    # Linux wheel dlopens them at import time, and slim ships none of them.
+    && apt-get update && apt-get install -y --no-install-recommends \
+        gosu libgl1 libglib2.0-0 libsm6 libxext6 libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the venv from builder

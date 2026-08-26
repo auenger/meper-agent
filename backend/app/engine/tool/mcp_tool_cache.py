@@ -1,36 +1,41 @@
-"""In-memory cache for MCP StructuredTool objects.
+"""MCP tool cache — 运行时纯 DB 镜像加载 + 版本校验缓存。
 
-Caches the result of ``MultiServerMCPClient.get_tools()`` keyed by the
-frozenset of MCP connection IDs.  Each cache entry has a configurable
-TTL (default 5 minutes).  Tools held in the cache are safe to reuse —
-each ``StructuredTool`` internally stores the connection config and
-creates a fresh session on every invocation.
+运行时**不再连接 MCP server**：StructuredTool 从 ``tools`` 镜像集合构造
+（``convert_mcp_tool_to_langchain_tool``，懒连接——真正调用时才建立会话）。
+镜像由 ``discover_tools`` 写入（创建连接时自动 + 管理界面手动触发），
+因此 DB 里的镜像即"验证过的工具白名单"。连接失联只影响工具调用
+（调用时报错），不再拖慢对话加载。
 
-Cache invalidation is triggered by:
-- TTL expiry (automatic)
-- Explicit ``invalidate_cache(connection_id)`` when a connection is
-  updated, deleted, or its tools are re-discovered.
+缓存失效（三层）：
+- 版本校验（主）：命中时重查各 connection 的 ``updated_at``，任一变化即
+  重建 —— 手动更新连接 / 重新 discover 后立即生效，且跨进程安全
+  （celery worker 的 workflow 路径同样受益）。
+- TTL（兜底）：默认 1 小时（镜像衍生数据的正确性由版本校验保证）。
+- ``invalidate_cache(connection_id)``：connection update / delete /
+  discover、tools 镜像删除时显式失效。
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.tools import StructuredTool
 from loguru import logger
 
-# Default TTL in seconds (5 minutes)
-_DEFAULT_TTL = 300
+# Default TTL in seconds (1 hour — version check is the primary invalidation)
+_DEFAULT_TTL = 3600
 
 
 @dataclass
 class _CacheEntry:
-    """A single cache entry with expiry metadata."""
+    """A single cache entry with expiry + connection-version metadata."""
 
     tools: list[StructuredTool]
-    created_at: float
-    ttl: float
+    # connection_id -> updated_at 快照（构造时）；命中时重查比对，变化即失效
+    conn_versions: dict[str, str] = field(default_factory=dict)
+    created_at: float = 0.0
+    ttl: float = 0.0
 
     @property
     def is_expired(self) -> bool:
@@ -41,7 +46,8 @@ class McpToolCache:
     """Process-level singleton cache for MCP tools.
 
     Key = ``frozenset`` of MCP connection IDs.
-    Value = ``_CacheEntry`` holding the resolved ``StructuredTool`` list.
+    Value = ``_CacheEntry`` holding the DB-built ``StructuredTool`` list and
+    the ``updated_at`` snapshot of every participating connection.
     """
 
     def __init__(self, default_ttl: float = _DEFAULT_TTL) -> None:
@@ -52,8 +58,8 @@ class McpToolCache:
     # Public API
     # ------------------------------------------------------------------
 
-    def get(self, connection_ids: frozenset[str]) -> list[StructuredTool] | None:
-        """Return cached tools for *connection_ids*, or ``None`` on miss / expiry."""
+    def get_entry(self, connection_ids: frozenset[str]) -> _CacheEntry | None:
+        """Return the cache entry (tools + versions), or None on miss/expiry."""
         entry = self._store.get(connection_ids)
         if entry is None:
             return None
@@ -61,18 +67,25 @@ class McpToolCache:
             del self._store[connection_ids]
             logger.debug("mcp_tool_cache_expired", key=_key_repr(connection_ids))
             return None
-        return entry.tools
+        return entry
+
+    def get(self, connection_ids: frozenset[str]) -> list[StructuredTool] | None:
+        """Return cached tools for *connection_ids*, or ``None`` on miss / expiry."""
+        entry = self.get_entry(connection_ids)
+        return entry.tools if entry is not None else None
 
     def set(
         self,
         connection_ids: frozenset[str],
         tools: list[StructuredTool],
+        conn_versions: dict[str, str] | None = None,
         ttl: float | None = None,
     ) -> None:
         """Store tools for *connection_ids* with optional TTL override."""
         effective_ttl = ttl if ttl is not None else self._default_ttl
         self._store[connection_ids] = _CacheEntry(
             tools=tools,
+            conn_versions=dict(conn_versions or {}),
             created_at=time.monotonic(),
             ttl=effective_ttl,
         )
@@ -82,6 +95,11 @@ class McpToolCache:
             tool_count=len(tools),
             ttl=effective_ttl,
         )
+
+    def drop(self, connection_ids: frozenset[str]) -> None:
+        """Remove a single cache key (version mismatch / rebuild path)."""
+        if self._store.pop(connection_ids, None) is not None:
+            logger.debug("mcp_tool_cache_dropped", key=_key_repr(connection_ids))
 
     def invalidate(self, connection_id: str) -> int:
         """Invalidate all cache entries that include *connection_id*.
@@ -129,49 +147,42 @@ def get_cache() -> McpToolCache:
     return _cache
 
 
-async def get_mcp_tools_cached(
+async def _fetch_conn_versions(connection_ids: list[str]) -> dict[str, str]:
+    """Fetch ``{connection_id: updated_at}`` for version validation."""
+    from app.db.mongodb import get_database
+
+    cursor = get_database()["mcp_connections"].find(
+        {"_id": {"$in": connection_ids}}, {"updated_at": 1}
+    )
+    return {str(doc["_id"]): str(doc.get("updated_at") or "") async for doc in cursor}
+
+
+async def _build_tools_from_db(
     connection_ids: list[str],
-) -> list[StructuredTool]:
-    """Resolve MCP tools with caching.
+) -> tuple[list[StructuredTool], dict[str, str]]:
+    """Construct tools purely from DB mirrors — no network access.
 
-    Returns from cache on hit (and not expired).  On miss, fetches via
-    ``MultiServerMCPClient``, stores in cache, then returns.
-
-    If a connection has ``default_params``, the tools are wrapped to
-    automatically merge those defaults on every invocation (user args
-    override defaults).
+    Mirrors lack ``outputSchema`` / annotations (discover doesn't collect
+    them), so DB-built tools just won't carry ``structuredContent`` artifacts;
+    name / description / input schema are identical to the remote truth at
+    discover time.
     """
-    if not connection_ids:
-        return []
-
-    key = frozenset(connection_ids)
-    cache = get_cache()
-
-    # Cache hit
-    cached = cache.get(key)
-    if cached is not None:
-        logger.debug(
-            "mcp_tool_cache_hit",
-            key=_key_repr(key),
-            tool_count=len(cached),
-        )
-        return cached
-
-    # Cache miss — resolve from MCP servers
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-
+    from app.db.mongodb import get_database
     from app.engine.tool.mcp_client import _build_connection_config
     from app.services.mcp_connection_service import McpConnectionService
 
-    connections: dict[str, dict] = {}
-    # Track per-connection default_params keyed by connection name
+    connections: dict[str, dict] = {}  # name -> connection config
+    conn_versions: dict[str, str] = {}
     conn_default_params: dict[str, dict] = {}
+    id_to_name: dict[str, str] = {}
     for conn_id in connection_ids:
         conn_doc = await McpConnectionService.get_connection(conn_id)
         if conn_doc is None:
             logger.warning("mcp_connection_not_found", connection_id=conn_id)
             continue
+        conn_versions[conn_id] = str(conn_doc.get("updated_at") or "")
         name = conn_doc.get("name", conn_id)
+        id_to_name[conn_id] = name
         connections[name] = _build_connection_config(
             url=conn_doc["url"],
             protocol=conn_doc.get("protocol", "streamable-http"),
@@ -183,50 +194,91 @@ async def get_mcp_tools_cached(
         if dp:
             conn_default_params[name] = dp
 
-    if not connections:
-        return []
-
-    try:
-        # 注入 harness 的 _user_token_interceptor —— 让 Workflow 路径的 MCP
-        # 调用也经过凭证兑换（外部路径）或静态凭证降级（内部路径），与
-        # Agent 会话路径（harness loader）行为一致。
+    tools: list[StructuredTool] = []
+    if connections:
+        # converter 是 langchain_mcp_adapters 0.2.2 的模块内函数（未在包顶层
+        # 导出）——升级库版本时需复核此调用点。
+        # 注入 harness 的 _user_token_interceptor —— 外部路径凭证兑换 /
+        # 内部路径静态凭证降级，与既有工具调用链路行为一致。
         from agent_flow_harness.mcp.loader import _user_token_interceptor
+        from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
+        from mcp.types import Tool as MCPTool
 
-        client = MultiServerMCPClient(
-            connections,
-            tool_name_prefix=True,
-            tool_interceptors=[_user_token_interceptor],
+        mirrors_by_conn: dict[str, list[dict]] = {}
+        cursor = get_database()["tools"].find(
+            {"mcp_connection_id": {"$in": list(id_to_name)}, "source": "mcp"},
+            {"name": 1, "description": 1, "input_schema": 1, "mcp_connection_id": 1},
         )
-        tools = await client.get_tools()
-    except Exception as exc:
-        # 提取 ExceptionGroup 的子异常以显示真正原因，然后 raise
-        # 让上层（workflow node_executor / agent context.py）捕获并
-        # 暴露给前端，不再静默 return [] 掩盖连接失败。
-        if hasattr(exc, "exceptions"):
-            details = "; ".join(str(e) for e in exc.exceptions)  # type: ignore[attr-defined]
-            logger.error("mcp_tools_fetch_failed", connection_ids=connection_ids, error=details)
-            raise RuntimeError(f"MCP 连接失败: {details}") from exc
-        else:
-            logger.error("mcp_tools_fetch_failed", connection_ids=connection_ids, error=str(exc))
-            raise
+        async for doc in cursor:
+            mirrors_by_conn.setdefault(doc["mcp_connection_id"], []).append(doc)
 
-    # Rename from library format "{server}_{tool}" to "mcp__{server}__{tool}"
-    # matching Claude Code's MCP tool naming convention.
+        for conn_id, conn_name in id_to_name.items():
+            mirrors = mirrors_by_conn.get(conn_id) or []
+            if not mirrors:
+                # 从未 discover（或镜像被清空）——本轮对话该连接工具不可用。
+                logger.warning("mcp_no_tools_mirror", connection_id=conn_id, server=conn_name)
+                continue
+            config = connections[conn_name]
+            for m in mirrors:
+                mcp_tool = MCPTool(
+                    name=m["name"],
+                    description=m.get("description") or "",
+                    inputSchema=m.get("input_schema") or {"type": "object", "properties": {}},
+                )
+                tools.append(convert_mcp_tool_to_langchain_tool(
+                    None, mcp_tool,
+                    connection=config,
+                    server_name=conn_name,
+                    tool_name_prefix=True,
+                    tool_interceptors=[_user_token_interceptor],
+                ))
+
+    # Rename to mcp__{server}__{tool} — 与旧运行时命名一致，消费方零改动。
     server_names = set(connections.keys())
-    tools = [
-        _rename_tool_to_mcp_prefix(tool, server_names)
-        for tool in tools
-    ]
+    tools = [_rename_tool_to_mcp_prefix(t, server_names) for t in tools]
 
     # Wrap tools with default_params if any connection has them
     if conn_default_params:
-        tools = [
-            _wrap_tool_with_defaults(tool, conn_default_params)
-            for tool in tools
-        ]
+        tools = [_wrap_tool_with_defaults(t, conn_default_params) for t in tools]
 
-    # Store in cache
-    cache.set(key, tools)
+    return tools, conn_versions
+
+
+async def get_mcp_tools_cached(
+    connection_ids: list[str],
+) -> list[StructuredTool]:
+    """Resolve MCP tools from DB mirrors with version-checked caching.
+
+    Never touches the network — tools are built from the ``tools`` mirror
+    collection and connect lazily on first invocation. Connections without
+    mirrors (never discovered) are skipped with a warning.
+
+    If a connection has ``default_params``, the tools are wrapped to
+    automatically merge those defaults on every invocation (user args
+    override defaults).
+    """
+    if not connection_ids:
+        return []
+
+    key = frozenset(connection_ids)
+    cache = get_cache()
+
+    # Cache hit — validate connection versions before trusting the entry.
+    entry = cache.get_entry(key)
+    if entry is not None:
+        current = await _fetch_conn_versions(connection_ids)
+        if current == entry.conn_versions:
+            logger.debug(
+                "mcp_tool_cache_hit",
+                key=_key_repr(key),
+                tool_count=len(entry.tools),
+            )
+            return entry.tools
+        # connection updated / re-discovered / deleted elsewhere → rebuild
+        cache.drop(key)
+
+    tools, conn_versions = await _build_tools_from_db(connection_ids)
+    cache.set(key, tools, conn_versions=conn_versions)
     return tools
 
 
@@ -331,32 +383,48 @@ def _wrap_tool_with_defaults(
 
 
 def _inject_schema_defaults(
-    schema_cls: type,
+    schema: Any,
     defaults: dict[str, Any],
-) -> type:
-    """Create a subclass of *schema_cls* with field defaults from *defaults*.
+) -> Any:
+    """Return a schema with field defaults from *defaults* injected.
+
+    Supports both schema shapes a StructuredTool can carry:
+    - JSON Schema dict（DB 镜像 / MCP converter 的原生形态）→ 写进
+      ``properties.<field>.default``（拷贝后修改，不污染共享镜像 dict）；
+    - pydantic model class → 动态子类覆盖字段默认值。
 
     Only fields that exist in the schema and are present in *defaults*
     will have their defaults overridden.
     """
-    if schema_cls is None:
-        return schema_cls
+    if isinstance(schema, dict):
+        new_schema = dict(schema)
+        props = dict(schema.get("properties") or {})
+        for field_name, default in defaults.items():
+            if field_name in props and isinstance(props[field_name], dict):
+                field_def = dict(props[field_name])
+                field_def["default"] = default
+                props[field_name] = field_def
+        new_schema["properties"] = props
+        return new_schema
+
+    if schema is None:
+        return schema
 
     # Collect field overrides
     field_overrides: dict[str, Any] = {}
-    for field_name, _field_info in schema_cls.model_fields.items():
+    for field_name, _field_info in schema.model_fields.items():
         if field_name in defaults:
             field_overrides[field_name] = defaults[field_name]
 
     if not field_overrides:
-        return schema_cls
+        return schema
 
     # Create a dynamic subclass with updated defaults
     return type(
-        schema_cls.__name__,
-        (schema_cls,),
+        schema.__name__,
+        (schema,),
         {
-            "__annotations__": getattr(schema_cls, "__annotations__", {}),
+            "__annotations__": getattr(schema, "__annotations__", {}),
             **field_overrides,
         },
     )

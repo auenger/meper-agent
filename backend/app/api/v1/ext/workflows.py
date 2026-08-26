@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.v1.ext import auth_and_rate_limit
 from app.core.auth_apikey import ApiKeyPrincipal
-from app.core.errors import NotFoundError, ValidationError
+from app.core.errors import NotFoundError
 from app.models.workflow import WorkflowStatus
 from app.schemas.ext_api import (
     ExtWorkflowDetailResponse,
@@ -13,21 +13,23 @@ from app.schemas.ext_api import (
     ExtWorkflowResponse,
 )
 from app.services.task_service import TaskService
-from app.services.workflow_service import WorkflowService
+from app.services.workflow_service import (
+    WorkflowService,
+    extract_input_schema,
+    validate_workflow_input,
+)
 
 router = APIRouter(tags=["external-workflows"])
 
 
 def _doc_to_ext_summary(doc: dict) -> ExtWorkflowResponse:
     """Convert a Workflow document to external summary format."""
-    from app.services.workflow_service import _extract_input_schema
-
     nodes = doc.get("nodes", [])
     return ExtWorkflowResponse(
         id=doc["_id"],
         name=doc["name"],
         description=doc.get("description", ""),
-        input_schema=_extract_input_schema(nodes),
+        input_schema=extract_input_schema(nodes),
         status=doc["status"],
         version=doc.get("version", 1),
     )
@@ -35,14 +37,12 @@ def _doc_to_ext_summary(doc: dict) -> ExtWorkflowResponse:
 
 def _doc_to_ext_detail(doc: dict) -> ExtWorkflowDetailResponse:
     """Convert a Workflow document to external detail format."""
-    from app.services.workflow_service import _extract_input_schema
-
     nodes = doc.get("nodes", [])
     return ExtWorkflowDetailResponse(
         id=doc["_id"],
         name=doc["name"],
         description=doc.get("description", ""),
-        input_schema=_extract_input_schema(nodes),
+        input_schema=extract_input_schema(nodes),
         status=doc["status"],
         version=doc.get("version", 1),
         nodes=nodes,
@@ -146,11 +146,9 @@ async def invoke_workflow(
         raise NotFoundError(code="WORKFLOW_NOT_FOUND", message="Workflow not found")
 
     # Validate input against schema
-    from app.services.workflow_service import _extract_input_schema
-
-    input_schema = _extract_input_schema(doc.get("nodes", []))
+    input_schema = extract_input_schema(doc.get("nodes", []))
     if input_schema:
-        _validate_input(body.input, input_schema)
+        validate_workflow_input(body.input, input_schema)
 
     # Build ext metadata for webhook scoping and callback
     ext_metadata: dict = {"ext_api_key_id": principal.key_id}
@@ -179,45 +177,3 @@ async def invoke_workflow(
         workflow_id=workflow_id,
         workflow_version=doc.get("version", 1),
     )
-
-
-def _validate_input(input_data: dict, input_schema: dict) -> None:
-    """Validate input data against the workflow's input schema.
-
-    Raises ValidationError if validation fails.
-    """
-    required = input_schema.get("required", [])
-    properties = input_schema.get("properties", {})
-
-    missing = [k for k in required if k not in input_data]
-    if missing:
-        raise ValidationError(
-            code="INPUT_VALIDATION_FAILED",
-            message=f"Input validation failed: missing required fields: {missing}",
-        )
-
-    # Type check for provided fields
-    for key, value in input_data.items():
-        if key in properties:
-            expected_type = properties[key].get("type")
-            if expected_type and not _check_type(value, expected_type):
-                raise ValidationError(
-                    code="INPUT_VALIDATION_FAILED",
-                    message=f"Input validation failed: field '{key}' expected type '{expected_type}'",
-                )
-
-
-def _check_type(value: object, expected_type: str) -> bool:
-    """Check if a value matches the expected JSON schema type."""
-    type_map = {
-        "string": str,
-        "integer": int,
-        "number": (int, float),
-        "boolean": bool,
-        "array": list,
-        "object": dict,
-    }
-    expected = type_map.get(expected_type)
-    if expected is None:
-        return True  # unknown type, skip check
-    return isinstance(value, expected)

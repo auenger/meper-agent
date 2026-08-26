@@ -18,7 +18,7 @@ import {
   knowledgeApi, knowledgeKeys,
   type KnowledgeBase, type KbType,
 } from '../services/knowledge-api'
-import { useAuthStore } from '../stores/auth-store'
+import { usePermission } from '../hooks/use-permission'
 
 /* ─── Helpers ─── */
 
@@ -126,7 +126,7 @@ export default function KnowledgePage() {
   const navigate = useNavigate()
 
   // §7.6 权限原则：只读用户（knowledge:read）不显示写操作
-  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
+  const canWrite = usePermission('knowledge:write')
 
   const [createOpen, setCreateOpen] = useState(false)
   const [createName, setCreateName] = useState('')

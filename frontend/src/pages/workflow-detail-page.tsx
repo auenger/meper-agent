@@ -44,6 +44,7 @@ import {
   type WorkflowEdge,
 } from '../services/workflows-api'
 import { useAuthStore } from '../stores/auth-store'
+import { usePermission } from '../hooks/use-permission'
 import { parseBackendDate } from '../lib/format'
 import { tasksApi, type TaskOutputFile } from '../services/tasks-api'
 import FileDownloadButton from '../components/file-download-button'
@@ -412,6 +413,8 @@ export default function WorkflowDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
+  // 权限：是否可执行写操作（编辑/发布/归档/保存/触发器配置）
+  const canWrite = usePermission('workflow:write')
 
   /* ─── Test run state ─── */
   const [testRunOpen, setTestRunOpen] = useState(false)
@@ -776,12 +779,13 @@ export default function WorkflowDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {(workflow.status === 'draft' || workflow.status === 'archived') && (
+          {/* 写操作按钮按 workflow:write 权限渲染（状态判断基础上叠加权限） */}
+          {canWrite && (workflow.status === 'draft' || workflow.status === 'archived') && (
             <Button icon={<CloudUploadOutlined />} onClick={handlePublish} loading={publishMutation.isPending}>
               发布
             </Button>
           )}
-          {workflow.status === 'published' && (
+          {canWrite && workflow.status === 'published' && (
             <Button icon={<StopOutlined />} onClick={() => archiveMutation.mutate()} loading={archiveMutation.isPending}>
               归档
             </Button>
@@ -789,25 +793,29 @@ export default function WorkflowDetailPage() {
           <Button icon={<PlayCircleOutlined />} type="primary" onClick={() => setTestRunOpen(true)}>
             测试运行
           </Button>
-          <Button
-            icon={<ClockCircleOutlined />}
-            onClick={() => setTriggerOpen(true)}
-            className={triggerEnabled ? '!border-green-400 !text-green-600' : ''}
-          >
-            定时触发{triggerEnabled && ' ✓'}
-          </Button>
+          {canWrite && (
+            <Button
+              icon={<ClockCircleOutlined />}
+              onClick={() => setTriggerOpen(true)}
+              className={triggerEnabled ? '!border-green-400 !text-green-600' : ''}
+            >
+              定时触发{triggerEnabled && ' ✓'}
+            </Button>
+          )}
           <Button icon={<HistoryOutlined />} onClick={() => setVersionOpen(true)}>
             版本
           </Button>
-          <Button
-            type="primary"
-            icon={<SaveOutlined />}
-            onClick={handleSave}
-            loading={saving}
-            disabled={!hasChanges}
-          >
-            保存
-          </Button>
+          {canWrite && (
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              onClick={handleSave}
+              loading={saving}
+              disabled={!hasChanges}
+            >
+              保存
+            </Button>
+          )}
         </div>
       </div>
 

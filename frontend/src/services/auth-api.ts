@@ -23,6 +23,12 @@ export interface TokenResponse {
 }
 
 export const authApi = {
+  /**
+   * GET /api/v1/auth/me — 当前用户 + 实时解析的 permissions。
+   * 供 usePermissionSync 近实时感知角色/权限变更。
+   */
+  me: () => apiClient.get<UserInfo>('/api/v1/auth/me'),
+
   login: (username: string, password: string) =>
     apiClient.post<TokenResponse>('/api/v1/auth/login', {
       username,

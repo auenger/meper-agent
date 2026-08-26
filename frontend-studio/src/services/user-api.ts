@@ -13,6 +13,7 @@ export interface User {
   updated_at: string
   last_login_at: string | null
   permissions: string[]
+  is_super_admin?: boolean
 }
 
 export interface UserListResponse {

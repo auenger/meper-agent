@@ -48,6 +48,10 @@ class ExecutionLog(BaseModel):
     status: str = Field(default="success", description="success | error")
     status_code: int = Field(default=0)
     latency_ms: int = Field(default=0, description="调用耗时（毫秒）")
+    llm_duration_ms: int = Field(default=0, description="LLM 调用总耗时（毫秒）")
+    tool_duration_ms: int = Field(default=0, description="工具执行总耗时（毫秒）")
+    other_duration_ms: int = Field(default=0, description="其他耗时（代码/框架延迟，= latency - llm - tool）")
+    ttft_ms: int = Field(default=0, description="首 token 延迟（毫秒，仅流式）")
 
     # ── Token consumption ──
     total_tokens: int = Field(default=0)

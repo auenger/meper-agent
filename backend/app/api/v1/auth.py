@@ -42,6 +42,26 @@ async def refresh(body: RefreshRequest) -> TokenResponse:
     return await AuthService.refresh_token(body.refresh_token)
 
 
+@router.get(
+    "/me",
+    response_model=UserResponse,
+    summary="Get current user profile with live permissions",
+    responses={
+        401: {"description": "Invalid or expired token"},
+    },
+)
+async def me(
+    current_user: UserResponse = Depends(get_current_user),
+) -> UserResponse:
+    """Return the authenticated user with freshly resolved permissions.
+
+    前端用于近实时感知角色/权限变更（窗口聚焦/轮询拉取）：每次调用都会
+    从 DB 重读角色并重新解析权限集，管理员调整权限后已登录用户无需
+    重新登录即可在下次拉取时拿到新权限列表。
+    """
+    return current_user
+
+
 @router.post(
     "/change-password",
     response_model=MessageResponse,

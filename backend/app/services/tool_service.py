@@ -615,6 +615,16 @@ class ToolService:
 
         result = await col.delete_one({"_id": tool_id})
         if result.deleted_count > 0:
+            # MCP 镜像删除 → 失效运行时工具缓存（mcp_tool_cache 纯 DB 构造，
+            # 镜像没了该连接工具即不可用）。update_tool 仅改 tags、不影响
+            # 构造，无需失效。
+            if existing_doc.get("source") == "mcp":
+                mcp_conn_id = existing_doc.get("mcp_connection_id") or ""
+                if mcp_conn_id:
+                    from app.engine.tool.mcp_tool_cache import invalidate_cache
+
+                    invalidate_cache(mcp_conn_id)
+
             # Clean up skill files on disk
             tool_name = existing_doc.get("name")
             if tool_name:

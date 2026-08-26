@@ -569,7 +569,11 @@ class AgentService:
                     message="无法生成唯一名称，请手动创建",
                 )
 
-        from app.models.compat import resolve_skill_ids
+        from app.models.compat import (
+            resolve_default_model,
+            resolve_max_retry,
+            resolve_skill_ids,
+        )
 
         return await AgentService.create_agent(
             name=new_name,
@@ -582,26 +586,10 @@ class AgentService:
             custom_tools=source.get("custom_tools") or [],
             custom_tool_ids=[b.get("tool_id", "") for b in (source.get("custom_tools") or []) if b.get("tool_id")],
             knowledge_base_ids=source.get("knowledge_base_ids", []),
-            default_model=_resolve_default_model(source),
+            default_model=resolve_default_model(source),
             voice_enabled=bool(source.get("voice_enabled", False)),
-            max_retry=_resolve_max_retry(source),
+            max_retry=resolve_max_retry(source),
             max_tokens=source.get("max_tokens", 0),
             welcome_message=source.get("welcome_message", ""),
             recommended_items=source.get("recommended_items", []),
         )
-
-
-def _resolve_default_model(doc: dict) -> str:
-    """Extract default_model from a doc, with backward compat for nested llm_config."""
-    if doc.get("default_model"):
-        return doc["default_model"]
-    legacy = doc.get("llm_config") or {}
-    return legacy.get("default_model", "")
-
-
-def _resolve_max_retry(doc: dict) -> int:
-    """Extract max_retry from a doc, with backward compat for nested llm_config."""
-    if "max_retry" in doc:
-        return int(doc["max_retry"])
-    legacy = doc.get("llm_config") or {}
-    return int(legacy.get("max_retry", 3))

@@ -27,6 +27,7 @@ import {
   type ReceiveMode,
 } from '../services/channel-api'
 import { agentApi, agentKeys } from '../services/agent-api'
+import { usePermission } from '../hooks/use-permission'
 
 const PROVIDER_LABELS: Record<ChannelProvider, string> = {
   lark: '飞书',
@@ -52,6 +53,8 @@ export default function ChannelsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Channel | null>(null)
   const [form] = Form.useForm()
+  // 权限：是否可管理渠道（新建/启用禁用/重置/编辑/删除）
+  const canManage = usePermission('settings:manage')
 
   /* ─── Queries ─── */
   const { data, isLoading } = useQuery({
@@ -183,9 +186,11 @@ export default function ChannelsPage() {
             配置 IM 平台（飞书 / 钉钉 / 企微）凭据并绑定 Agent，用户在 IM 发消息即可收到 Agent 回复。
           </p>
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
-          新建 Channel
-        </Button>
+        {canManage && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            新建 Channel
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -243,15 +248,17 @@ export default function ChannelsPage() {
                 </div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
-                <Tooltip title={ch.enabled ? '禁用' : '启用'}>
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={ch.enabled ? <StopOutlined /> : <CheckCircleOutlined />}
-                    onClick={() => toggleMutation.mutate({ id: ch.id, enabled: !ch.enabled })}
-                  />
-                </Tooltip>
-                {ch.status === 'degraded' && (
+                {canManage && (
+                  <Tooltip title={ch.enabled ? '禁用' : '启用'}>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={ch.enabled ? <StopOutlined /> : <CheckCircleOutlined />}
+                      onClick={() => toggleMutation.mutate({ id: ch.id, enabled: !ch.enabled })}
+                    />
+                  </Tooltip>
+                )}
+                {canManage && ch.status === 'degraded' && (
                   <Tooltip title="重置降级状态">
                     <Button
                       size="small"
@@ -272,32 +279,36 @@ export default function ChannelsPage() {
                     }}
                   />
                 </Tooltip>
-                <Tooltip title="编辑">
-                  <Button
-                    size="small"
-                    type="text"
-                    icon={<EditOutlined />}
-                    onClick={() => openEdit(ch)}
-                  />
-                </Tooltip>
-                <Tooltip title="删除">
-                  <Button
-                    size="small"
-                    type="text"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={() => {
-                      Modal.confirm({
-                        title: '确认删除?',
-                        content: `将删除 Channel「${ch.name}」`,
-                        okText: '删除',
-                        okButtonProps: { danger: true },
-                        cancelText: '取消',
-                        onOk: () => deleteMutation.mutate(ch.id),
-                      })
-                    }}
-                  />
-                </Tooltip>
+                {canManage && (
+                  <Tooltip title="编辑">
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<EditOutlined />}
+                      onClick={() => openEdit(ch)}
+                    />
+                  </Tooltip>
+                )}
+                {canManage && (
+                  <Tooltip title="删除">
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => {
+                        Modal.confirm({
+                          title: '确认删除?',
+                          content: `将删除 Channel「${ch.name}」`,
+                          okText: '删除',
+                          okButtonProps: { danger: true },
+                          cancelText: '取消',
+                          onOk: () => deleteMutation.mutate(ch.id),
+                        })
+                      }}
+                    />
+                  </Tooltip>
+                )}
               </div>
             </div>
           ))}

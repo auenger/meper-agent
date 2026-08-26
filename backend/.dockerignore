@@ -1,0 +1,27 @@
+# Docker build context for the backend image is THIS directory (compose sets
+# context: ../backend), so the repo-root .dockerignore does NOT apply here —
+# this file is the only exclude list for this build.
+#
+# Without it, `COPY packages/harness` shipped the harness venv/caches into the
+# image (~230MB) and every build transmitted the 1.8GB local dev clutter.
+
+# Local dev environments & caches
+.venv
+**/.venv
+**/__pycache__
+**/*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+logs/
+
+# Harness: keep src/, pyproject.toml and uv.lock (editable install needs them
+# at runtime); drop its local caches and tests.
+packages/harness/.mypy_cache
+packages/harness/.pytest_cache
+packages/harness/.ruff_cache
+packages/harness/tests
+
+# Never bake secrets or local state into the image
+**/.env
+**/.env.local

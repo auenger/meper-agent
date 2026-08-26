@@ -7,10 +7,19 @@ from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.core.config import settings
-from app.core.errors import NotFoundError, ValidationError
-from app.core.security import get_current_user, require_any_role
+from app.core.errors import (
+    ConflictError,
+    ForbiddenError,
+    NotFoundError,
+    ValidationError,
+)
+from app.core.security import get_current_user, require_permission
 from app.models.agent import AgentStatus
-from app.models.compat import resolve_skill_ids
+from app.models.compat import (
+    resolve_default_model,
+    resolve_max_retry,
+    resolve_skill_ids,
+)
 from app.schemas.agent import (
     AgentCreate,
     AgentListResponse,
@@ -23,10 +32,12 @@ from app.schemas.execution import (
     PreviewRequest,
     PreviewResponse,
     ResumeRequest,
+    StopRequest,
 )
 from app.schemas.user import UserResponse
 from app.services.agent_execution_service import AgentExecutionService
 from app.services.agent_service import AgentService
+from app.services.run_registry import find_latest_run, find_run, set_cancel_flag
 
 router = APIRouter(
     prefix="/agents",
@@ -42,9 +53,8 @@ def _doc_to_response(doc: dict) -> AgentResponse:
     前端负责脱敏展示(``****``),并在用户未改动时原样回传 ``enc:xxx``,
     后端据此识别"未更改"(enc: 前缀不重复加密) vs "新值"(加密)。
     """
-    llm_config = doc.get("llm_config") or {}
-    default_model = doc.get("default_model") or llm_config.get("default_model", "")
-    max_retry = doc.get("max_retry") if "max_retry" in doc else llm_config.get("max_retry", 3)
+    default_model = resolve_default_model(doc)
+    max_retry = resolve_max_retry(doc)
     max_tokens = doc.get("max_tokens", 0)
 
     custom_tools_raw = doc.get("custom_tools") or []
@@ -107,7 +117,7 @@ async def list_agents(
         description="Filter by status (draft/published/archived). "
         'Defaults to "published". Use "all" to return every status.',
     ),
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("agent:read")),
 ) -> AgentListResponse:
     # Default to published so external consumers (workflow editor, etc.)
     # only see production-ready agents. Management pages pass "all".
@@ -130,7 +140,7 @@ async def list_agents(
 )
 async def create_agent(
     body: AgentCreate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> AgentResponse:
     # 新建 Agent 默认启用全部文件类内建工具(bash/read/write/glob/grep)。
     # 白名单语义不变:这里只是给创建入口一个"默认全选"的初值。
@@ -149,7 +159,7 @@ async def create_agent(
 @router.get("/{agent_id}", response_model=AgentResponse, summary="Get Agent details")
 async def get_agent(
     agent_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("agent:read")),
 ) -> AgentResponse:
     doc = await AgentService.get_agent(agent_id)
     if doc is None:
@@ -161,7 +171,7 @@ async def get_agent(
 async def update_agent(
     agent_id: str,
     body: AgentUpdate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> AgentResponse:
     doc = await AgentService.update_agent(
         agent_id=agent_id,
@@ -198,7 +208,7 @@ _AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 async def upload_avatar(
     agent_id: str,
     file: UploadFile = File(...),
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> dict:
     # agent 存在性
     if await AgentService.get_agent(agent_id) is None:
@@ -231,7 +241,7 @@ async def upload_avatar(
 @router.post("/{agent_id}/publish", response_model=AgentResponse, summary="Publish an Agent")
 async def publish_agent(
     agent_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> AgentResponse:
     doc = await AgentService.publish_agent(agent_id)
     if doc is None:
@@ -242,7 +252,7 @@ async def publish_agent(
 @router.post("/{agent_id}/archive", response_model=AgentResponse, summary="Archive an Agent")
 async def archive_agent(
     agent_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> AgentResponse:
     doc = await AgentService.archive_agent(agent_id)
     if doc is None:
@@ -258,7 +268,7 @@ async def archive_agent(
 )
 async def duplicate_agent(
     agent_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> AgentResponse:
     doc = await AgentService.duplicate_agent(agent_id)
     return _doc_to_response(doc)
@@ -267,7 +277,7 @@ async def duplicate_agent(
 @router.delete("/{agent_id}", status_code=204, summary="Delete an Agent")
 async def delete_agent(
     agent_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> None:
     deleted = await AgentService.delete_agent(agent_id)
     if not deleted:
@@ -286,7 +296,7 @@ async def delete_agent(
 async def preview_agent(
     agent_id: str,
     body: PreviewRequest | None = None,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("agent:write")),
 ) -> PreviewResponse:
     from app.engine.agent.builder import preview_agent as _preview_agent
     from app.schemas.execution import ToolPreview
@@ -325,7 +335,7 @@ async def invoke_agent(
     agent_id: str,
     body: ExecutionRequest,
     x_call_chain: str | None = Header(None, alias="X-Call-Chain"),
-    user: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    user: UserResponse = Depends(require_permission("agent:invoke")),
 ) -> ExecutionResponse:
     """Invoke an Agent synchronously."""
     return await AgentExecutionService.invoke(
@@ -342,18 +352,15 @@ async def stream_agent(
     agent_id: str,
     body: ExecutionRequest,
     x_call_chain: str | None = Header(None, alias="X-Call-Chain"),
-    user: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    user: UserResponse = Depends(require_permission("agent:invoke")),
 ) -> StreamingResponse:
     """Invoke an Agent and stream results via Server-Sent Events."""
-    import asyncio
-
     event_queue, request_id, session_id = await AgentExecutionService.stream(
         agent_id, body, user.id,
         external_call_chain=_parse_call_chain(x_call_chain),
     )
 
     async def _event_stream():
-        task = asyncio.current_task()
         try:
             while True:
                 item = await event_queue.get()
@@ -361,8 +368,10 @@ async def stream_agent(
                     break
                 yield item
         finally:
-            if task and not task.done():
-                task.cancel()
+            # 断连 ≠ 取消：客户端断开（刷新/关页）只结束本渲染管道，
+            # 后台 _run() 继续执行并落库，结果不丢。要停止生成请显式
+            # 调用 POST /{agent_id}/stop（mid-stream abort）。
+            pass
 
     return StreamingResponse(
         _event_stream(),
@@ -376,23 +385,68 @@ async def stream_agent(
 
 
 @router.post(
+    "/{agent_id}/stop",
+    summary="Stop an in-flight streaming run (mid-stream abort)",
+)
+async def stop_agent(
+    agent_id: str,
+    body: StopRequest,
+    user: UserResponse = Depends(require_permission("agent:invoke")),
+) -> dict:
+    """Stop an in-flight streaming run for this agent.
+
+    两级取消（belt-and-suspenders）：
+    1. ``task.cancel()`` —— 立即打断当前 await（LLM token 流 / 工具执行），
+       httpx 连接关闭、供应商停止生成；半截回复不进会话历史，checkpoint
+       停在上一个完成的 superstep，下一轮对话带完整干净历史重新开始。
+    2. Redis 取消标志 —— harness ``cancel_checker`` 在每轮 REACT 迭代边界
+       检查，兜住取消信号落在两个 await 之间的竞态窗口。
+    """
+    run = (
+        find_run(body.request_id)
+        if body.request_id
+        else find_latest_run(agent_id, user.id)
+    )
+
+    # 进程内注册表查不到活跃运行（多 uvicorn worker 部署时注册表在别的
+    # 进程，或运行刚结束）：只要有明确的 request_id，仍写 Redis 取消标志
+    # 做跨 worker 兜底——运行方的 cancel_checker 在迭代边界拾取，取消信号
+    # 不依赖进程内句柄。缺省定位（无 request_id）时无法跨 worker，诚实 409。
+    if run is None:
+        if body.request_id:
+            # 跨 worker 兜底：注册表在别的进程，无法校验属主（主路径的
+            # run.user_id 校验不可用）。request_id 是服务端生成、不可猜测
+            # 的 UUID，作为隐式授权边界——调用方只能取消自己拿到的那个运行。
+            await set_cancel_flag(body.request_id)
+            return {"stopped": True, "request_id": body.request_id}
+        raise ConflictError(
+            code="RUN_NOT_ACTIVE",
+            message="没有可停止的活跃运行（可能已结束）",
+        )
+    if run.user_id != user.id:
+        # 只允许发起者停止自己的运行（admin 也一样——避免跨用户干扰）。
+        raise ForbiddenError(code="RUN_NOT_OWNED", message="只能停止自己发起的运行")
+
+    await set_cancel_flag(run.request_id)  # 迭代边界兜底闸
+    run.task.cancel()  # 主取消路径：立即生效
+    return {"stopped": True, "request_id": run.request_id}
+
+
+@router.post(
     "/{agent_id}/resume",
     summary="Resume an interrupted Agent (SSE stream)",
 )
 async def resume_agent(
     agent_id: str,
     body: ResumeRequest,
-    user: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    user: UserResponse = Depends(require_permission("agent:invoke")),
 ) -> StreamingResponse:
     """Resume an agent paused via interrupt (ask_clarification)."""
-    import asyncio
-
     event_queue, request_id, session_id = await AgentExecutionService.resume(
         agent_id, body, user.id,
     )
 
     async def _event_stream():
-        task = asyncio.current_task()
         try:
             while True:
                 item = await event_queue.get()
@@ -400,8 +454,8 @@ async def resume_agent(
                     break
                 yield item
         finally:
-            if task and not task.done():
-                task.cancel()
+            # 断连 ≠ 取消（与 stream 端点语义一致）：停止生成请显式调 stop 端点。
+            pass
 
     return StreamingResponse(
         _event_stream(),

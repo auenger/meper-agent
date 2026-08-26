@@ -8,6 +8,12 @@ class ExecutionRequest(BaseModel):
     """Request body for agent invoke/stream endpoints."""
 
     input: str = Field(..., min_length=1, max_length=50000, description="User input text")
+    display_text: str | None = Field(
+        default=None,
+        max_length=500,
+        description="展示文案（快捷指令 label）。AI 收到的仍是 input；"
+        "气泡/历史/会话标题优先展示该字段，避免后台指令暴露给终端用户",
+    )
     session_id: str | None = Field(default=None, description="Optional session ID for context continuity")
     enable_thinking: bool = Field(
         default=False,
@@ -41,6 +47,19 @@ class ResumeRequest(BaseModel):
     session_id: str = Field(..., description="被中断的 session ID")
     answer: str = Field(..., min_length=1, max_length=50000, description="用户的回答")
     enable_thinking: bool = Field(default=False, description="启用 LLM 推理模式")
+
+
+class StopRequest(BaseModel):
+    """Request body for stopping an in-flight streaming agent run.
+
+    mid-stream abort：取消进行中的 LLM 生成/工具执行，被取消的轮次不进
+    会话历史，用户可直接开始新一轮对话。
+    """
+
+    request_id: str | None = Field(
+        default=None,
+        description="要停止的运行 ID（SSE 响应头 X-Request-Id）。缺省时停止该用户在该 Agent 上的最新活跃运行。",
+    )
 
 
 # ---------------------------------------------------------------------------

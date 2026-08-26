@@ -396,10 +396,10 @@ export const agentApi = {
    * streaming response bodies. Returns the raw Response so the caller
    * can read the body as a ReadableStream and parse SSE events.
    */
-  async stream(agentId: string, body: ExecutionRequest): Promise<Response> {
+  async stream(agentId: string, body: ExecutionRequest, signal?: AbortSignal): Promise<Response> {
     const url = `${ENV.API_BASE_URL}/api/v1/agents/${encodeURIComponent(agentId)}/stream`
 
-    return this._streamWithRetry(url, body)
+    return this._streamWithRetry(url, body, signal)
   },
 
   /**
@@ -411,9 +411,33 @@ export const agentApi = {
   async resume(
     agentId: string,
     body: { session_id: string; answer: string; enable_thinking?: boolean },
+    signal?: AbortSignal,
   ): Promise<Response> {
     const url = `${ENV.API_BASE_URL}/api/v1/agents/${encodeURIComponent(agentId)}/resume`
-    return this._streamWithRetry(url, body)
+    return this._streamWithRetry(url, body, signal)
+  },
+
+  /**
+   * Stop the agent's latest in-flight streaming run (mid-stream abort).
+   *
+   * Server-side task.cancel() immediately interrupts the in-flight LLM call /
+   * tool execution; the partial reply is NOT persisted and the next message
+   * starts from a clean checkpoint. No request_id needed — the backend targets
+   * the caller's latest active run on this agent.
+   *
+   * Fire-and-forget: 409 (run already finished) and network errors are
+   * swallowed — the local abort is the user-visible path.
+   */
+  async stop(agentId: string): Promise<void> {
+    const url = `${ENV.API_BASE_URL}/api/v1/agents/${encodeURIComponent(agentId)}/stop`
+    try {
+      // 复用 _streamWithRetry 的 401 刷新重试：token 过期时先静默刷新再
+      // 重试，否则带过期 token 的 stop 401 会被静默吞掉、服务端运行
+      // 无法中止。body 传空对象（stop 无需 payload）。
+      await this._streamWithRetry(url, {})
+    } catch {
+      // 网络错误不打断本地停止流程
+    }
   },
 
   /**
@@ -423,7 +447,12 @@ export const agentApi = {
    * NOTE: standard Axios interceptors do NOT apply to fetch(), so this
    * method duplicates the minimal refresh logic seen in api-client.ts.
    */
-  async _streamWithRetry(url: string, body: Record<string, unknown>, _retried = false): Promise<Response> {
+  async _streamWithRetry(
+    url: string,
+    body: Record<string, unknown>,
+    signal?: AbortSignal,
+    _retried = false,
+  ): Promise<Response> {
     const accessToken = useAuthStore.getState().accessToken
 
     const res = await fetch(url, {
@@ -433,6 +462,7 @@ export const agentApi = {
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
       body: JSON.stringify(body),
+      signal,
     })
 
     // 401 + token expired → refresh once and retry
@@ -444,7 +474,7 @@ export const agentApi = {
         const newToken = await this._refreshToken()
         if (newToken) {
           useAuthStore.getState().setAccessToken(newToken)
-          return this._streamWithRetry(url, body, true)
+          return this._streamWithRetry(url, body, signal, true)
         }
         // Refresh failed → redirect to login
         useAuthStore.getState().clearAuth()

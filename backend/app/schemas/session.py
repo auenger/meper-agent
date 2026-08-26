@@ -43,6 +43,10 @@ class MessageResponse(BaseModel):
     session_id: str
     role: str
     content: str = ""
+    display_text: str = Field(
+        default="",
+        description="展示文案（快捷指令 label，user messages only）；空则前端回退 content",
+    )
     timeline_entries: list[dict] = []
     file_ids: list[str] = []
     files: list[FileRefResponse] = []

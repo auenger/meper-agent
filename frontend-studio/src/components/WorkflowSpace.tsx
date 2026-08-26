@@ -19,6 +19,7 @@ import {
   type WorkflowStatusValue,
 } from '../services/workflows-api';
 import { useWorkflowExecution } from '../hooks/useWorkflowExecution';
+import { usePermission } from '../hooks/use-permission';
 import { TaskTraceModal } from '../features/workflow-editor/TaskTraceModal';
 import ExecuteInputDialog from '../features/workflow-editor/ExecuteInputDialog';
 
@@ -52,6 +53,8 @@ export function WorkflowSpace({
   theme?: 'dark' | 'light';
 }) {
   const queryClient = useQueryClient();
+  // 写权限门控：无 workflow:write 的用户隐藏新建/删除入口
+  const canWrite = usePermission('workflow:write');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<WorkflowStatusValue | 'all'>('all');
   const [confirmDelete, setConfirmDelete] = useState<WorkflowSummary | null>(null);
@@ -117,14 +120,16 @@ export function WorkflowSpace({
           </h2>
           <p className="text-xs text-[#71717a] mt-1">以卡片浏览工作流，点击进入可视化编辑。</p>
         </div>
-        <button
-          onClick={() => createM.mutate()}
-          disabled={createM.isPending}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20 disabled:opacity-60"
-        >
-          {createM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
-          新建工作流
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => createM.mutate()}
+            disabled={createM.isPending}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20 disabled:opacity-60"
+          >
+            {createM.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+            新建工作流
+          </button>
+        )}
       </div>
 
       {/* Stats */}
@@ -256,6 +261,8 @@ const WorkflowCard: FC<{
   running: boolean;
   theme: 'dark' | 'light';
 }> = ({ wf, onOpen, onDelete, onRun, running }) => {
+  // 写权限门控：无 workflow:write 的用户隐藏卡片删除入口（运行/编辑入口保留）
+  const canWrite = usePermission('workflow:write');
   const meta = STATUS_META[wf.status] ?? STATUS_META.draft;
   const isPublished = wf.status === 'published';
   const canRun = isPublished && !running;
@@ -328,13 +335,15 @@ const WorkflowCard: FC<{
         >
           <Pencil className="w-3.5 h-3.5" />
         </button>
-        <button
-          onClick={() => onDelete(wf)}
-          title="删除"
-          className="p-1.5 rounded-lg bg-[#121214] border border-[#27272a] text-[#a1a1aa] hover:text-rose-400 hover:border-rose-500/50 transition cursor-pointer"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => onDelete(wf)}
+            title="删除"
+            className="p-1.5 rounded-lg bg-[#121214] border border-[#27272a] text-[#a1a1aa] hover:text-rose-400 hover:border-rose-500/50 transition cursor-pointer"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+          </button>
+        )}
       </div>
     </div>
   );

@@ -18,12 +18,16 @@ import { Loader2 } from 'lucide-react'
 
 import { REFRESH_TOKEN_KEY, useAuthStore } from '../stores/auth-store'
 import { authApi } from '../services/auth-api'
+import { usePermissionSync } from '../hooks/use-permission-sync'
 
 export function AuthInitializer({ children }: { children: ReactNode }) {
   const isInitializing = useAuthStore((s) => s.isInitializing)
   const setInitializing = useAuthStore((s) => s.setInitializing)
   const setAuth = useAuthStore((s) => s.setAuth)
   const clearAuth = useAuthStore((s) => s.clearAuth)
+
+  // 登录态存续期间持续同步 /auth/me：角色/权限变更 ≤60s 或窗口聚焦即生效。
+  usePermissionSync()
 
   useEffect(() => {
     const refreshToken = localStorage.getItem(REFRESH_TOKEN_KEY)
@@ -54,6 +58,7 @@ export function AuthInitializer({ children }: { children: ReactNode }) {
           username: user.username,
           role: user.role,
           permissions: user.permissions ?? [],
+          isSuperAdmin: Boolean(user.is_super_admin),
         })
         localStorage.setItem(REFRESH_TOKEN_KEY, refresh_token)
       })

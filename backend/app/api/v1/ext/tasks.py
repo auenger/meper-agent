@@ -38,18 +38,26 @@ def _doc_to_ext_task(doc: dict) -> ExtTaskResponse:
     )
 
 
-async def _get_task_or_404(task_id: str) -> dict:
+async def _get_task_or_404(task_id: str, principal: ApiKeyPrincipal) -> dict:
     """Load a Task by id, raising 404 when it does not exist.
 
     Shared by all task sub-resources (detail / outputs / node timeline /
     intervention). Access is gated by the API Key + X-User-Token
-    authentication and the endpoint's scope requirement; no per-task
-    ownership filter is applied (created_by may be a platform user, an
-    external end-user's platform_user_id, or a channel-encoded id,
-    depending on the entry point).
+    authentication, the endpoint's scope requirement, and per-user data
+    isolation on ``created_by``: the Task must belong to the calling
+    end-user (``principal.user_id``, the external identity's
+    platform_user_id) or to the API Key owner (``owner_user_id``, the
+    fallback attribution when no X-User-Token was presented). Tasks
+    created by other entry points (e.g. channel-encoded ids) are not
+    visible here.
     """
     doc = await TaskService.get_task(task_id)
     if doc is None:
+        raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
+    allowed_owners = {principal.owner_user_id}
+    if principal.user_id:
+        allowed_owners.add(principal.user_id)
+    if doc.get("created_by", "") not in allowed_owners:
         raise NotFoundError(code="TASK_NOT_FOUND", message="Task not found")
     return doc
 
@@ -68,7 +76,7 @@ async def get_task(
     Requires ``executions:read`` scope.
     """
     principal.require_scope("executions:read")
-    doc = await _get_task_or_404(task_id)
+    doc = await _get_task_or_404(task_id, principal)
     return _doc_to_ext_task(doc)
 
 
@@ -86,7 +94,7 @@ async def list_task_outputs(
     Requires ``executions:read`` scope.
     """
     principal.require_scope("executions:read")
-    await _get_task_or_404(task_id)
+    await _get_task_or_404(task_id, principal)
 
     from app.services.file_service import FileService
     from app.services.file_storage import LocalFileStorage
@@ -121,7 +129,7 @@ async def get_node_timeline(
     Returns 404 when the node has no checkpoint yet.
     """
     principal.require_scope("executions:read")
-    await _get_task_or_404(task_id)
+    await _get_task_or_404(task_id, principal)
 
     from app.engine.harness_integration import get_checkpointer
     from app.services.message_converters import messages_to_timeline_entries
@@ -167,7 +175,7 @@ async def intervene_task(
     API-Key principal (the end-user's platform_user_id).
     """
     principal.require_scope("workflows:invoke")
-    await _get_task_or_404(task_id)
+    await _get_task_or_404(task_id, principal)
 
     # Resolve end-user identity for attribution (timeline / variables).
     triggered_by = resolve_user_id(principal)

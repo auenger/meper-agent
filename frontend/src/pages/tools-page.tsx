@@ -15,6 +15,7 @@ import {
   LockOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import { toolsApi, toolKeys } from '../services/tools-api'
 import { agentKeys } from '../services/agent-api'
 import type { BuiltinTool, Tool } from '../services/tools-api'
@@ -230,6 +231,8 @@ function CustomToolsTab() {
   const queryClient = useQueryClient()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [searchName, setSearchName] = useState('')
+  // 权限：是否可执行写操作（创建/删除自定义工具）
+  const canWrite = usePermission('tool:write')
 
   const { data: allCustom, isLoading } = useQuery({
     queryKey: toolKeys.customTools(),
@@ -278,9 +281,11 @@ function CustomToolsTab() {
             className="pl-9 pr-4 py-2 rounded-lg border border-gray-200 text-sm focus:outline-none focus:ring-2 w-64"
           />
         </div>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
-          创建工具
-        </Button>
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setDrawerOpen(true)}>
+            创建工具
+          </Button>
+        )}
       </div>
 
       {isLoading ? (
@@ -292,7 +297,7 @@ function CustomToolsTab() {
         />
       ) : (
         <div className="grid grid-cols-3 gap-4">
-          {tools.map(tool => <CustomToolCard key={tool.id} tool={tool} onDelete={() => handleDelete(tool)} />)}
+          {tools.map(tool => <CustomToolCard key={tool.id} tool={tool} canDelete={canWrite} onDelete={() => handleDelete(tool)} />)}
         </div>
       )}
 
@@ -301,7 +306,7 @@ function CustomToolsTab() {
   )
 }
 
-function CustomToolCard({ tool, onDelete }: { tool: Tool; onDelete: () => void }) {
+function CustomToolCard({ tool, canDelete, onDelete }: { tool: Tool; canDelete: boolean; onDelete: () => void }) {
   const tag = SOURCE_TAGS[tool.source] || { color: 'default', label: tool.source, icon: ToolOutlined }
   const Icon = tag.icon
   const paramNames = Object.keys((tool.input_schema?.properties as Record<string, unknown>) ?? {})
@@ -322,7 +327,8 @@ function CustomToolCard({ tool, onDelete }: { tool: Tool; onDelete: () => void }
             <div className="text-xs text-[#64748B] line-clamp-2 mt-0.5">{tool.description}</div>
           </div>
         </div>
-        <Button danger icon={<DeleteOutlined />} size="small" type="text" onClick={onDelete} />
+        {/* 删除按钮按写权限门控 */}
+        {canDelete && <Button danger icon={<DeleteOutlined />} size="small" type="text" onClick={onDelete} />}
       </div>
       {paramNames.length > 0 && (
         <div className="pt-3 border-t border-gray-50">

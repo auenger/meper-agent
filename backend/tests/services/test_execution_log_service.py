@@ -126,6 +126,60 @@ async def test_write_log_failure_does_not_raise() -> None:
     assert result is None  # failure returns None, no exception
 
 
+@pytest.mark.asyncio
+async def test_write_log_derives_other_duration() -> None:
+    """write_log persists duration split and derives other = latency - llm - tool."""
+    mock_col = MagicMock()
+    mock_col.insert_one = AsyncMock(return_value=MagicMock(inserted_id="xlog_1"))
+
+    mock_db = MagicMock()
+    mock_db.__getitem__.side_effect = lambda key: mock_col if key == "execution_logs" else MagicMock()
+
+    with patch("app.services.execution_log_service.get_database", return_value=mock_db):
+        await ExecutionLogService.write_log(
+            user_id="user_01",
+            latency_ms=10_000,
+            llm_duration_ms=7_000,
+            tool_duration_ms=2_000,
+            ttft_ms=1_200,
+        )
+        doc = mock_col.insert_one.call_args.args[0]
+        assert doc["latency_ms"] == 10_000
+        assert doc["llm_duration_ms"] == 7_000
+        assert doc["tool_duration_ms"] == 2_000
+        assert doc["ttft_ms"] == 1_200
+        # other = 10000 - 7000 - 2000
+        assert doc["other_duration_ms"] == 1_000
+
+
+@pytest.mark.asyncio
+async def test_write_log_clamps_negative_other_to_zero() -> None:
+    """Clock skew (monotonic vs wall) may make llm+tool exceed latency — clamp ≥ 0."""
+    mock_col = MagicMock()
+    mock_col.insert_one = AsyncMock(return_value=MagicMock(inserted_id="xlog_1"))
+
+    mock_db = MagicMock()
+    mock_db.__getitem__.side_effect = lambda key: mock_col if key == "execution_logs" else MagicMock()
+
+    with patch("app.services.execution_log_service.get_database", return_value=mock_db):
+        await ExecutionLogService.write_log(
+            user_id="user_01",
+            latency_ms=5_000,
+            llm_duration_ms=4_900,
+            tool_duration_ms=200,  # 4900 + 200 > 5000
+        )
+        doc = mock_col.insert_one.call_args.args[0]
+        assert doc["other_duration_ms"] == 0
+
+        # 不传 duration 时默认全 0（兼容 ext 兜底等无 usage 路径）
+        await ExecutionLogService.write_log(user_id="user_01", latency_ms=1_000)
+        doc2 = mock_col.insert_one.call_args_list[1].args[0]
+        assert doc2["llm_duration_ms"] == 0
+        assert doc2["tool_duration_ms"] == 0
+        assert doc2["other_duration_ms"] == 1_000
+        assert doc2["ttft_ms"] == 0
+
+
 # ---------------------------------------------------------------------------
 # get_stats — aggregation (mocked)
 # ---------------------------------------------------------------------------
@@ -178,6 +232,88 @@ async def test_get_stats_groups_by_source() -> None:
     assert totals["calls"] == 15  # 10 + 5
     assert totals["tokens"] == 7000
     assert totals["success_rate"] == round(14 / 15 * 100, 1)
+
+
+@pytest.mark.asyncio
+async def test_get_stats_aggregates_duration_split() -> None:
+    """get_stats returns avg duration split (llm / tool / other / ttft) per channel."""
+    agg_rows = [
+        {"_id": CHANNEL_INTERNAL, "calls": 2, "tokens": 100, "input_tokens": 80,
+         "output_tokens": 20, "llm_calls": 2, "avg_latency_ms": 10_000.0,
+         "avg_llm_duration_ms": 7_000.0, "avg_tool_duration_ms": 2_000.0,
+         "avg_other_duration_ms": 1_000.0, "avg_ttft_ms": 1_200.0,
+         "success": 2, "failed": 0},
+    ]
+    mock_col = MagicMock()
+    mock_col.aggregate = MagicMock(return_value=_MockAggCursor(agg_rows))
+    mock_col.count_documents = AsyncMock(return_value=2)
+
+    mock_db = MagicMock()
+    mock_db.__getitem__.side_effect = lambda key: mock_col if key == "execution_logs" else MagicMock()
+
+    with patch("app.services.execution_log_service.get_database", return_value=mock_db):
+        result = await ExecutionLogService.get_stats()
+
+    ch = result["channels"][CHANNEL_INTERNAL]
+    assert ch["avg_latency_ms"] == 10_000
+    assert ch["avg_llm_duration_ms"] == 7_000
+    assert ch["avg_tool_duration_ms"] == 2_000
+    assert ch["avg_other_duration_ms"] == 1_000
+    assert ch["avg_ttft_ms"] == 1_200
+    # 无数据的渠道拆分字段也为 0
+    assert result["channels"][CHANNEL_IM]["avg_llm_duration_ms"] == 0
+
+    # 聚合 pipeline 用 $ifNull 兜底旧文档（无 duration 字段的历史数据）
+    pipeline = mock_col.aggregate.call_args.args[0]
+    group = pipeline[1]["$group"]
+    assert group["avg_llm_duration_ms"]["$avg"]["$ifNull"][0] == "$llm_duration_ms"
+    assert group["avg_llm_duration_ms"]["$avg"]["$ifNull"][1] == 0
+
+
+@pytest.mark.asyncio
+async def test_get_stats_totals_are_weighted_average() -> None:
+    """totals 的 avg_* 是按调用次数加权平均，而非跨渠道简单相加。"""
+    agg_rows = [
+        {"_id": CHANNEL_INTERNAL, "calls": 100, "tokens": 1000, "input_tokens": 800,
+         "output_tokens": 200, "llm_calls": 100, "avg_latency_ms": 10_000.0,
+         "avg_llm_duration_ms": 7_000.0, "avg_tool_duration_ms": 2_000.0,
+         "avg_other_duration_ms": 1_000.0, "avg_ttft_ms": 1_200.0,
+         "success": 100, "failed": 0},
+        {"_id": CHANNEL_API_KEY, "calls": 1, "tokens": 10, "input_tokens": 5,
+         "output_tokens": 5, "llm_calls": 1, "avg_latency_ms": 60_000.0,
+         "avg_llm_duration_ms": 40_000.0, "avg_tool_duration_ms": 15_000.0,
+         "avg_other_duration_ms": 5_000.0, "avg_ttft_ms": 800.0,
+         "success": 1, "failed": 0},
+    ]
+    mock_col = MagicMock()
+    mock_col.aggregate = MagicMock(return_value=_MockAggCursor(agg_rows))
+    mock_col.count_documents = AsyncMock(return_value=101)
+
+    mock_db = MagicMock()
+    mock_db.__getitem__.side_effect = (
+        lambda key: mock_col if key == "execution_logs" else MagicMock()
+    )
+
+    with patch("app.services.execution_log_service.get_database", return_value=mock_db):
+        result = await ExecutionLogService.get_stats()
+
+    totals = result["totals"]
+    total_calls = totals["calls"]
+    assert total_calls == 101
+    # 加权平均 Σ(calls_i×avg_i)/Σ(calls_i)；简单相加（错误实现）会是 70_000
+    assert totals["avg_latency_ms"] == round(
+        (100 * 10_000 + 1 * 60_000) / total_calls, 0,
+    )
+    assert totals["avg_llm_duration_ms"] == round(
+        (100 * 7_000 + 1 * 40_000) / total_calls, 0,
+    )
+    assert totals["avg_tool_duration_ms"] == round(
+        (100 * 2_000 + 1 * 15_000) / total_calls, 0,
+    )
+    assert totals["avg_ttft_ms"] == round(
+        (100 * 1_200 + 1 * 800) / total_calls, 0,
+    )
+    assert totals["success_rate"] == 100.0
 
 
 # ---------------------------------------------------------------------------

@@ -157,6 +157,19 @@ class McpConnectionService:
             raise
 
         logger.info("mcp_connection_created", connection_id=doc["_id"], name=doc["name"])
+
+        # 创建后自动连接并同步工具镜像：运行时（mcp_tool_cache）只从 DB
+        # 镜像构造工具，这里是一次性把"验证过的工具白名单"写进去的入口。
+        # 失败不阻断创建（可能网络抖动）——连接保留、无镜像，运行时跳过
+        # 该连接的工具，用户可在管理界面手动重新同步。
+        try:
+            await McpConnectionService.discover_tools(doc["_id"])
+        except Exception as exc:
+            logger.warning(
+                "mcp_auto_discover_failed",
+                connection_id=doc["_id"], name=doc["name"], error=str(exc),
+            )
+
         return doc
 
     @staticmethod

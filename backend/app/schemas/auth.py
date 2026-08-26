@@ -22,6 +22,7 @@ class UserInfo(BaseModel):
     username: str
     role: str
     permissions: list[str] = Field(default_factory=list)
+    is_super_admin: bool = Field(default=False, description="超级管理员标记（初始管理员）")
 
 
 class TokenResponse(BaseModel):

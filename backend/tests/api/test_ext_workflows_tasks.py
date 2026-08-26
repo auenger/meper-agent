@@ -605,3 +605,105 @@ class TestInterveneTask:
             assert resp.status_code == 403
         finally:
             cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Per-user data isolation on ext Task endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestTaskOwnershipIsolation:
+    """created_by 归属校验：终端用户/owner 之外的 Task 一律 404。"""
+
+    def test_end_user_cannot_read_others_task(self, client, full_principal) -> None:
+        """终端用户 A（user_id=ext_a）不能查终端用户 B 创建的任务。"""
+        principal = ApiKeyPrincipal(
+            key_id=full_principal.key_id,
+            owner_user_id=full_principal.owner_user_id,
+            scopes=full_principal.scopes,
+            bindings=full_principal.bindings,
+            user_id="user_ext_a",
+        )
+        cleanup = _override_auth(principal)
+        try:
+            task_doc = _make_task_doc()
+            task_doc["created_by"] = "user_ext_b"
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 404
+        finally:
+            cleanup()
+
+    def test_end_user_can_read_own_task(self, client, full_principal) -> None:
+        """终端用户可读自己（platform_user_id）名下的任务。"""
+        principal = ApiKeyPrincipal(
+            key_id=full_principal.key_id,
+            owner_user_id=full_principal.owner_user_id,
+            scopes=full_principal.scopes,
+            bindings=full_principal.bindings,
+            user_id="user_ext_a",
+        )
+        cleanup = _override_auth(principal)
+        try:
+            task_doc = _make_task_doc()
+            task_doc["created_by"] = "user_ext_a"
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 200
+        finally:
+            cleanup()
+
+    def test_owner_without_token_reads_owner_task(self, client, full_principal) -> None:
+        """无 X-User-Token（user_id=None）：owner 名下任务可见。"""
+        # full_principal 默认 user_id=None
+        cleanup = _override_auth(full_principal)
+        try:
+            task_doc = _make_task_doc()
+            task_doc["created_by"] = full_principal.owner_user_id
+            with patch(
+                "app.services.task_service.TaskService.get_task",
+                new=AsyncMock(return_value=task_doc),
+            ):
+                resp = client.get("/api/v1/ext/tasks/task_01")
+            assert resp.status_code == 200
+        finally:
+            cleanup()
+
+    def test_intervene_others_task_404_and_skipped(self, client, full_principal) -> None:
+        """越权干预：404 且 TaskService.intervene 不得被调用。"""
+        principal = ApiKeyPrincipal(
+            key_id=full_principal.key_id,
+            owner_user_id=full_principal.owner_user_id,
+            scopes=full_principal.scopes,
+            bindings=full_principal.bindings,
+            user_id="user_ext_a",
+        )
+        cleanup = _override_auth(principal)
+        try:
+            task_doc = _make_task_doc(status="waiting_human")
+            task_doc["created_by"] = "user_ext_b"
+            intervene_mock = AsyncMock()
+            with (
+                patch(
+                    "app.services.task_service.TaskService.get_task",
+                    new=AsyncMock(return_value=task_doc),
+                ),
+                patch(
+                    "app.services.task_service.TaskService.intervene",
+                    intervene_mock,
+                ),
+            ):
+                resp = client.post(
+                    "/api/v1/ext/tasks/task_01/intervene",
+                    json={"action": "approve", "version": 1},
+                )
+            assert resp.status_code == 404
+            assert intervene_mock.await_count == 0
+        finally:
+            cleanup()

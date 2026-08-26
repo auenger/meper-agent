@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, Query
 
+from app.core.errors import NotFoundError
 from app.core.security import get_current_user
 from app.models.task import TaskStatus
 from app.schemas.common import PaginatedResponse
@@ -19,6 +20,11 @@ from app.schemas.task import (
 )
 from app.schemas.user import UserResponse
 from app.services.task_service import TaskService
+from app.services.workflow_service import (
+    WorkflowService,
+    extract_input_schema,
+    validate_workflow_input,
+)
 
 router = APIRouter(
     prefix="/tasks",
@@ -28,6 +34,21 @@ router = APIRouter(
 
 
 # ── Helpers ──
+
+
+def _ensure_task_access(doc: dict, current_user: UserResponse) -> None:
+    """Enforce per-user data isolation on a Task document.
+
+    Non-admin users may only access Tasks they own (``created_by``); the
+    same rule as triggers. Returns 404 (not 403) on violation so task
+    existence is not leaked across users.
+    """
+    if current_user.role != "admin" and doc.get("created_by", "") != current_user.id:
+        raise NotFoundError(
+            code="TASK_NOT_FOUND",
+            message=f"Task {doc['_id']} 不存在",
+            details={"task_id": doc["_id"]},
+        )
 
 
 def _doc_to_full_response(doc: dict) -> TaskResponse:
@@ -98,7 +119,15 @@ async def create_task(
 
     The Task will be created and associated with the given workflow.
     Actual execution is handled by the Workflow Engine (Story 4-9).
+    If the workflow's start node declares required input variables, the
+    input is validated up front (fail fast) instead of failing at runtime.
     """
+    wf_doc = await WorkflowService.get(body.workflow_id)
+    if wf_doc is not None:
+        input_schema = extract_input_schema(wf_doc.get("nodes", []))
+        if input_schema:
+            validate_workflow_input(body.input, input_schema)
+
     doc = await TaskService.create_task(
         workflow_id=body.workflow_id,
         input_data=body.input,
@@ -122,8 +151,17 @@ async def list_tasks(
     workflow_id: str | None = Query(default=None),
     trigger_id: str | None = Query(default=None),
     source: str | None = Query(default=None),
+    current_user: UserResponse = Depends(get_current_user),
 ) -> TaskListResponse:
-    """List Tasks with optional filtering and pagination."""
+    """List Tasks with optional filtering and pagination.
+
+    Data isolation: non-admin users always see only their own Tasks
+    (``created_by = current_user.id``, the query param is ignored);
+    admins see all Tasks by default and may pass ``created_by`` to
+    filter for a specific user.
+    """
+    if current_user.role != "admin":
+        created_by = current_user.id
     status_enum = TaskStatus(status) if status else None
     items, total = await TaskService.list_tasks(
         page=page,
@@ -147,9 +185,16 @@ async def list_tasks(
     response_model=TaskStatsResponse,
     summary="Get Task statistics",
 )
-async def get_task_stats() -> TaskStatsResponse:
-    """Get concurrency and Task statistics (running/pending counts)."""
-    stats = await TaskService.get_stats()
+async def get_task_stats(
+    current_user: UserResponse = Depends(get_current_user),
+) -> TaskStatsResponse:
+    """Get concurrency and Task statistics (running/pending counts).
+
+    Non-admin users get stats scoped to their own Tasks; admins get
+    the global view.
+    """
+    scope_user = None if current_user.role == "admin" else current_user.id
+    stats = await TaskService.get_stats(created_by=scope_user)
     return TaskStatsResponse(**stats)
 
 
@@ -158,9 +203,13 @@ async def get_task_stats() -> TaskStatsResponse:
     response_model=TaskResponse,
     summary="Get Task detail",
 )
-async def get_task(task_id: str) -> TaskResponse:
+async def get_task(
+    task_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+) -> TaskResponse:
     """Get full Task detail including variables and timeline."""
     doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(doc, current_user)
     return _doc_to_full_response(doc)
 
 
@@ -169,8 +218,13 @@ async def get_task(task_id: str) -> TaskResponse:
     status_code=204,
     summary="Delete a terminal Task",
 )
-async def delete_task(task_id: str) -> None:
+async def delete_task(
+    task_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+) -> None:
     """Delete a terminal-state Task (completed/failed/cancelled)."""
+    doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(doc, current_user)
     await TaskService.delete_task(task_id)
 
 
@@ -199,6 +253,11 @@ async def intervene_task(
     API-Key endpoint). Requires ``version`` field for optimistic locking;
     returns 409 on version conflict.
     """
+    # Authorize BEFORE mutating — an unauthorized caller must not be able
+    # to transition someone else's Task.
+    task_doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(task_doc, current_user)
+
     doc = await TaskService.intervene(
         task_id=task_id,
         action=body.action,
@@ -237,8 +296,11 @@ async def intervene_task(
 async def list_task_audit_logs(
     task_id: str,
     limit: int = Query(default=50, ge=1, le=200),
+    current_user: UserResponse = Depends(get_current_user),
 ) -> PaginatedResponse:
     """List audit log entries for a Task."""
+    doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(doc, current_user)
     logs = await TaskService.list_audit_logs(task_id=task_id, limit=limit)
     return PaginatedResponse(
         total=len(logs),
@@ -266,14 +328,16 @@ async def list_task_outputs(
     newest-first order.
 
     The task is loaded first to confirm it exists and to authorize the
-    caller; files are scoped by ``origin_id=task_id`` to the specific task.
+    caller (per-user isolation on ``created_by``); files are scoped by
+    ``origin_id=task_id`` to the specific task.
     """
     from app.models.file_library import FileConsumerKind
     from app.services.file_service import FileService
     from app.services.file_storage import LocalFileStorage
 
     # 404 if the task itself doesn't exist — clearer signal than an empty list.
-    await TaskService.get_task_or_404(task_id)
+    doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(doc, current_user)
 
     file_service = FileService(LocalFileStorage())
     cursor = file_service._file_refs().find(
@@ -293,7 +357,11 @@ async def list_task_outputs(
     response_model=NodeTimelineResponse,
     summary="Get Agent node execution detail",
 )
-async def get_node_timeline(task_id: str, node_id: str) -> NodeTimelineResponse:
+async def get_node_timeline(
+    task_id: str,
+    node_id: str,
+    current_user: UserResponse = Depends(get_current_user),
+) -> NodeTimelineResponse:
     """Return the full execution trace (thinking/tool_call/tool_result/text) of
     an Agent node, read on demand from the LangGraph checkpointer thread.
 
@@ -305,12 +373,12 @@ async def get_node_timeline(task_id: str, node_id: str) -> NodeTimelineResponse:
     Returns 404 when the node has no checkpoint yet (e.g. it never executed or
     failed before the agent call).
     """
-    from app.core.errors import NotFoundError
     from app.engine.harness_integration import get_checkpointer
     from app.services.message_converters import messages_to_timeline_entries
 
-    # Confirm the task exists (404 otherwise).
-    await TaskService.get_task_or_404(task_id)
+    # Confirm the task exists (404 otherwise) + per-user isolation.
+    doc = await TaskService.get_task_or_404(task_id)
+    _ensure_task_access(doc, current_user)
 
     thread_id = f"{task_id}_{node_id}"
     checkpointer = get_checkpointer()

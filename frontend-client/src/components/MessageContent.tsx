@@ -562,8 +562,14 @@ interface MessageContentProps {
 
 export function MessageContent({ message, sessionId }: MessageContentProps) {
   const { message: toast } = App.useApp()
-  const charts = [...promotedCharts(message.content), ...message.charts]
-  const segments = toRenderSegments(message.content)
+  // 快捷指令消息：user 气泡只渲染展示文案（label），隐藏实际发送给 AI 的指令。
+  // 下游 segments / charts / fullText（复制）全部基于替换后的内容，保证不泄漏。
+  const content: ContentBlock[] =
+    message.role === 'user' && message.displayText
+      ? [{ type: 'text', text: message.displayText }]
+      : message.content
+  const charts = [...promotedCharts(content), ...message.charts]
+  const segments = toRenderSegments(content)
   // 兜底去重:同名附件可能被上游重复收集,按 id 收敛,避免重复渲染 + 重复 React key
   const uniqueAttachments = useMemo(() => {
     const map = new Map<string, AttachmentView>()
@@ -571,7 +577,7 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
     return Array.from(map.values())
   }, [message.attachments])
   // 拼接所有 text block 作为复制内容
-  const fullText = message.content
+  const fullText = content
     .filter((b): b is ContentBlock & { type: 'text' } => b.type === 'text')
     .map((b) => b.text)
     .join('')

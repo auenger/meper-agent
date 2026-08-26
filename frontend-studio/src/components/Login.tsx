@@ -3,17 +3,18 @@
  *
  * Calls POST /auth/login via authApi; on success stores tokens (access_token
  * in the zustand auth-store, refresh_token in localStorage) and flips the App
- * gate. Surfaces backend error codes including account_locked (5 attempts /
- * 15 min lockout).
+ * gate. Surfaces backend error codes including ACCOUNT_LOCKED (5 attempts /
+ * 15 min lockout), and reads ?reason= (set by api-client's 401 redirect) to
+ * explain why an existing session was terminated (e.g. ACCOUNT_DISABLED).
  *
  * Theme-aware: reads the same `agentflow_theme` localStorage key the App shell
  * uses, so the login screen matches the user's chosen dark/light palette. The
  * surface classes below (bg-[#09090b], bg-[#121214], border-[#27272a],
- * text-[#fafafa] …) are the same literal tokens used across the app, which
- * the `.theme-light` override block in index.css transforms automatically —
+ * text-[#fafafa] …) are the same literal tokens used across the app, which the
+ * `.theme-light` override block in index.css transforms automatically —
  * so a single source of truth drives both the shell and this page.
  */
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { Lock, User, Loader2, AlertCircle, KeyRound, Sun, Moon } from 'lucide-react'
 import { authApi } from '../services/auth-api'
 import { REFRESH_TOKEN_KEY, useAuthStore, type AuthUser } from '../stores/auth-store'
@@ -23,6 +24,14 @@ function isNormalizedError(err: unknown): err is NormalizedApiError {
   return typeof err === 'object' && err !== null && 'message' in err
 }
 
+/** Map ?reason= (api-client 401 redirect) to a human message. */
+const REASON_MESSAGES: Record<string, string> = {
+  ACCOUNT_DISABLED: '账户已被停用，请联系管理员',
+  ACCOUNT_LOCKED: '账号已被锁定，请在 15 分钟后重试',
+  TOKEN_INVALID: '登录凭证已失效，请重新登录',
+  TOKEN_REVOKED: '登录已注销，请重新登录',
+}
+
 const THEME_KEY = 'agentflow_theme'
 
 export default function Login() {
@@ -30,7 +39,22 @@ export default function Login() {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(() => {
+    const reason = new URLSearchParams(window.location.search).get('reason')
+    if (!reason) return null
+    return REASON_MESSAGES[reason] ?? '登录已失效，请重新登录'
+  })
+
+  // Strip ?reason= from the URL once consumed so a refresh doesn't re-show
+  // a stale message (keep ?redirect= — it's still needed after login).
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.has('reason')) {
+      params.delete('reason')
+      const qs = params.toString()
+      window.history.replaceState(null, '', qs ? `?${qs}` : window.location.pathname)
+    }
+  }, [])
   const [theme, setTheme] = useState<'dark' | 'light'>(
     () => (localStorage.getItem(THEME_KEY) as 'dark' | 'light') || 'dark',
   )
@@ -56,13 +80,14 @@ export default function Login() {
             username: user.username,
             role: user.role,
             permissions: user.permissions ?? [],
+            isSuperAdmin: Boolean(user.is_super_admin),
           }
         : { id: '', username: username.trim(), role: '', permissions: [] }
       setAuth(access_token, authUser)
     } catch (err) {
       const msg = isNormalizedError(err) ? err.message : '登录失败，请检查网络或凭据'
       const code = isNormalizedError(err) ? err.code : undefined
-      if (code === 'account_locked') {
+      if (code === 'ACCOUNT_LOCKED') {
         setError('账号已被锁定，请在 15 分钟后重试')
       } else {
         setError(msg)

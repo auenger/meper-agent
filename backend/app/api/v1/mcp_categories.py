@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
-from app.core.security import get_current_user, require_any_role
+from app.core.security import get_current_user, require_permission
 from app.schemas.mcp_category import (
     McpCategoryCreate,
     McpCategoryListResponse,
@@ -37,11 +37,11 @@ def _doc_to_response(doc: dict) -> McpCategoryResponse:
     response_model=McpCategoryResponse,
     status_code=201,
     summary="Create MCP category",
-    responses={403: {"description": "Forbidden — developer+ role required"}},
+    responses={403: {"description": "Forbidden — mcp:write permission required"}},
 )
 async def create_category(
     body: McpCategoryCreate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpCategoryResponse:
     """Create a new MCP category for grouping connections."""
     doc = await McpCategoryService.create_category(body.model_dump())
@@ -52,10 +52,10 @@ async def create_category(
     "",
     response_model=McpCategoryListResponse,
     summary="List MCP categories",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — mcp:read permission required"}},
 )
 async def list_categories(
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("mcp:read")),
 ) -> McpCategoryListResponse:
     """List all MCP categories ordered by sort asc."""
     items = await McpCategoryService.list_categories()
@@ -70,13 +70,13 @@ async def list_categories(
     response_model=McpCategoryResponse,
     summary="Get MCP category",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — mcp:read permission required"},
         404: {"description": "Category not found"},
     },
 )
 async def get_category(
     category_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("mcp:read")),
 ) -> McpCategoryResponse:
     """Get an MCP category by ID."""
     from app.core.errors import NotFoundError
@@ -95,14 +95,14 @@ async def get_category(
     response_model=McpCategoryResponse,
     summary="Update MCP category",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Category not found"},
     },
 )
 async def update_category(
     category_id: str,
     body: McpCategoryUpdate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpCategoryResponse:
     """Update an MCP category (full PUT)."""
     doc = await McpCategoryService.update_category(category_id, body.model_dump())
@@ -115,14 +115,14 @@ async def update_category(
     status_code=204,
     summary="Delete MCP category",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Category not found"},
         409: {"description": "Category not empty"},
     },
 )
 async def delete_category(
     category_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> None:
     """Delete an MCP category. Refuses if any connection still references it."""
     from app.core.errors import NotFoundError

@@ -23,6 +23,7 @@ import {
 } from '../services/workflows-api'
 import type { WorkflowNode } from '../services/types'
 import { useWorkflowExecution } from '../hooks/useWorkflowExecution'
+import { usePermission } from '../hooks/use-permission'
 import WorkflowNodePalette from '../features/workflow-editor/WorkflowNodePalette'
 import WorkflowCanvas from '../features/workflow-editor/WorkflowCanvas'
 import WorkflowNodeConfigPanel from '../features/workflow-editor/WorkflowNodeConfigPanel'
@@ -62,6 +63,8 @@ export function WorkflowDesigner({
   onCreated?: (id: string) => void
 }) {
   const queryClient = useQueryClient()
+  // 写权限门控：无 workflow:write 的用户隐藏保存/发布按钮（画布查看、执行不受影响）
+  const canWrite = usePermission('workflow:write')
   const [internalWorkflowId, setInternalWorkflowId] = useState<string | null>(null)
   // Controlled id wins when provided; otherwise fall back to internal selection.
   const selectedWorkflowId = controlledWorkflowId ?? internalWorkflowId
@@ -312,12 +315,16 @@ export function WorkflowDesigner({
                   <span className="text-[10px] text-[#71717a] whitespace-nowrap">v{workflowDetail.version} · {nodes.length}节点</span>
                 )}
                 {hasUnsavedChanges && <Tag color="#F59E0B">未保存</Tag>}
-                <Button size="small" icon={<Save size={13} />} onClick={handleSave} loading={saveMutation.isPending} disabled={!hasUnsavedChanges}>
-                  保存
-                </Button>
-                <Button size="small" type="primary" icon={<Upload size={13} />} onClick={handlePublish} loading={publishMutation.isPending} disabled={hasUnsavedChanges || !isDraftOrPublished(currentStatus ?? '')}>
-                  发布
-                </Button>
+                {canWrite && (
+                  <Button size="small" icon={<Save size={13} />} onClick={handleSave} loading={saveMutation.isPending} disabled={!hasUnsavedChanges}>
+                    保存
+                  </Button>
+                )}
+                {canWrite && (
+                  <Button size="small" type="primary" icon={<Upload size={13} />} onClick={handlePublish} loading={publishMutation.isPending} disabled={hasUnsavedChanges || !isDraftOrPublished(currentStatus ?? '')}>
+                    发布
+                  </Button>
+                )}
                 <Button size="small" type="primary" icon={exec.executing ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />} onClick={handleExecute} disabled={!canExecute}>
                   {exec.executing ? '执行中' : '执行'}
                 </Button>

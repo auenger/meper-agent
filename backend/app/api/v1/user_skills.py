@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, File, Header, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from app.core.errors import NotFoundError, UnauthorizedError, ValidationError
-from app.core.security import get_current_user, require_any_role
+from app.core.security import get_current_user, require_any_role, require_permission
 from app.models.base import utc_now
 from app.models.user_skill import MEMORY_TOTAL_CHAR_LIMIT
 from app.schemas.user import UserResponse
@@ -214,7 +214,7 @@ async def vote_message(
 @router.post("/official", status_code=201)
 async def create_official_skill(
     body: SkillCreateRequest,
-    creator: UserResponse = Depends(require_any_role("admin", "developer")),
+    creator: UserResponse = Depends(require_permission("skill:write")),
 ) -> dict:
     """管理员从文本创建官方技能（§7.6 单一创建入口按角色分流）。"""
     try:

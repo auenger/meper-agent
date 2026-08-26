@@ -14,7 +14,7 @@ import {
 import { Column, Pie } from '@ant-design/charts'
 import dayjs, { type Dayjs } from 'dayjs'
 import {
-  MessageOutlined, ThunderboltOutlined, CheckCircleOutlined,
+  MessageOutlined, ThunderboltOutlined, CheckCircleOutlined, ClockCircleOutlined,
 } from '@ant-design/icons'
 import {
   statsApi, type ChannelStats, type ExecutionStats, type ExecutionLogItem,
@@ -159,6 +159,10 @@ function StatsContent({ data }: { data: ExecutionStats }) {
     { icon: <ThunderboltOutlined />, label: 'Token 消耗', value: totals.tokens, color: '#7C3AED' },
     { icon: <ThunderboltOutlined />, label: 'LLM 调用', value: totals.llm_calls, color: '#0891B2' },
     { icon: <CheckCircleOutlined />, label: '成功率', value: totals.success_rate, suffix: '%', color: '#10B981' },
+    {
+      icon: <ClockCircleOutlined />, label: '平均耗时', value: totals.avg_latency_ms, suffix: 'ms', color: '#F59E0B',
+      sub: `LLM ${totals.avg_llm_duration_ms}ms · 工具 ${totals.avg_tool_duration_ms}ms · 其他 ${totals.avg_other_duration_ms}ms`,
+    },
   ]
 
   const tokenData = entries.map(([key, s]) => ({
@@ -174,7 +178,7 @@ function StatsContent({ data }: { data: ExecutionStats }) {
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         {cards.map((c) => (
           <Card key={c.label} className="!rounded-xl">
             <Statistic
@@ -184,6 +188,7 @@ function StatsContent({ data }: { data: ExecutionStats }) {
               prefix={<span style={{ color: c.color }}>{c.icon}</span>}
               valueStyle={{ color: '#0F172A', fontSize: 28 }}
             />
+            {c.sub && <div className="text-xs text-[#94A3B8] mt-1">{c.sub}</div>}
           </Card>
         ))}
       </div>
@@ -279,6 +284,12 @@ function DetailTable({ params }: { params: { start?: string; end?: string; date?
     setPage(1)
   }
 
+  // 耗时拆分列：秒格式（0 → '-'，历史数据无拆分为 '-'）
+  const durationCol = (title: string, key: string, width = 85) => ({
+    title, dataIndex: key, key, width,
+    render: (v: number) => (v ? `${(v / 1000).toFixed(1)}s` : '-'),
+  })
+
   const columns = [
     {
       title: '通道', dataIndex: 'source', key: 'source', width: 100,
@@ -297,8 +308,11 @@ function DetailTable({ params }: { params: { start?: string; end?: string; date?
       render: (v: string) => <Tag color={v === 'success' ? 'green' : 'red'}>{v === 'success' ? '成功' : '失败'}</Tag> },
     { title: 'Token', dataIndex: 'total_tokens', key: 'total_tokens', width: 100,
       render: (v: number) => v ? v.toLocaleString() : '-' },
-    { title: '耗时(ms)', dataIndex: 'latency_ms', key: 'latency_ms', width: 100,
-      render: (v: number) => v || '-' },
+    durationCol('总耗时', 'latency_ms', 90),
+    durationCol('LLM', 'llm_duration_ms'),
+    durationCol('工具', 'tool_duration_ms'),
+    durationCol('其他', 'other_duration_ms'),
+    durationCol('首Token', 'ttft_ms'),
     { title: '时间', dataIndex: 'timestamp', key: 'timestamp', width: 180,
       render: (v: string) => v ? dayjs(v).format('MM-DD HH:mm:ss') : '-' },
   ]

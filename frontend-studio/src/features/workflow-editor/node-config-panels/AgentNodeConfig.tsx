@@ -132,7 +132,7 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
         nodeType="agent"
       />
 
-      {/* Temperature + 最大重试 */}
+      {/* Temperature + 最大重试 + 超时 */}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs text-slate-400 mb-1">Temperature</label>
@@ -154,6 +154,19 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
             min={0}
             max={10}
           />
+        </div>
+        <div className="col-span-2">
+          <label className="block text-xs text-slate-400 mb-1">超时 (ms)</label>
+          <Input
+            type="number"
+            value={(config.timeout_ms as number) ?? 300000}
+            onChange={(e) => onChange({ ...config, timeout_ms: parseInt(e.target.value) || 300000 })}
+            min={1000}
+            step={1000}
+          />
+          <div className="text-[10px] text-[#71717a] mt-0.5">
+            Agent 节点无人值守执行（不会暂停询问用户），超时后按失败处理并触发重试。
+          </div>
         </div>
       </div>
     </div>

@@ -67,6 +67,14 @@ services:
   celery-worker:
     image: ${BACKEND_IMAGE:-deploy-backend}  # 复用 backend 镜像，不重复构建
     command: ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+    healthcheck:
+      # Worker 不监听 8000 端口，覆盖镜像默认的 HTTP 检查（恒失败 → unhealthy 误报），
+      # 改用 celery inspect ping 经 broker 真实验证 worker 存活。
+      test: ["CMD", "celery", "-A", "app.workers.celery_app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s # inspect ping 走 broker 往返，timeout 需大于镜像默认的 5s
+      start_period: 30s # 留出 worker 启动并注册到 broker 的时间
+      retries: 3
     env_file:
       - .env
     environment:
@@ -106,6 +114,10 @@ services:
     # 复用 backend 镜像，不重复构建。
     image: ${BACKEND_IMAGE:-deploy-backend}
     command: ["celery", "-A", "app.workers.celery_app", "beat", "--loglevel=info"]
+    healthcheck:
+      # beat 是调度器，不响应 celery inspect ping，容器级无廉价有效的卡死检测；
+      # 主进程崩溃已由 restart: unless-stopped 兜底。禁用镜像默认 HTTP 检查以消除误报。
+      disable: true
     env_file:
       - .env
     depends_on:

@@ -48,6 +48,9 @@ def _make_task_doc(*, node_id: str = HUMAN_NODE_ID, version: int = 3, status: st
         "version": version,
         "variables": {},
         "checkpoint": {"paused_at_node": node_id},
+        # per-user isolation: the approver owns the Task under test
+        "created_by": USER_ID,
+        "created_by_type": "user",
         "created_at": "2026-06-01T00:00:00",
         "updated_at": "2026-06-01T00:00:00",
     }

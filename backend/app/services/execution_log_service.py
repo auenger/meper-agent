@@ -27,6 +27,9 @@ CHANNEL_INTERNAL = "internal"
 CHANNEL_API_KEY = "api_key"
 CHANNEL_IM = "im"
 
+# get_stats 聚合的固定渠道集。
+_PRIMARY_CHANNELS = (CHANNEL_INTERNAL, CHANNEL_API_KEY, CHANNEL_IM)
+
 
 def classify_channel(user_id: str) -> str:
     """Classify a user_id into an access channel (fallback heuristic).
@@ -118,12 +121,17 @@ class ExecutionLogService:
         input_tokens: int = 0,
         output_tokens: int = 0,
         llm_calls: int = 0,
+        llm_duration_ms: int = 0,
+        tool_duration_ms: int = 0,
+        ttft_ms: int = 0,
     ) -> str | None:
         """Insert one execution-log document.
 
         Channel (source): ``api_key_id`` 非空 → api_key（显式信号优先——v4 起
         外部终端用户的 user_id 是 platform_user_id，形态与内部用户相同，
         user_id 启发式无法区分）；否则按 classify_channel 兜底。
+        ``other_duration_ms``（代码/框架延迟）由 latency - llm - tool 推导，
+        clamp ≥ 0（monotonic 时钟与墙钟做差可能轻微为负）。
         Failure is logged but never raised — execution logging must not
         break the user-facing request flow.
 
@@ -131,6 +139,7 @@ class ExecutionLogService:
         """
         source = CHANNEL_API_KEY if api_key_id else classify_channel(user_id)
         channel_id = _extract_channel_id(user_id) if source == CHANNEL_IM else ""
+        other_duration_ms = max(0, latency_ms - llm_duration_ms - tool_duration_ms)
         doc = ExecutionLog(
             source=source,
             user_id=user_id,
@@ -143,6 +152,10 @@ class ExecutionLogService:
             status=status,
             status_code=status_code,
             latency_ms=latency_ms,
+            llm_duration_ms=llm_duration_ms,
+            tool_duration_ms=tool_duration_ms,
+            other_duration_ms=other_duration_ms,
+            ttft_ms=ttft_ms,
             total_tokens=total_tokens,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -235,6 +248,11 @@ class ExecutionLogService:
                     "output_tokens": {"$sum": "$output_tokens"},
                     "llm_calls": {"$sum": "$llm_calls"},
                     "avg_latency_ms": {"$avg": "$latency_ms"},
+                    # 耗时拆分（旧文档无这些字段，$ifNull 兜底为 0）
+                    "avg_llm_duration_ms": {"$avg": {"$ifNull": ["$llm_duration_ms", 0]}},
+                    "avg_tool_duration_ms": {"$avg": {"$ifNull": ["$tool_duration_ms", 0]}},
+                    "avg_other_duration_ms": {"$avg": {"$ifNull": ["$other_duration_ms", 0]}},
+                    "avg_ttft_ms": {"$avg": {"$ifNull": ["$ttft_ms", 0]}},
                     "success": {"$sum": {"$cond": [{"$eq": ["$status", "success"]}, 1, 0]}},
                     "failed": {"$sum": {"$cond": [{"$ne": ["$status", "success"]}, 1, 0]}},
                 }
@@ -243,11 +261,7 @@ class ExecutionLogService:
         col = ExecutionLogService._collection()
         rows = await col.aggregate(pipeline).to_list(length=10)
 
-        channels = {
-            CHANNEL_INTERNAL: _empty_stats(),
-            CHANNEL_API_KEY: _empty_stats(),
-            CHANNEL_IM: _empty_stats(),
-        }
+        channels = {name: _empty_stats() for name in _PRIMARY_CHANNELS}
         for row in rows:
             name = row["_id"] or CHANNEL_INTERNAL
             if name not in channels:
@@ -258,17 +272,34 @@ class ExecutionLogService:
             channels[name]["output_tokens"] = row.get("output_tokens", 0)
             channels[name]["llm_calls"] = row.get("llm_calls", 0)
             channels[name]["avg_latency_ms"] = round(row.get("avg_latency_ms") or 0, 0)
+            channels[name]["avg_llm_duration_ms"] = round(row.get("avg_llm_duration_ms") or 0, 0)
+            channels[name]["avg_tool_duration_ms"] = round(row.get("avg_tool_duration_ms") or 0, 0)
+            channels[name]["avg_other_duration_ms"] = round(row.get("avg_other_duration_ms") or 0, 0)
+            channels[name]["avg_ttft_ms"] = round(row.get("avg_ttft_ms") or 0, 0)
             channels[name]["success"] = row.get("success", 0)
             channels[name]["failed"] = row.get("failed", 0)
 
         # Totals across the three primary channels.
         totals = _empty_stats()
-        for name in (CHANNEL_INTERNAL, CHANNEL_API_KEY, CHANNEL_IM):
+        # avg_* 是渠道内平均值（$avg），跨渠道不能直接相加——须按调用次数
+        # 加权平均：Σ(calls_i × avg_i) / Σ(calls_i)。其余计数类字段
+        # （calls/tokens/success/failed 等）正常累加。avg 键清单从
+        # _empty_stats 推导（新增平均指标只改一处，不会静默从 totals 消失）。
+        avg_keys = {k for k in _empty_stats() if k.startswith("avg_")}
+        for name in _PRIMARY_CHANNELS:
             ch = channels[name]
             for k, v in ch.items():
-                if isinstance(v, (int, float)):
-                    totals[k] += v
+                if k in avg_keys or not isinstance(v, (int, float)):
+                    continue
+                totals[k] += v
         total_calls = totals["calls"]
+        if total_calls:
+            for k in avg_keys:
+                weighted = sum(
+                    channels[n]["calls"] * channels[n].get(k, 0)
+                    for n in _PRIMARY_CHANNELS
+                )
+                totals[k] = round(weighted / total_calls, 0)
         totals["success_rate"] = round(totals["success"] / total_calls * 100, 1) if total_calls else 0.0
 
         return {"channels": channels, "totals": totals}
@@ -429,6 +460,10 @@ def _empty_stats() -> dict[str, Any]:
         "output_tokens": 0,
         "llm_calls": 0,
         "avg_latency_ms": 0,
+        "avg_llm_duration_ms": 0,
+        "avg_tool_duration_ms": 0,
+        "avg_other_duration_ms": 0,
+        "avg_ttft_ms": 0,
         "success": 0,
         "failed": 0,
     }

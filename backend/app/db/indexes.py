@@ -119,6 +119,15 @@ async def create_indexes() -> None:
     )
     logger.info("Created indexes: idx_channel_configs_owner, idx_channel_configs_agent, idx_channel_configs_provider_name, uq_inbound_logs_channel_msg, idx_inbound_logs_status_time")
 
+    # Tasks collection (workflow run instances)
+    # Main query path: per-user listing (data isolation on created_by),
+    # newest first — mirrors idx_file_refs_owner_created.
+    await db.tasks.create_index(
+        [("created_by", 1), ("created_at", -1)],
+        name="idx_tasks_owner_created",
+    )
+    logger.info("Created indexes: idx_tasks_owner_created")
+
     # ── User skills & memory (v6 用户级技能与记忆) ──
     await db.user_skills.create_index(
         [("owner_user_id", 1), ("name", 1)],

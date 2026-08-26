@@ -6,7 +6,7 @@
  */
 import type { AxiosRequestConfig } from 'axios'
 import { apiClient } from '../lib/api-client'
-import type { TokenResponse } from './types'
+import type { AuthUser, TokenResponse } from './types'
 
 export interface ChangePasswordPayload {
   current_password: string
@@ -14,6 +14,12 @@ export interface ChangePasswordPayload {
 }
 
 export const authApi = {
+  /**
+   * GET /api/v1/auth/me — 当前用户 + 实时解析的 permissions。
+   * 供 usePermissionSync 近实时感知角色/权限变更。
+   */
+  me: () => apiClient.get<AuthUser>('/api/v1/auth/me'),
+
   login: (username: string, password: string) =>
     apiClient.post<TokenResponse>('/api/v1/auth/login', {
       username,

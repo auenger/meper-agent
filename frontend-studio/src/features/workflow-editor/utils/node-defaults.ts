@@ -20,6 +20,7 @@ const DEFAULT_CONFIGS: Record<string, Record<string, unknown>> = {
     input_prompt: '',
     temperature: 0.7,
     max_retry: 3,
+    timeout_ms: 300000,
     next_nodes: [] as NextNodeRef[],
   },
   tool: {

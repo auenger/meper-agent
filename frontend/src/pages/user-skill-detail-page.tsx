@@ -9,6 +9,7 @@ import { App, Breadcrumb, Popconfirm, Spin, Empty, Button, Tag } from 'antd'
 import { DeleteOutlined, HomeOutlined, LeftOutlined, SendOutlined } from '@ant-design/icons'
 import { userSkillsApi, userSkillKeys } from '../services/user-skills-api'
 import type { SkillFileTreeNode } from '../services/tools-api'
+import { usePermission } from '../hooks/use-permission'
 import SkillFileTree from '../components/skill-file-tree'
 import SkillFileEditor from '../components/skill-file-editor'
 
@@ -18,6 +19,8 @@ export default function UserSkillDetailPage() {
   const { message } = App.useApp()
   const queryClient = useQueryClient()
   const [selectedPath, setSelectedPath] = useState<string | null>('SKILL.md')
+  // 权限：是否可执行写操作（发布审核/删除技能）
+  const canWrite = usePermission('skill:write')
 
   const { data: skill, isLoading } = useQuery({
     queryKey: userSkillKeys.detail(id!),
@@ -125,7 +128,8 @@ export default function UserSkillDetailPage() {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {skill.status === 'private' && isOwn && (
+              {/* 写操作按钮按 skill:write 权限渲染（发布/删除） */}
+              {canWrite && skill.status === 'private' && isOwn && (
                 <Popconfirm
                   title="提交发布审核？"
                   description="管理员审核通过后将进入技能广场。"
@@ -134,7 +138,7 @@ export default function UserSkillDetailPage() {
                   <Button icon={<SendOutlined />}>发布</Button>
                 </Popconfirm>
               )}
-              {isOwn && (
+              {canWrite && isOwn && (
                 <Popconfirm
                   title="删除该技能？"
                   description="磁盘文件与元数据将一并删除，不可恢复。"

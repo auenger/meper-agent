@@ -29,6 +29,15 @@ def main() -> None:
         "--email", required=True, help="Admin email (unique)"
     )
 
+    # --- promote-super-admin subcommand ---
+    promote_parser = subparsers.add_parser(
+        "promote-super-admin",
+        help="Promote an existing admin user to super admin",
+    )
+    promote_parser.add_argument(
+        "--username", required=True, help="Username of an existing admin"
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -37,6 +46,8 @@ def main() -> None:
 
     if args.command == "create-admin":
         asyncio.run(_handle_create_admin(args))
+    elif args.command == "promote-super-admin":
+        asyncio.run(_handle_promote_super_admin(args))
 
 
 async def _handle_create_admin(args: argparse.Namespace) -> None:
@@ -61,6 +72,21 @@ async def _handle_create_admin(args: argparse.Namespace) -> None:
     print(f"user_id:       {result.user_id}")
     print(f"access_token:  {result.tokens.access_token}")
     print(f"refresh_token: {result.tokens.refresh_token}")
+
+
+async def _handle_promote_super_admin(args: argparse.Namespace) -> None:
+    """Handle the promote-super-admin subcommand."""
+    from app.core.errors import AppError
+    from app.services.user_service import UserService
+
+    try:
+        doc = await UserService.promote_super_admin(username=args.username)
+    except AppError as exc:
+        print(f"Error: {exc.message}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"用户 {doc.get('username')} 已提升为超级管理员")
+    print(f"user_id: {doc.get('_id')}")
 
 
 if __name__ == "__main__":

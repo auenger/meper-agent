@@ -90,6 +90,7 @@ async def render_system_prompt_full(
     variable_pool: dict[str, Any] | None = None,
     strict: bool = True,
     exclude_skill_names: set[str] | None = None,
+    execution_context: str = "chat",
 ) -> str:
     """Render the full system prompt from Agent's prompt_slots.
 
@@ -99,6 +100,8 @@ async def render_system_prompt_full(
         variable_pool: Variable pool for Jinja2 ``{{var}}`` resolution.
         strict: When True (default), missing required slots raise ValueError.
             When False, missing slots are silently skipped (for preview).
+        execution_context: "chat"(默认)或 "workflow"(工作流 agent 节点,
+            无人值守——工具声明去掉 Clarification/Task 段,追加自主执行规则)。
 
     Returns:
         Fully assembled system prompt string.
@@ -193,7 +196,11 @@ async def render_system_prompt_full(
     # ── Always append tool_declaration at the end ──
     from app.engine.agent.builder import build_tool_declaration
 
-    tool_decl = await build_tool_declaration(agent_doc, exclude_names=exclude_skill_names)
+    tool_decl = await build_tool_declaration(
+        agent_doc,
+        exclude_names=exclude_skill_names,
+        execution_context=execution_context,
+    )
     if tool_decl:
         parts.append(tool_decl)
 

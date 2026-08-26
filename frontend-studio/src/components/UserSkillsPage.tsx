@@ -20,7 +20,7 @@ import {
   ToggleLeft, ToggleRight, Send, FileText, Brain, RefreshCw, Crown,
 } from 'lucide-react';
 import { getErrorMessage } from '../lib/api-client';
-import { useAuthStore } from '../stores/auth-store';
+import { usePermission } from '../hooks/use-permission';
 import { AvatarRender } from './AvatarRender';
 import { toast } from './ui/toast';
 import { confirmDialog } from './ui/confirm';
@@ -88,8 +88,9 @@ export function UserSkillsPage({ theme = 'dark', onOpenOfficial }: Props) {
 }
 
 function useIsAdmin(): boolean {
-  const role = useAuthStore((s) => s.user?.role ?? '');
-  return role === 'admin' || role === 'developer';
+  // 判权限不判角色：官方技能的提交/收录/审核入口由 skill:write 门控
+  // （与后端 user_skills.py 官方提交同键），自定义角色授予后同样可见。
+  return usePermission('skill:write');
 }
 
 

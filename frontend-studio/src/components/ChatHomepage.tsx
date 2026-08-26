@@ -950,7 +950,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             session_id: sessionId,
             answer: prompt,
             enable_thinking: enableThinking,
-          })
+          }, controller.signal)
         : await agentApi.stream(agent.id, {
             input: prompt,
             session_id: sessionId,
@@ -960,7 +960,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             // (agents.py:589-610) — without this the agent never sees the content.
             file_ids: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
             file_paths: uploadedPaths.length > 0 ? uploadedPaths : undefined,
-          });
+          }, controller.signal);
       // Attachments already handed off to the execution request above
       // (pendingFiles cleared earlier in this function).
       if (!res.ok) {
@@ -1089,6 +1089,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             // 升级 pending tool entry 为 running（填入完整 args + toolCallId），
             // 没有就新建。toolCallId 用于把后续 tool_result 精确配对到本调用
             //（处理并行同名调用，如两次 kb_search）。
+            // tool_call 完整事件由后端 on_chat_model_end 在 final thinking 之后
+            // 发出，到达即本轮 LLM 已结束；若该轮 final thinking 缺失（reasoning
+            // 提取为空时不发），在此兜底重置累积，避免下一轮思考拼进同一张卡片。
+            thinkingText = '';
+            thinkingEntryId = null;
             if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
             deltaBufferRef.current = null;
             rafIdRef.current = null;
@@ -1287,6 +1292,12 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
   };
 
   const handleStop = () => {
+    // 先通知服务端停止生成（mid-stream abort：立即打断 LLM token 流/工具执行，
+    // 半截回复不落库，可直接开始新对话），再断本地 SSE 连接（fetch signal）。
+    // 服务端调用 fire-and-forget——409（已结束）等失败不影响本地停止。
+    // 注意：会话切换的 abort（handleSelectSession）不通知服务端，后台跑完
+    // 落库、切回可见是刻意语义。
+    if (activeAgent) void agentApi.stop(activeAgent.id);
     abortRef.current?.abort();
     setIsStreaming(false);
   };
@@ -2070,6 +2081,27 @@ function formatToolResult(raw?: string): { text: string; isJson: boolean } {
 
 const RESULT_COLLAPSE_THRESHOLD = 800;
 
+/** 中文“字数”口径（Word/WPS 同款）：CJK 字符（含中文标点）每字计 1，
+ *  连续的非 CJK 非空白串（英文单词、数字、emoji 等）整体计 1。
+ *  思考内容多为英文，逐字符计数会数倍虚高于视觉感知。 */
+const countZi = (s: string): number => {
+  const cjkRe = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u30ff\uff00-\uffef]/;
+  let n = 0;
+  let inRun = false;
+  for (const ch of s) {
+    if (cjkRe.test(ch)) {
+      n += 1;
+      inRun = false;
+    } else if (/\s/.test(ch)) {
+      inRun = false;
+    } else if (!inRun) {
+      n += 1;
+      inRun = true;
+    }
+  }
+  return n;
+};
+
 /** Thinking entry — collapsible reasoning card with streaming animation.
  *  内容区固定最大高度（内部滚动），避免长思考撑爆版面；流式期间内部
  *  贴底跟随（终端效果），思考结束自动收起。 */
@@ -2116,7 +2148,7 @@ function ThinkingEntryCard({
           </span>
         ) : (
           !!entry.content && (
-            <span className="text-[10px] text-indigo-400/50">{entry.content.length} 字</span>
+            <span className="text-[10px] text-indigo-400/50">{countZi(entry.content)} 字</span>
           )
         )}
         <span className="text-[10px] text-indigo-400/60 ml-auto">{expanded ? '收起' : '展开'}</span>

@@ -281,7 +281,10 @@ export default function App() {
       <aside className={`${collapsed ? 'w-16' : 'w-64'} border-r border-solid flex flex-col justify-between shrink-0 overflow-hidden transition-[width] duration-200 ${
         theme === 'dark' ? 'bg-[#121214] border-[#27272a] text-[#a1a1aa]' : 'bg-white border-slate-200 text-slate-600'
       }`}>
-        {/* flex-1 + min-h-0：小高度视口下 nav 区内部滚动，底部用户区恒可见（不随 nav 溢出被裁） */}
+        {/* flex-1 + min-h-0：约束导航区高度，超高时自身滚动（scrollbar-custom
+            隐藏式滚动条 + overflow-x-hidden 防横向撑出）。否则侧栏内容会撑破
+            h-dvh 根容器（root 出现溢出），滚轮链式滚动/滚动位置恢复会让整个
+            页面（含各页标题）位移且无法滚回；小高度视口下底部用户区恒可见。 */}
         <div className="flex flex-col flex-1 min-h-0">
           <div className={`h-16 ${collapsed ? 'flex flex-col items-center justify-center gap-1' : 'px-4 flex items-center justify-between'} border-b shrink-0 ${theme === 'dark' ? 'border-[#27272a]' : 'border-slate-100'}`}>
             {/* Logo：展开态 FullLogo（含 AgentForge 字样）；折叠态 AFLogo（纯图标）。 */}
@@ -305,7 +308,7 @@ export default function App() {
             </button>
           </div>
 
-          <nav className={`${collapsed ? 'flex flex-col items-center p-2' : 'p-4'} flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1`}>
+          <nav className={`${collapsed ? 'flex flex-col items-center p-2' : 'p-4'} flex-1 min-h-0 overflow-y-auto overflow-x-hidden space-y-1 scrollbar-custom`}>
             {!collapsed && (
               <p className={`px-2 text-[10px] font-bold uppercase tracking-widest mb-2 ${theme === 'dark' ? 'text-[#71717a]' : 'text-slate-400'}`}>Main Navigator</p>
             )}
@@ -468,6 +471,7 @@ export default function App() {
           activeTab === 'board' ? 'h-full flex flex-col p-6 overflow-hidden' :
           // Agent 编辑页自带贴底 footer，stage 需去掉 p-6 由页面内部控制滚动与留白
           activeTab === 'agents' && openAgent?.mode === 'edit' ? 'h-full flex flex-col p-0 overflow-hidden' :
+          activeTab === 'users' ? 'h-full flex flex-col p-6 overflow-hidden' :
           'overflow-y-auto p-6'
         }`}>
           {activeTab === 'chat' && (

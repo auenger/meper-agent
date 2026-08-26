@@ -12,7 +12,7 @@ from dataclasses import replace
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from app.core.security import require_any_role
+from app.core.security import require_permission
 from app.models.voice_config import VoiceConfig
 from app.schemas.voice_config import (
     VoiceConfigResponse,
@@ -26,7 +26,7 @@ from app.voice.providers.factory import create_asr_client, create_tts_client
 router = APIRouter(
     prefix="/voice/config",
     tags=["voice-config"],
-    dependencies=[Depends(require_any_role("admin"))],
+    dependencies=[Depends(require_permission("settings:manage"))],
 )
 
 

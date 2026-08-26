@@ -4,6 +4,7 @@ import {
   getSessionFile,
   getUploadedFile,
   listMessages,
+  stopAgentStream,
   streamConfirmation,
   streamMessage,
   uploadSessionFile,
@@ -95,6 +96,8 @@ function fromHistory(record: MessageRecord): ChatMessage {
       id: record.id,
       role: 'user',
       content: parsed.text ? [{ type: 'text', text: parsed.text }] : [],
+      // 快捷指令消息：气泡优先展示 display_text（label），content 仅为回退
+      displayText: record.display_text || undefined,
       attachments: storedAttachments.length ? storedAttachments : parsed.attachments,
       charts: [],
       status: 'success',
@@ -639,7 +642,7 @@ export function useChat(
   )
 
   const send = useCallback(
-    async (text: string, files: File[]) => {
+    async (text: string, files: File[], displayText?: string) => {
       if (!agentId || !sessionId || running || hitl) return
       const trimmed = text.trim()
       if (!trimmed && files.length === 0) return
@@ -671,6 +674,7 @@ export function useChat(
           id: userId,
           role: 'user',
           content: trimmed ? [{ type: 'text', text: trimmed }] : [],
+          displayText,
           attachments,
           charts: [],
           status: 'success',
@@ -721,6 +725,7 @@ export function useChat(
             uploaded.map((file) => file.id),
             uploaded.map((file) => file.path),
             controller.signal,
+            displayText,
           ),
           acc,
         )
@@ -799,7 +804,19 @@ export function useChat(
     [agentId, hitl, onSessionChanged, process, running, sessionId],
   )
 
-  const cancel = useCallback(() => abortRef.current?.abort(), [])
+  // cancel 需要当前 agentId，但为了保持回调 identity 稳定用 ref 同步（与 runningRef 同模式）。
+  const cancelAgentRef = useRef<string | null>(agentId)
+  cancelAgentRef.current = agentId
+
+  const cancel = useCallback(() => {
+    // 先通知服务端停止生成（mid-stream abort：立即打断 LLM token 流/工具执行，
+    // 半截回复不落库，可直接开始新对话），再断本地 SSE 连接。
+    // 服务端调用是 fire-and-forget——409（已结束）等失败不影响本地停止。
+    // 注意：会话切换时的内部 abort（不走 cancel）不通知服务端，后台任务
+    // 跑完落库是刻意语义（切回会话能看到完整回复）。
+    if (cancelAgentRef.current) void stopAgentStream(cancelAgentRef.current)
+    abortRef.current?.abort()
+  }, [])
 
   // ── 语音桥接：VoiceComposer 的 WS 事件写入同一条消息流 ──────────────
   // 语音期间 running=true（send 的早退条件天然互斥：语音 turn 中不能发文本，

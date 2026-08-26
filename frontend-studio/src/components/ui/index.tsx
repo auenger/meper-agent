@@ -123,6 +123,9 @@ interface SelectProps {
   filterOption?: (input: string, option: SelectOption) => boolean
   loading?: boolean
   disabled?: boolean
+  /** 面板从打开变为关闭时回调（点击外部/Esc/滚动/选中均会触发）。
+      行内编辑场景（如角色徽章点击变 Select）据此恢复原展示态。 */
+  onClose?: () => void
 }
 
 /** Default filter: case-insensitive label substring match. */
@@ -144,6 +147,7 @@ export function Select({
   showSearch = true,
   filterOption = defaultFilter,
   disabled = false,
+  onClose,
 }: SelectProps) {
   // Normalize groups + flat options into a single grouped structure for rendering.
   const sourceGroups: SelectOptionGroup[] =
@@ -155,7 +159,10 @@ export function Select({
   const [activeIndex, setActiveIndex] = useState(-1) // keyboard highlight over the flat filtered list
   // Panel position (fixed, portaled to the theme root). Starts off-screen
   // until measured to avoid a flash before useLayoutEffect runs.
-  const [panelStyle, setPanelStyle] = useState<CSSProperties>({ top: -9999, left: -9999, visibility: 'hidden' })
+  // position:fixed 是必须的：portal 目标是 theme root（h-screen flex 容器），
+  // 没有 position 的 static 面板会成为 flex item 被 align-items:stretch 拉到
+  // 容器满高，useLayoutEffect 里按这个错误高度做视口翻转会把面板推到顶部。
+  const [panelStyle, setPanelStyle] = useState<CSSProperties>({ position: 'fixed', top: -9999, left: -9999, visibility: 'hidden' })
   const ref = useRef<HTMLDivElement>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
@@ -176,11 +183,24 @@ export function Select({
     if (!open) return
     const rect = ref.current?.getBoundingClientRect()
     if (!rect) return
+    // 面板已随本次渲染挂载，可实测高度。默认在触发器下方展开；下方放不下
+    // 且上方空间更大时翻到上方，最后整体夹在视口内（同 Popover/Tooltip 的
+    // 边界翻转逻辑）——否则靠近视口底部的触发器（如用户表格最后一行）的
+    // 下拉会被视口下缘裁住。
+    const panelH = panelRef.current?.offsetHeight ?? 0
+    const M = 8
+    let top = rect.bottom + 4
+    if (top + panelH > window.innerHeight - M && rect.top - panelH - 4 >= M) {
+      top = rect.top - panelH - 4
+    }
+    top = Math.max(M, Math.min(top, window.innerHeight - panelH - M))
     setPanelStyle({
       position: 'fixed',
-      top: rect.bottom + 4,
+      top,
       left: rect.left,
-      width: rect.width,
+      // 面板宽度跟随触发器，但设最小值：行内收缩型触发器（w-fit，如角色徽章
+      // 编辑）宽度只有 ~70px，直接跟随会导致搜索框和选项文本不可读。
+      width: Math.max(rect.width, 160),
       zIndex: 9999,
     })
   }, [open])
@@ -223,6 +243,14 @@ export function Select({
       // focus the search input on open
       requestAnimationFrame(() => searchRef.current?.focus())
     }
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // open true→false 时通知父组件（覆盖点击外部/Esc/滚动/选中所有关闭路径），
+  // 行内编辑场景据此恢复原展示态。
+  const wasOpenRef = useRef(false)
+  useEffect(() => {
+    if (wasOpenRef.current && !open) onClose?.()
+    wasOpenRef.current = open
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const filterFn = showSearch ? (filterOption ?? defaultFilter) : null

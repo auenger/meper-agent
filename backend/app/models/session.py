@@ -50,6 +50,12 @@ class Message(BaseModel):
     session_id: str = Field(..., description="Parent session ID")
     role: str = Field(..., description="Message role: 'user' or 'agent'")
     content: str = Field(default="", description="Message text content (user messages only)")
+    display_text: str = Field(
+        default="",
+        max_length=500,
+        description="展示文案（快捷指令 label，user messages only）。"
+        "content 记录实际发送给 AI 的内容，本字段仅用于前端气泡/标题展示",
+    )
     timeline_entries: list[dict] = Field(
         default_factory=list,
         description="Structured timeline events (thinking/tool_call/tool_result/text) for agent messages",

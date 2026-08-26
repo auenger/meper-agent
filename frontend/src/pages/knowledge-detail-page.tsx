@@ -15,7 +15,7 @@ import {
   ArrowLeftOutlined, BookOutlined, SearchOutlined, EditOutlined,
 } from '@ant-design/icons'
 import { knowledgeApi, knowledgeKeys, type KbType } from '../services/knowledge-api'
-import { useAuthStore } from '../stores/auth-store'
+import { usePermission } from '../hooks/use-permission'
 import KbTreeDetail from '../features/knowledge_base/KbTreeDetail'
 import KbVectorDetail from '../features/knowledge_base/KbVectorDetail'
 
@@ -36,7 +36,7 @@ export default function KnowledgeDetailPage() {
   })
 
   // §7.6 权限原则：只读用户（knowledge:read）不显示写操作
-  const canWrite = useAuthStore((s) => (s.user?.permissions ?? []).includes('knowledge:write'))
+  const canWrite = usePermission('knowledge:write')
 
   const editM = useMutation({
     mutationFn: () =>

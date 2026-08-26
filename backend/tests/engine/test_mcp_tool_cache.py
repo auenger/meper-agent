@@ -1,8 +1,12 @@
-"""Tests for MCP tool cache — hit, expiry, invalidation, clear, default_params."""
+"""Tests for MCP tool cache — hit, expiry, invalidation, clear, default_params.
+
+运行时为纯 DB 镜像加载（不连网）：mock Mongo（mcp_connections 版本查询 +
+tools 镜像查询）验证构造 / 版本校验 / 降级路径。
+"""
 from __future__ import annotations
 
 import time
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from app.engine.tool.mcp_tool_cache import (
@@ -33,6 +37,62 @@ def _make_tool(name: str = "test_tool"):
     return StructuredTool.from_function(
         _fn, name=name, description=f"Mock tool: {name}", args_schema=_EmptyArgs
     )
+
+
+class _AsyncCursor:
+    """Minimal async-iterable cursor mock for Mongo find()."""
+
+    def __init__(self, docs):
+        self._docs = list(docs)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._docs:
+            raise StopAsyncIteration
+        return self._docs.pop(0)
+
+
+def _mock_db(conn_versions=None, mirrors=None):
+    """Mock get_database()：mcp_connections.find → 版本行；tools.find → 镜像行。"""
+    conns_col = MagicMock()
+    conns_col.find = MagicMock(return_value=_AsyncCursor(conn_versions or []))
+    tools_col = MagicMock()
+    tools_col.find = MagicMock(return_value=_AsyncCursor(mirrors or []))
+    db = MagicMock()
+    db.__getitem__.side_effect = (
+        lambda key: conns_col if key == "mcp_connections" else tools_col
+    )
+    return db
+
+
+def _conn_doc(conn_id: str = "conn_1", name: str = "mes", **extra):
+    return {
+        "_id": conn_id,
+        "name": name,
+        "url": "http://localhost:8080/mcp",
+        "protocol": "sse",
+        "auth_type": "none",
+        "auth_config": {},
+        "timeout": 30,
+        "updated_at": "v1",
+        **extra,
+    }
+
+
+def _mirror(conn_id: str = "conn_1", name: str = "custom_table_create", **extra):
+    return {
+        "mcp_connection_id": conn_id,
+        "name": name,
+        "description": f"Mirror of {name}",
+        "input_schema": {
+            "type": "object",
+            "properties": {"table": {"type": "string"}},
+            "required": ["table"],
+        },
+        **extra,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -149,13 +209,17 @@ async def test_get_mcp_tools_cached_empty_ids():
 
 @pytest.mark.asyncio
 async def test_get_mcp_tools_cached_hit():
-    """Cache hit returns cached tools without MCP server call."""
+    """Cache hit + 版本一致 → 返回缓存工具，不触达 DB 镜像构造。"""
     cache = get_cache()
     key = frozenset(["conn_1"])
     cached_tools = [_make_tool("cached_tool")]
-    cache.set(key, cached_tools)
+    cache.set(key, cached_tools, conn_versions={"conn_1": "v1"})
 
-    result = await get_mcp_tools_cached(["conn_1"])
+    with patch(
+        "app.db.mongodb.get_database",
+        return_value=_mock_db(conn_versions=[{"_id": "conn_1", "updated_at": "v1"}]),
+    ):
+        result = await get_mcp_tools_cached(["conn_1"])
     assert len(result) == 1
     assert result[0].name == "cached_tool"
 
@@ -164,43 +228,80 @@ async def test_get_mcp_tools_cached_hit():
 
 
 @pytest.mark.asyncio
-async def test_get_mcp_tools_cached_miss_resolves():
-    """Cache miss resolves tools via MCP and stores in cache."""
+async def test_get_mcp_tools_cached_version_change_rebuilds():
+    """connection updated_at 变化（手动更新/重新 discover）→ 缓存失效重建。"""
+    cache = get_cache()
+    cache.clear()
+    key = frozenset(["conn_1"])
+    cache.set(key, [_make_tool("stale_tool")], conn_versions={"conn_1": "v1"})
+
+    # DB 里 updated_at 已变为 v2 → 重建（从镜像构造）
+    with patch(
+        "app.services.mcp_connection_service.McpConnectionService"
+    ) as mock_service, patch(
+        "app.db.mongodb.get_database",
+        return_value=_mock_db(
+            conn_versions=[{"_id": "conn_1", "updated_at": "v2"}],
+            mirrors=[_mirror()],
+        ),
+    ):
+        mock_service.get_connection = AsyncMock(return_value=_conn_doc(updated_at="v2"))
+        result = await get_mcp_tools_cached(["conn_1"])
+
+    # 重建结果来自镜像（mcp__{server}__{tool} 命名），旧的 stale_tool 被丢弃
+    assert [t.name for t in result] == ["mcp__mes__custom_table_create"]
+    cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tools_cached_miss_builds_from_db_mirror():
+    """Cache miss → 纯 DB 镜像构造，不连任何 MCP server。"""
     cache = get_cache()
     cache.clear()
 
-    mock_tool = _make_tool("discovered_tool")
+    with patch(
+        "app.services.mcp_connection_service.McpConnectionService"
+    ) as mock_service, patch(
+        "app.db.mongodb.get_database",
+        return_value=_mock_db(mirrors=[_mirror(), _mirror(name="custom_table_query")]),
+    ):
+        mock_service.get_connection = AsyncMock(return_value=_conn_doc())
+        result = await get_mcp_tools_cached(["conn_1"])
+
+    assert sorted(t.name for t in result) == [
+        "mcp__mes__custom_table_create",
+        "mcp__mes__custom_table_query",
+    ]
+    # args_schema 来自镜像 input_schema（JSON Schema dict 形态）
+    assert "table" in result[0].args_schema["properties"]
+
+    # 验证已缓存（带版本快照）
+    entry = cache.get_entry(frozenset(["conn_1"]))
+    assert entry is not None and len(entry.tools) == 2
+    assert entry.conn_versions == {"conn_1": "v1"}
+
+    # 全程未触达网络客户端
+    cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_mcp_tools_cached_no_mirror_skips():
+    """无镜像（从未 discover）→ 空工具列表，不抛错、不连网。"""
+    cache = get_cache()
+    cache.clear()
 
     with patch(
-        "langchain_mcp_adapters.client.MultiServerMCPClient"
-    ) as mock_client, patch(
         "app.services.mcp_connection_service.McpConnectionService"
-    ) as mock_service:
-        # Mock connection lookup
-        mock_service.get_connection = AsyncMock(return_value={
-            "_id": "conn_1",
-            "name": "TestServer",
-            "url": "http://localhost:8080/mcp",
-            "protocol": "streamable-http",
-            "auth_type": "none",
-            "auth_config": {},
-            "timeout": 30,
-        })
-
-        # Mock MCP client
-        mock_client_instance = mock_client.return_value
-        mock_client_instance.get_tools = AsyncMock(return_value=[mock_tool])
-
+    ) as mock_service, patch(
+        "app.db.mongodb.get_database",
+        return_value=_mock_db(mirrors=[]),
+    ):
+        mock_service.get_connection = AsyncMock(return_value=_conn_doc())
         result = await get_mcp_tools_cached(["conn_1"])
-        assert len(result) == 1
-        assert result[0].name == "discovered_tool"
 
-        # Verify it was cached
-        cached = cache.get(frozenset(["conn_1"]))
-        assert cached is not None
-        assert len(cached) == 1
-
-    # Cleanup
+    assert result == []
+    # 空结果也缓存（版本一致时下次直接命中，避免反复查）
+    assert cache.get(frozenset(["conn_1"])) == []
     cache.clear()
 
 
@@ -217,6 +318,8 @@ async def test_get_mcp_tools_cached_connection_not_found():
 
         result = await get_mcp_tools_cached(["conn_missing"])
         assert result == []
+
+    cache.clear()
 
 
 def test_invalidate_cache_delegates():
@@ -315,38 +418,27 @@ async def test_wrap_tool_preserves_metadata():
 
 @pytest.mark.asyncio
 async def test_get_mcp_tools_cached_with_default_params():
-    """Cache miss with default_params wraps tools automatically."""
+    """连接配置 default_params → 烘焙进 DB 构造工具的 args_schema 默认值。
+
+    （不实际 ainvoke —— DB 构造的工具执行时会懒连接远程 server，测试里
+    只验证 schema 注入。）
+    """
     cache = get_cache()
     cache.clear()
 
-    mock_tool, captured = _make_tool_with_args("api_call")
-
     with patch(
-        "langchain_mcp_adapters.client.MultiServerMCPClient"
-    ) as mock_client, patch(
         "app.services.mcp_connection_service.McpConnectionService"
-    ) as mock_service:
-        mock_service.get_connection = AsyncMock(return_value={
-            "_id": "conn_1",
-            "name": "APIServer",
-            "url": "http://localhost:8080/mcp",
-            "protocol": "streamable-http",
-            "auth_type": "none",
-            "auth_config": {},
-            "timeout": 30,
-            "default_params": {"token": "injected_token", "limit": 20},
-        })
-
-        mock_client_instance = mock_client.return_value
-        mock_client_instance.get_tools = AsyncMock(return_value=[mock_tool])
-
+    ) as mock_service, patch(
+        "app.db.mongodb.get_database",
+        return_value=_mock_db(mirrors=[_mirror()]),
+    ):
+        mock_service.get_connection = AsyncMock(return_value=_conn_doc(
+            default_params={"table": "default_table"},
+        ))
         result = await get_mcp_tools_cached(["conn_1"])
         assert len(result) == 1
 
-        # The wrapped tool should inject default_params
-        await result[0].ainvoke({"query": "test"})
-        assert captured["token"] == "injected_token"
-        assert captured["limit"] == 20
-        assert captured["query"] == "test"
+        # default_params 烘焙进 JSON Schema 的 property default
+        assert result[0].args_schema["properties"]["table"].get("default") == "default_table"
 
     cache.clear()

@@ -46,9 +46,19 @@ dependencies = [
     # Voice module: streaming WS client to Volcano ASR/TTS.
     "websockets>=13.0",
     # websockets 15+ honors system SOCKS proxies; this provides its proxy transport.
-    "python-socks>=2.0.0",
-    # Optional accurate VAD for barge-in (falls back to energy VAD if absent;
-    # pulls torch, so excluded on Intel macOS like rapidocr).
+    "python-socks>=2.0",
+]
+
+[project.optional-dependencies]
+# Accurate neural VAD for barge-in (voice interrupt detection). NOT installed by
+# default — neither locally nor in the Docker image (`uv sync` without
+# `--extra vad`). silero-vad pulls in torch, whose PyPI Linux wheel bundles the
+# full NVIDIA CUDA 13 runtime (~8GB extracted) — pure dead weight on the
+# GPU-less deploy servers. At runtime app/voice/vad.py falls back to the
+# dependency-free EnergyVAD automatically (try/except, logs a warning).
+# Install explicitly with `uv sync --extra vad` when accurate VAD is needed.
+vad = [
+    # Excluded on Intel macOS (no onnxruntime/torch wheels), same marker as rapidocr.
     "silero-vad>=5.1; sys_platform != 'darwin' or platform_machine != 'x86_64'",
 ]
 

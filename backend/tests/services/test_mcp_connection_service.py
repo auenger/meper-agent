@@ -402,3 +402,50 @@ async def test_update_connection_preserves_secret_through_masked_round_trip(mock
     # 3. get_connection decrypts on read → the returned token is the real
     #    secret, NOT the "***" placeholder that was submitted.
     assert result["auth_config"]["token"] == "real-secret"
+
+
+# ---------------------------------------------------------------------------
+# create_connection 自动 discover（运行时纯 DB 镜像加载的镜像入库入口）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_connection_auto_discovers_tools(mock_database):
+    """创建连接后自动调用 discover_tools 同步工具镜像。"""
+    mock_col = MagicMock()
+    mock_col.find_one = AsyncMock(return_value=None)
+    mock_col.insert_one = AsyncMock()
+    mock_database.__getitem__.return_value = mock_col
+
+    with patch.object(
+        McpConnectionService, "discover_tools", new=AsyncMock(return_value={"tools": []})
+    ) as mock_discover:
+        doc = await McpConnectionService.create_connection({
+            "name": "auto-conn",
+            "url": "http://localhost:8080/mcp",
+        })
+
+    mock_discover.assert_awaited_once_with(doc["_id"])
+
+
+@pytest.mark.asyncio
+async def test_create_connection_discover_failure_does_not_block(mock_database):
+    """自动 discover 失败（网络抖动/server 不可达）不阻断创建——连接保留、无镜像。"""
+    mock_col = MagicMock()
+    mock_col.find_one = AsyncMock(return_value=None)
+    mock_col.insert_one = AsyncMock()
+    mock_database.__getitem__.return_value = mock_col
+
+    with patch.object(
+        McpConnectionService,
+        "discover_tools",
+        new=AsyncMock(side_effect=RuntimeError("connect timeout")),
+    ):
+        doc = await McpConnectionService.create_connection({
+            "name": "flaky-conn",
+            "url": "http://unreachable:8080/mcp",
+        })
+
+    # 创建成功返回，insert 已执行
+    assert doc["name"] == "flaky-conn"
+    mock_col.insert_one.assert_called_once()

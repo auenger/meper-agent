@@ -34,9 +34,9 @@ DEFAULT_SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
     "developer": [
         "agent:read", "agent:write", "agent:invoke",
         "workflow:read", "workflow:write",
-        "tool:read",
+        "tool:read", "tool:write",
         "application:read", "application:write",
-        "mcp:read",
+        "mcp:read", "mcp:write",
         "skill:read", "skill:write",
         "task:read", "task:write",
         "knowledge:read", "knowledge:write",
@@ -48,13 +48,18 @@ DEFAULT_SYSTEM_ROLE_PERMISSIONS: dict[str, list[str]] = {
         "task:read",
         "execution:read:own",
         "knowledge:read",  # 权限原则：平台资源只读浏览对全员开放（管理仍限 admin/developer）
+        "tool:read", "mcp:read",  # 权限原则：平台资源只读浏览对全员开放
         "model:read",
     ],
     "viewer": [
         "agent:read",
+        # 会话/对话是登录用户基础能力（studio 会话首页对全员开放），
+        # invoke 权限随之全员授予。
+        "agent:invoke",
         "task:read",
         "execution:read:own",  # 个人数据（自己的执行日志）：登录即可读
         "knowledge:read",  # 权限原则：平台资源只读浏览对全员开放
+        "tool:read", "mcp:read",  # 权限原则：平台资源只读浏览对全员开放
         "model:read",
     ],
 }
@@ -111,6 +116,16 @@ _BACKFILL_V2_MARKER = "backfill_user_scoped_perms_v2"
 _BACKFILL_V2_TARGETS: dict[str, list[str]] = {
     "viewer": ["execution:read:own", "knowledge:read"],
     "operator": ["knowledge:read"],
+}
+
+# v3: RBAC 迁移（require_any_role → require_permission）引入的回归修复：
+# - developer 丢 tool:write/mcp:write（工具/MCP 管理能力回归，角色描述承诺可管理）
+# - operator/viewer 丢 tool:read/mcp:read（平台资源只读浏览对全员开放原则）
+_BACKFILL_V3_MARKER = "backfill_tool_mcp_perms_v3"
+_BACKFILL_V3_TARGETS: dict[str, list[str]] = {
+    "developer": ["tool:write", "mcp:write"],
+    "operator": ["tool:read", "mcp:read"],
+    "viewer": ["tool:read", "mcp:read"],
 }
 
 
@@ -222,6 +237,18 @@ class RoleService:
             _BACKFILL_V1_MARKER,
             patched,
         )
+
+    @staticmethod
+    async def run_all_system_role_backfills() -> None:
+        """Run all one-time system-role permission backfills (v1→v3).
+
+        bootstrap 启动时调用。数据（marker + targets）集中在本模块，调用方
+        无需用字面量重写一份（避免与常量漂移）。每个迁移 marker-guarded，
+        各自最多执行一次。
+        """
+        await RoleService.backfill_system_role_permissions()  # v1
+        await RoleService._backfill_permissions(_BACKFILL_V2_MARKER, _BACKFILL_V2_TARGETS)
+        await RoleService._backfill_permissions(_BACKFILL_V3_MARKER, _BACKFILL_V3_TARGETS)
 
     @staticmethod
     async def _backfill_permissions(

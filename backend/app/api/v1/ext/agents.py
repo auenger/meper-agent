@@ -8,6 +8,7 @@ from app.api.v1.ext import auth_and_rate_limit, resolve_user_id
 from app.core.auth_apikey import ApiKeyPrincipal
 from app.core.errors import NotFoundError
 from app.models.agent import AgentStatus
+from app.models.compat import resolve_default_model, resolve_skill_ids
 from app.schemas.execution import ExecutionRequest, ResumeRequest
 from app.schemas.ext_api import (
     ExtAgentCapabilities,
@@ -29,11 +30,9 @@ router = APIRouter(tags=["external-agents"])
 
 def _doc_to_ext_response(doc: dict) -> ExtAgentResponse:
     """Convert an internal Agent document to external response format."""
-    llm_config = doc.get("llm_config") or {}
-    default_model = doc.get("default_model") or llm_config.get("default_model", "")
+    default_model = resolve_default_model(doc)
 
     # Resolve tool names from skill_ids (simplified — use IDs as names for now)
-    from app.models.compat import resolve_skill_ids
     skill_ids = resolve_skill_ids(doc)
 
     return ExtAgentResponse(
@@ -144,6 +143,7 @@ async def invoke_agent(
     # Map external request to internal ExecutionRequest
     exec_request = ExecutionRequest(
         input=body.message,
+        display_text=body.display_text,
         session_id=body.session_id,
         enable_thinking=body.enable_thinking,
         file_paths=body.file_paths,
@@ -184,6 +184,7 @@ async def stream_agent(
 
     exec_request = ExecutionRequest(
         input=body.message,
+        display_text=body.display_text,
         session_id=body.session_id,
         enable_thinking=body.enable_thinking,
         file_paths=body.file_paths,
@@ -385,6 +386,7 @@ async def get_session_detail(
                 id=msg["_id"],
                 role=msg["role"],
                 content=msg.get("content", ""),
+                display_text=msg.get("display_text", ""),
                 timeline_entries=msg.get("timeline_entries", []),
                 created_at=msg.get("created_at", ""),
             )

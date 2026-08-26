@@ -13,6 +13,8 @@ export interface AuthUser {
   username: string
   role: string
   permissions: string[]
+  /** 超级管理员标记（初始管理员）——映射到 store 侧 AuthUser.isSuperAdmin。 */
+  is_super_admin?: boolean
 }
 
 export interface TokenResponse {

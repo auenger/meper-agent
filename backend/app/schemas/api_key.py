@@ -136,6 +136,10 @@ class ApiKeyLogItem(BaseModel):
     status: str = ""
     status_code: int = 0
     latency_ms: int = 0
+    llm_duration_ms: int = 0
+    tool_duration_ms: int = 0
+    other_duration_ms: int = 0
+    ttft_ms: int = 0
     total_tokens: int = 0
     input_tokens: int = 0
     output_tokens: int = 0

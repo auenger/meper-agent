@@ -15,6 +15,11 @@ export interface ChannelStats {
   llm_calls: number
   /** Average latency in ms (0 if no data). */
   avg_latency_ms: number
+  /** 平均耗时拆分（ms）：LLM / 工具 / 其他（代码延迟）/ 首token。 */
+  avg_llm_duration_ms: number
+  avg_tool_duration_ms: number
+  avg_other_duration_ms: number
+  avg_ttft_ms: number
   success: number
   failed: number
 }
@@ -48,6 +53,11 @@ export interface ExecutionLogItem {
   request_id: string
   status: string
   latency_ms: number
+  /** 耗时拆分（ms）：LLM / 工具 / 其他（代码延迟）/ 首token（仅流式）。 */
+  llm_duration_ms: number
+  tool_duration_ms: number
+  other_duration_ms: number
+  ttft_ms: number
   total_tokens: number
   input_tokens: number
   output_tokens: number

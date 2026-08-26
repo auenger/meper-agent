@@ -1,7 +1,11 @@
 """Model API endpoints — CRUD operations for LLM model management."""
 from fastapi import APIRouter, Depends, Query
 
-from app.core.security import get_current_user, require_any_role
+from app.core.security import (
+    get_current_user,
+    require_any_role,
+    require_permission,
+)
 from app.models.model import AuthType, CompatibilityType, ModelStatus, ModelTaskType
 from app.schemas.model import (
     ModelCreate,
@@ -48,7 +52,7 @@ def _doc_to_response(doc: dict) -> ModelResponse:
     response_model=ModelListResponse,
     summary="List all Models",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — model:read permission required"},
     },
 )
 async def list_models(
@@ -57,7 +61,7 @@ async def list_models(
     status: ModelStatus | None = Query(None, description="Filter by status"),
     provider_tag: str | None = Query(None, description="Filter by provider tag"),
     task_type: ModelTaskType | None = Query(None, description="Filter by model purpose (chat/embedding/rerank)"),
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("model:read")),
 ) -> ModelListResponse:
     """List all Models with pagination and optional filtering."""
     items, total = await ModelService.list_models(
@@ -78,14 +82,14 @@ async def list_models(
     status_code=201,
     summary="Create a new Model",
     responses={
-        403: {"description": "Forbidden — admin role required"},
+        403: {"description": "Forbidden — model:write permission required"},
         409: {"description": "Model ID conflict"},
         422: {"description": "Validation error"},
     },
 )
 async def create_model(
     body: ModelCreate,
-    _: UserResponse = Depends(require_any_role("admin")),
+    _: UserResponse = Depends(require_permission("model:write")),
 ) -> ModelResponse:
     """Create a new LLM model configuration."""
     doc = await ModelService.create_model(
@@ -108,13 +112,13 @@ async def create_model(
     response_model=ModelResponse,
     summary="Get Model details",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — model:read permission required"},
         404: {"description": "Model not found"},
     },
 )
 async def get_model(
     model_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("model:read")),
 ) -> ModelResponse:
     """Get a Model by its ID."""
     from app.core.errors import NotFoundError
@@ -134,12 +138,15 @@ async def get_model(
     response_model=ModelTestResponse,
     summary="Test Model connectivity",
     responses={
-        403: {"description": "Forbidden — admin/developer role required"},
+        403: {"description": "Forbidden — admin or developer role required"},
         404: {"description": "Model not found or key decryption failed"},
     },
 )
 async def test_model(
     model_id: str,
+    # 真实探针请求消耗供应商 API 配额，属管理操作而非只读浏览；无单一权限点
+    # 精确对应 {admin, developer}（developer 无 model:write），故沿用迁移前的
+    # 角色白名单，是权限驱动机制的刻意例外。
     _: UserResponse = Depends(require_any_role("admin", "developer")),
 ) -> ModelTestResponse:
     """Send a minimal probe request to validate model connectivity.
@@ -157,7 +164,7 @@ async def test_model(
     response_model=ModelResponse,
     summary="Update a Model",
     responses={
-        403: {"description": "Forbidden — admin role required"},
+        403: {"description": "Forbidden — model:write permission required"},
         404: {"description": "Model not found"},
         409: {"description": "Model ID conflict"},
         422: {"description": "Validation error"},
@@ -166,7 +173,7 @@ async def test_model(
 async def update_model(
     model_id: str,
     body: ModelUpdate,
-    _: UserResponse = Depends(require_any_role("admin")),
+    _: UserResponse = Depends(require_permission("model:write")),
 ) -> ModelResponse:
     """Update a Model's configuration. Auto-increments version."""
     from app.core.errors import NotFoundError
@@ -198,14 +205,14 @@ async def update_model(
     status_code=204,
     summary="Delete a Model",
     responses={
-        403: {"description": "Forbidden — admin role required"},
+        403: {"description": "Forbidden — model:write permission required"},
         404: {"description": "Model not found"},
         409: {"description": "Model is referenced by one or more Agents"},
     },
 )
 async def delete_model(
     model_id: str,
-    _: UserResponse = Depends(require_any_role("admin")),
+    _: UserResponse = Depends(require_permission("model:write")),
 ) -> None:
     """Delete a Model by ID. Checks for Agent references."""
     from app.core.errors import NotFoundError

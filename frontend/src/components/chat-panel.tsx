@@ -99,14 +99,45 @@ export interface Message {
   interruptQuestion?: string
   interruptOptions?: string[]
   interruptContext?: string
-  /** Token usage for this agent message */
+  /** Token usage + call timing for this agent message */
   usage?: {
     total_tokens?: number
     input_tokens?: number
     output_tokens?: number
     llm_calls?: number
     tool_calls?: number
+    /** 毫秒级耗时拆分（SSE done 事件注入） */
+    total_latency_ms?: number
+    llm_duration_ms?: number
+    tool_duration_ms?: number
+    other_duration_ms?: number
+    ttft_ms?: number
   }
+}
+
+/** ms → 人类可读时长："823ms" / "12.3s" / "1m23s" */
+function formatCallDuration(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`
+  const s = ms / 1000
+  if (s < 60) return `${s.toFixed(1)}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${Math.round(s % 60)}s`
+}
+
+/** 耗时徽章的 hover 拆分：总耗时｜LLM｜工具｜其他｜首token（0 值项省略） */
+function callTimingTitle(u: {
+  total_latency_ms?: number
+  llm_duration_ms?: number
+  tool_duration_ms?: number
+  other_duration_ms?: number
+  ttft_ms?: number
+}): string {
+  const parts = [`总 ${formatCallDuration(u.total_latency_ms ?? 0)}`]
+  if (u.llm_duration_ms) parts.push(`LLM ${formatCallDuration(u.llm_duration_ms)}`)
+  if (u.tool_duration_ms) parts.push(`工具 ${formatCallDuration(u.tool_duration_ms)}`)
+  if (u.other_duration_ms) parts.push(`其他 ${formatCallDuration(u.other_duration_ms)}`)
+  if (u.ttft_ms) parts.push(`首token ${formatCallDuration(u.ttft_ms)}`)
+  return parts.join(' ｜ ')
 }
 
 export interface ChatPanelProps {
@@ -691,14 +722,14 @@ export default function ChatPanel({
             session_id: sid!,
             answer: userMsg.content,
             enable_thinking: enableThinking || undefined,
-          })
+          }, abortRef.current!.signal)
         : await agentApi.stream(agentId, {
             input: userMsg.content,
             session_id: sid || undefined,
             enable_thinking: enableThinking || undefined,
             file_paths: uploadedPaths.length > 0 ? uploadedPaths : undefined,
             file_ids: uploadedFileIds.length > 0 ? uploadedFileIds : undefined,
-          })
+          }, abortRef.current!.signal)
 
       if (!response.ok) {
         throw new Error(`请求失败: ${response.status} ${response.statusText}`)
@@ -1108,8 +1139,13 @@ export default function ChatPanel({
   }, [input, isStreaming, isUploading, agentId, enableThinking, currentSessionId, onSessionChange, scrollToBottom, refreshSessionList, refreshSessionFiles, appendDelta, flushDelta, pendingFiles, messages])
 
   const handleStop = useCallback(() => {
+    // 先通知服务端停止生成（mid-stream abort：立即打断 LLM token 流/工具执行，
+    // 半截回复不落库，可直接开始新对话），再断本地 SSE 连接（fetch signal）。
+    // 服务端调用 fire-and-forget——409（已结束）等失败不影响本地停止。
+    // 会话切换的 abort 不通知服务端，后台跑完落库是刻意语义。
+    void agentApi.stop(agentId)
     abortRef.current?.abort()
-  }, [])
+  }, [agentId])
 
   const handleNewChat = useCallback(() => {
     setMessages([])
@@ -1329,6 +1365,13 @@ export default function ChatPanel({
                       </div>
                       <div className="flex items-center gap-2 mt-2 flex-wrap">
                         <span className="text-[10px] text-[#94A3B8]">{msg.time}</span>
+                        {(msg.usage?.total_latency_ms ?? 0) > 0 && (
+                          <Tooltip title={callTimingTitle(msg.usage!)}>
+                            <span className="text-[10px] text-[#94A3B8] cursor-default">
+                              · {formatCallDuration(msg.usage!.total_latency_ms!)}
+                            </span>
+                          </Tooltip>
+                        )}
                         {msg.usage && msg.usage.total_tokens != null && msg.usage.total_tokens > 0 && (
                           <span className="text-[10px] text-[#94A3B8] flex items-center gap-1">
                             · {msg.usage.total_tokens.toLocaleString()} tokens

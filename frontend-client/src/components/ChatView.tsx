@@ -242,8 +242,8 @@ export function ChatView({
     })
   }
 
-  const submit = (value: string) => {
-    void send(value, files)
+  const submit = (value: string, displayText?: string) => {
+    void send(value, files, displayText)
     setInput('')
     setFiles([])
   }
@@ -603,7 +603,13 @@ export function ChatView({
                     key={`${index}:${item.label}`}
                     className="quick-action"
                     disabled={running || Boolean(hitl)}
-                    onClick={() => submit(item.prompt || item.label)}
+                    onClick={() =>
+                      submit(
+                        item.prompt || item.label,
+                        // prompt 为空时发送的就是 label 本身，无需额外展示文案
+                        item.prompt ? item.label : undefined,
+                      )
+                    }
                   >
                     {item.label}
                   </Button>
@@ -634,7 +640,7 @@ export function ChatView({
             <Sender
               value={input}
               onChange={setInput}
-              onSubmit={submit}
+              onSubmit={(value) => submit(value)}
               onCancel={cancel}
               onPasteFile={(pasted) => addFiles(Array.from(pasted))}
               loading={running}

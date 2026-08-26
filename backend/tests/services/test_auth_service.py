@@ -107,6 +107,21 @@ class TestLogin:
         # Should NOT check password when locked
         mock_user_service.get_user_by_username.assert_not_called()
 
+    async def test_login_disabled_account(self, mock_redis, mock_user_service) -> None:
+        """Disabled account with correct password is rejected with ACCOUNT_DISABLED.
+
+        Checks AFTER password verification (correct password proves identity),
+        and never issues tokens / updates last_login.
+        """
+        mock_redis.get.return_value = None  # not locked
+        mock_user_service.get_user_by_username.return_value = _make_user_doc(status="disabled")
+
+        with pytest.raises(UnauthorizedError) as exc:
+            await AuthService.login("admin", "Strong1234")
+        assert exc.value.code == "ACCOUNT_DISABLED"
+        assert "停用" in exc.value.message
+        mock_user_service.update_last_login.assert_not_called()
+
 
 class TestAccountLockout:
     """AC2: 5 failures → lock 15 min."""

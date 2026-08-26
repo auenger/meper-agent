@@ -141,13 +141,14 @@ class UserService:
                 details={"field": "email"},
             )
 
-        # Create user document
+        # Create user document — the first CLI-created admin is the super admin
         user = User(
             username=username,
             email=email,
             password_hash=hash_password(password),
             role=UserRole.ADMIN.value,
             status=UserStatus.ACTIVE,
+            is_super_admin=True,
         )
 
         # Build MongoDB document — use _id to match User.alias and index queries
@@ -158,6 +159,7 @@ class UserService:
             "password_hash": user.password_hash,
             "role": user.role,
             "status": user.status.value,
+            "is_super_admin": user.is_super_admin,
             "created_at": user.created_at,
             "updated_at": user.updated_at,
             "last_login_at": user.last_login_at,
@@ -336,11 +338,111 @@ class UserService:
         )
         return doc
 
+    # ------------------------------------------------------------------
+    # Super-admin guards（防"管理员互锁/互删"事故）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _guard_admin_target(
+        target_doc: dict,
+        acting_user_id: str,
+        acting_is_super_admin: bool,
+        *,
+        promoting_to_admin: bool = False,
+    ) -> None:
+        """管理写操作的超管守卫。
+
+        规则：
+        - 目标是其他管理员（含超管）且操作者非超管 → 拒绝（锁定/删除/改角色/重置密码）；
+        - 把任何用户提升为 admin 而操作者非超管 → 拒绝；
+        - 对自己的操作维持既有保护（SELF_DEMOTE / LAST_ADMIN）。
+        """
+        from app.core.errors import ForbiddenError
+
+        if acting_is_super_admin:
+            return
+        target_is_other_admin = (
+            target_doc.get("role") == UserRole.ADMIN.value
+            and target_doc.get("_id") != acting_user_id
+        )
+        if target_is_other_admin or promoting_to_admin:
+            raise ForbiddenError(
+                code="SUPER_ADMIN_REQUIRED",
+                message="仅超级管理员可对管理员账户执行该操作",
+            )
+
+    @staticmethod
+    async def _guard_last_super_admin(
+        target_doc: dict,
+        updates: dict | None = None,
+        *,
+        is_delete: bool = False,
+    ) -> None:
+        """最后一个超级管理员不可被降级/禁用/删除（防止把系统锁死在门外）。"""
+        if not target_doc.get("is_super_admin"):
+            return
+        demoting = updates is not None and updates.get("role") not in (None, UserRole.ADMIN.value)
+        disabling = updates is not None and updates.get("status") == UserStatus.DISABLED.value
+        if not (is_delete or demoting or disabling):
+            return
+        count = await UserService._collection().count_documents({"is_super_admin": True})
+        if count <= 1:
+            raise ValidationError(
+                code="LAST_SUPER_ADMIN_PROTECTED",
+                message="不能降级、禁用或删除最后一位超级管理员",
+            )
+
+    @staticmethod
+    async def ensure_super_admin_backfill() -> None:
+        """若环境中还没有任何超级管理员，把创建最早的 admin 提升为超管。
+
+        幂等：已有超管时直接返回。为已有部署补上"初始管理员即超管"的语义。
+        """
+        col = UserService._collection()
+        if await col.count_documents({"is_super_admin": True}) > 0:
+            return
+        earliest = await col.find_one(
+            {"role": UserRole.ADMIN.value},
+            sort=[("created_at", 1)],
+        )
+        if earliest is None:
+            return
+        await col.update_one({"_id": earliest["_id"]}, {"$set": {"is_super_admin": True}})
+        logger.info(
+            "super_admin_backfilled",
+            user_id=earliest["_id"],
+            username=earliest.get("username"),
+        )
+
+    @staticmethod
+    async def promote_super_admin(username: str) -> dict:
+        """将一个管理员提升为超级管理员（CLI：promote-super-admin）。"""
+        from app.core.errors import NotFoundError
+
+        doc = await UserService.get_user_by_username(username)
+        if doc is None:
+            raise NotFoundError(
+                code="USER_NOT_FOUND",
+                message=f"用户 {username} 不存在",
+            )
+        if doc.get("role") != UserRole.ADMIN.value:
+            raise ValidationError(
+                code="SUPER_ADMIN_PROMOTE_TARGET",
+                message="仅管理员角色可被提升为超级管理员",
+            )
+        await UserService._collection().update_one(
+            {"_id": doc["_id"]}, {"$set": {"is_super_admin": True}}
+        )
+        logger.info("super_admin_promoted", user_id=doc["_id"], username=username)
+        updated = await UserService.get_user_by_id(doc["_id"])
+        return updated or doc
+
     @staticmethod
     async def update_user(
         user_id: str,
         updates: dict,
         current_user_id: str,
+        acting_is_super_admin: bool = False,
     ) -> dict | None:
         """Partially update a user's role and/or status. (AC3)
 
@@ -348,12 +450,14 @@ class UserService:
             user_id: Target user's ID.
             updates: Dict with optional keys "role" and/or "status".
             current_user_id: The admin performing the update.
+            acting_is_super_admin: Whether the acting admin is a super admin.
 
         Returns:
             Updated user document, or None if not found.
 
         Raises:
             ValidationError: If business rules are violated.
+            ForbiddenError: If a non-super-admin targets another admin or promotes to admin.
         """
         col = UserService._collection()
 
@@ -361,6 +465,20 @@ class UserService:
         target_doc = await UserService.get_user_by_id(user_id)
         if target_doc is None:
             return None
+
+        # Super-admin guard: non-super admins cannot touch other admins,
+        # nor promote anyone to admin.
+        UserService._guard_admin_target(
+            target_doc,
+            current_user_id,
+            acting_is_super_admin,
+            promoting_to_admin=(
+                updates.get("role") == UserRole.ADMIN.value
+                and target_doc.get("role") != UserRole.ADMIN.value
+            ),
+        )
+        # Never demote/disable the last super admin.
+        await UserService._guard_last_super_admin(target_doc, updates)
 
         # Business rule: permission suicide protection
         if user_id == current_user_id and "role" in updates:
@@ -417,18 +535,24 @@ class UserService:
         return updated
 
     @staticmethod
-    async def delete_user(user_id: str, current_user_id: str) -> bool:
+    async def delete_user(
+        user_id: str,
+        current_user_id: str,
+        acting_is_super_admin: bool = False,
+    ) -> bool:
         """Delete a user. (AC4)
 
         Args:
             user_id: Target user's ID.
             current_user_id: The admin performing the delete.
+            acting_is_super_admin: Whether the acting admin is a super admin.
 
         Returns:
             True if deleted, False if not found.
 
         Raises:
-            ValidationError: If trying to delete self or last admin.
+            ValidationError: If trying to delete self, last admin, or last super admin.
+            ForbiddenError: If a non-super-admin deletes another admin.
         """
         # Cannot delete self
         if user_id == current_user_id:
@@ -443,6 +567,11 @@ class UserService:
         target_doc = await UserService.get_user_by_id(user_id)
         if target_doc is None:
             return False
+
+        # Super-admin guard: non-super admins cannot delete other admins.
+        UserService._guard_admin_target(target_doc, current_user_id, acting_is_super_admin)
+        # Never delete the last super admin.
+        await UserService._guard_last_super_admin(target_doc, is_delete=True)
 
         if target_doc.get("role") == UserRole.ADMIN.value:
             admin_count = await col.count_documents(
@@ -561,24 +690,33 @@ class UserService:
     async def reset_password(
         user_id: str,
         new_password: str,
+        current_user_id: str = "",
+        acting_is_super_admin: bool = False,
     ) -> bool:
         """Reset a user's password. (AC5)
 
         Args:
             user_id: Target user's ID.
             new_password: New plaintext password (strength-validated here).
+            current_user_id: The admin performing the reset (guard context).
+            acting_is_super_admin: Whether the acting admin is a super admin.
 
         Returns:
             True if password was reset, False if user not found.
 
         Raises:
             ValidationError: If password is weak.
+            ForbiddenError: If a non-super-admin resets another admin's password.
         """
         validate_password_strength(new_password)
 
         target_doc = await UserService.get_user_by_id(user_id)
         if target_doc is None:
             return False
+
+        # Super-admin guard: a regular admin resetting a super admin's (or any
+        # other admin's) password would effectively take over that account.
+        UserService._guard_admin_target(target_doc, current_user_id, acting_is_super_admin)
 
         from app.models.base import utc_now
 

@@ -4,12 +4,12 @@ import pathlib
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api.middleware.exception_mw import ExceptionMiddleware
 from app.api.middleware.logging_mw import LoggingMiddleware
 from app.api.middleware.request_id import RequestIDMiddleware
+from app.api.middleware.scoped_cors import ScopedCorsMiddleware, parse_cors_origins
 from app.api.v1.ext import ExtApiStatsMiddleware
 from app.api.v1.router import api_v1_router
 from app.core.bootstrap import background_boot, init_critical_path, shutdown
@@ -81,21 +81,22 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Middleware order matters: outermost first (executed first on request, last on response)
-app.add_middleware(ExceptionMiddleware)
+# Middleware 顺序（Starlette 语义：**最后** add 的在最外层、请求时最先执行）。
+# 按 add 顺序 = 内→外书写，实际请求链为：
+#   ScopedCors → RequestID → Exception → ExtApiStats → Logging → 路由
+# 设计理由：
+# - CORS 最外：preflight 短路；错误信封也能带上 CORS 头（浏览器才读得到）。
+# - RequestID 次外：请求进入即分配 id；错误信封响应会带上 X-Request-ID。
+# - Exception 居中兜底：捕获所有内层中间件与路由的异常，统一错误信封。
+# - Logging 最内：完整覆盖内层耗时；能观察到原始异常（error_raised 分支）。
 app.add_middleware(LoggingMiddleware)
+app.add_middleware(ExtApiStatsMiddleware)
+app.add_middleware(ExceptionMiddleware)
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
-    CORSMiddleware,
-    # /ext/* 是公开接口，第三方嵌入网站 origin 不可预知，允许所有。
-    # allow_credentials=True 时不能用 "*"，用正则匹配所有 origin。
-    allow_origin_regex=".*",
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["X-Request-ID", "X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+    ScopedCorsMiddleware,
+    allow_origins=parse_cors_origins(settings.CORS_ORIGINS),
 )
-app.add_middleware(ExtApiStatsMiddleware)
 
 # API routes
 app.include_router(api_v1_router, prefix="/api/v1")

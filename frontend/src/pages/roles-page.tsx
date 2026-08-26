@@ -12,12 +12,15 @@ import type { Role } from '../types/permission'
 import { roleApi } from '../services/role-api'
 import { type NormalizedApiError } from '../services/api-client'
 import { RoleFormModal } from '../components/role-form-modal'
+import { usePermission } from '../hooks/use-permission'
 
 export default function RolesPage() {
   const [roles, setRoles] = useState<Role[]>([])
   const [loading, setLoading] = useState(false)
   const [modalOpen, setModalOpen] = useState(false)
   const [editingRole, setEditingRole] = useState<Role | null>(null)
+  // 权限：是否可执行写操作（创建/编辑/删除角色）
+  const canWrite = usePermission('user:write')
 
   const fetchRoles = useCallback(async () => {
     setLoading(true)
@@ -110,15 +113,17 @@ export default function RolesPage() {
       width: 160,
       render: (_: unknown, record: Role) => (
         <Space size="small">
-          <Button
-            type="link"
-            size="small"
-            icon={<EditOutlined />}
-            onClick={() => handleEdit(record)}
-          >
-            {record.role_type === 'system' ? '编辑权限' : '编辑'}
-          </Button>
-          {record.role_type === 'custom' && (
+          {canWrite && (
+            <Button
+              type="link"
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => handleEdit(record)}
+            >
+              {record.role_type === 'system' ? '编辑权限' : '编辑'}
+            </Button>
+          )}
+          {canWrite && record.role_type === 'custom' && (
             <Popconfirm
               title="确认删除"
               description="删除后不可恢复，使用该角色的用户将失去权限"
@@ -143,9 +148,11 @@ export default function RolesPage() {
         <Typography.Title level={4} className="!mb-0">
           角色管理
         </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
-          创建角色
-        </Button>
+        {canWrite && (
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleCreate}>
+            创建角色
+          </Button>
+        )}
       </div>
 
       <Table<Role>

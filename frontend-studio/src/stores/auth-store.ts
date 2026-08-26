@@ -15,6 +15,8 @@ export interface AuthUser {
   username: string
   role: string
   permissions: string[]
+  /** 超级管理员（初始管理员）——唯一能对其他管理员执行管理写操作的身份。 */
+  isSuperAdmin?: boolean
 }
 
 interface AuthState {
@@ -25,6 +27,7 @@ interface AuthState {
 
   setAuth: (accessToken: string, user: AuthUser) => void
   setAccessToken: (token: string) => void
+  setUser: (user: AuthUser) => void
   setUserPermissions: (permissions: string[]) => void
   clearAuth: () => void
   setInitializing: (v: boolean) => void
@@ -42,6 +45,10 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   setAccessToken: (token) => {
     set({ accessToken: token })
+  },
+
+  setUser: (user) => {
+    set({ user })
   },
 
   setUserPermissions: (permissions) => {

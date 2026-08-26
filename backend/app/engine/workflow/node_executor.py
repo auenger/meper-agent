@@ -297,10 +297,13 @@ class AgentNodeExecutor(BaseNodeExecutor):
             # Build system prompt via slot renderer (context override + variable pool)
             from app.engine.agent.slot_renderer import render_system_prompt_full
 
+            # execution_context="workflow"：无人值守语义——工具声明去掉
+            # Clarification/Task 段，追加自主执行规则（禁反问 + abort_workflow）。
             system_text = await render_system_prompt_full(
                 agent_doc,
                 node_slot_overrides=context_overrides,
                 variable_pool=variables,
+                execution_context="workflow",
             )
         except Exception as exc:
             # 展开 ExceptionGroup 以显示真正原因
@@ -420,6 +423,7 @@ class AgentNodeExecutor(BaseNodeExecutor):
                                 workspace=task_workspace,
                                 cancel_checker=_cancel_checker,
                                 user_token=user_token,
+                                execution_context="workflow",
                             ),
                             timeout=timeout_ms / 1000,
                         )
@@ -440,21 +444,67 @@ class AgentNodeExecutor(BaseNodeExecutor):
                                 workspace=task_workspace,
                                 cancel_checker=_cancel_checker,
                                 user_token=user_token,
+                                execution_context="workflow",
                             ),
                             timeout=timeout_ms / 1000,
                         )
 
-                    # ── 检测 LangGraph interrupt（取消挂起）──
+                    # ── 检测 LangGraph interrupt ──
                     # interrupt() 后 ainvoke 返回的 state 带 __interrupt__ 键。
-                    # 此时 agent 的完整上下文已存入 MongoDB checkpointer（按 _thread_id），
-                    # 记录 thread_id 供 engine 保存到 checkpoint，恢复时用 Command(resume) 续接。
+                    # 区分 payload：cancel_checker 挂起的是 {"reason": "cancelled"}
+                    # （可恢复取消，上下文已存 checkpointer，记录 thread_id 供
+                    # engine 保存 checkpoint，恢复时用 Command(resume) 续接）；
+                    # 其他 HITL interrupt（如未来新增的交互式工具）在工作流
+                    # 无人值守语义下不允许——按节点失败诚实报错，不再误判为
+                    # 取消导致工作流停摆。
                     if isinstance(result, dict) and result.get("__interrupt__"):
-                        self.agent_thread_id = _thread_id
+                        if self._interrupt_is_cancel(result.get("__interrupt__")):
+                            self.agent_thread_id = _thread_id
+                            return NodeResult(
+                                success=False,
+                                output={},
+                                error_message="",
+                                error_code="AGENT_INTERRUPTED",
+                            )
+                        detail = self._summarise_interrupts(result.get("__interrupt__"))
+                        logger.error(
+                            "node_agent_hitl_interrupt_rejected",
+                            node_id=self.node_id,
+                            interrupts=detail,
+                        )
                         return NodeResult(
                             success=False,
                             output={},
-                            error_message="",
-                            error_code="AGENT_INTERRUPTED",
+                            error_message=(
+                                "Agent 节点触发交互式中断，但工作流为无人值守执行"
+                                f"（不允许向用户提问）：{detail}"
+                            ),
+                        )
+
+                    # ── 检测 abort_workflow 诚实终止 ──
+                    # 输入含糊到执行无意义时，Agent 调 abort_workflow(reason,
+                    # needed_info)（非 interrupt 工具）。扫描 messages 中的
+                    # tool_call 判定，工作流以失败终止并把原因展示给用户。
+                    # 确定性失败，直接 return 不进重试。
+                    abort_args = self._find_abort_request(
+                        result.get("messages") if isinstance(result, dict) else None,
+                    )
+                    if abort_args is not None:
+                        reason = str(abort_args.get("reason") or "").strip()
+                        needed = str(abort_args.get("needed_info") or "").strip()
+                        parts = [p for p in (reason, f"需要补充: {needed}" if needed else "") if p]
+                        logger.warning(
+                            "node_agent_abort_requested",
+                            node_id=self.node_id,
+                            agent_id=agent_id,
+                            reason=reason,
+                            needed_info=needed,
+                        )
+                        return NodeResult(
+                            success=False,
+                            output={},
+                            error_message="；".join(parts) or "Agent 判定输入信息不足以继续执行",
+                            error_code="AGENT_INPUT_INSUFFICIENT",
                         )
                     output_content = ""
                     if result.get("messages"):
@@ -517,6 +567,83 @@ class AgentNodeExecutor(BaseNodeExecutor):
             output={},
             error_message=last_error or "Agent 执行失败",
         )
+
+    @staticmethod
+    def _iter_interrupt_payloads(interrupts: Any) -> list[dict]:
+        """从 __interrupt__ 集合提取 payload dict 列表。
+
+        LangGraph 返回 Interrupt 对象列表（payload 在 .value），防御性兼容
+        裸 dict（测试桩/版本差异）。
+        """
+        payloads: list[dict] = []
+        if not interrupts:
+            return payloads
+        items = interrupts if isinstance(interrupts, (list, tuple)) else [interrupts]
+        for item in items:
+            payload = item if isinstance(item, dict) else getattr(item, "value", None)
+            if isinstance(payload, dict):
+                payloads.append(payload)
+        return payloads
+
+    @classmethod
+    def _interrupt_is_cancel(cls, interrupts: Any) -> bool:
+        """cancel_checker 的挂起 payload 为 {"reason": "cancelled"}。"""
+        return any(p.get("reason") == "cancelled" for p in cls._iter_interrupt_payloads(interrupts))
+
+    @classmethod
+    def _summarise_interrupts(cls, interrupts: Any) -> str:
+        """把 interrupt payload 压缩成一句话，供错误信息/日志展示。"""
+        payloads = cls._iter_interrupt_payloads(interrupts)
+        if not payloads:
+            return "未知 interrupt"
+        summaries = []
+        for p in payloads:
+            question = p.get("question") or p.get("workflow_name") or p.get("type") or "interrupt"
+            summaries.append(str(question))
+        return "; ".join(summaries)[:200]
+
+    @staticmethod
+    def _find_abort_request(messages: Any) -> dict | None:
+        """扫描 messages 中的 abort_workflow tool_call，返回其 args。
+
+        仅当 abort_workflow **已被执行**（存在 tool_call_id 匹配的
+        ToolMessage）才判定有效——恢复（resume）线程里可能残留仅声明、
+        尚未执行的 abort tool_call（取消发生在工具执行前），此时 agent
+        恢复后已重新决策，历史 abort 不构成当前节点失败。tool_call 是
+        机器可读的确定性信号（比文本检测可靠）。兼容 AIMessage
+        （.tool_calls）与 dict（["tool_calls"]）两种形态。
+        """
+        if not messages:
+            return None
+        from app.engine.agent.workflow_executor import ABORT_TOOL_NAME
+
+        executed_ids: set[str] = set()
+        for msg in messages:
+            tool_call_id = (
+                msg.get("tool_call_id")
+                if isinstance(msg, dict)
+                else getattr(msg, "tool_call_id", None)
+            )
+            if tool_call_id:
+                executed_ids.add(tool_call_id)
+
+        for msg in messages:
+            if isinstance(msg, dict):
+                tool_calls = msg.get("tool_calls") or []
+            else:
+                tool_calls = getattr(msg, "tool_calls", None) or []
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                if tc.get("name") != ABORT_TOOL_NAME:
+                    continue
+                if tc.get("id") not in executed_ids:
+                    # 仅声明的 tool_call（工具未执行）不算：中断时刻未真正
+                    # abort，恢复后 agent 重新决策，不应按历史 abort 判失败。
+                    continue
+                args = tc.get("args")
+                return args if isinstance(args, dict) else {}
+        return None
 
     @staticmethod
     def _merge_file_outputs(

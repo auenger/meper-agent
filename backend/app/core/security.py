@@ -230,6 +230,7 @@ async def get_current_user(
         updated_at=user_doc.get("updated_at", ""),
         last_login_at=user_doc.get("last_login_at"),
         permissions=sorted(perms),
+        is_super_admin=bool(user_doc.get("is_super_admin", False)),
     )
 
 
@@ -250,28 +251,23 @@ async def get_current_user_optional(
 # RBAC — Role-based access control (Decision 2.3: hand-written Depends)
 # ---------------------------------------------------------------------------
 
-# Permission matrix: maps permission keys to allowed roles (fallback defaults)
-DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = {
-    "user:read": {"admin"},
-    "user:write": {"admin"},
-    "agent:read": {"admin", "developer", "operator", "viewer"},
-    "agent:write": {"admin", "developer"},
-    "agent:invoke": {"admin", "developer", "operator"},
-    "workflow:read": {"admin", "developer"},
-    "workflow:write": {"admin", "developer"},
-    "tool:read": {"admin", "developer"},
-    "tool:write": {"admin", "developer"},
-    "application:read": {"admin", "developer"},
-    "application:write": {"admin", "developer"},
-    "knowledge:read": {"admin", "developer", "operator", "viewer"},
-    "knowledge:write": {"admin", "developer"},
-    "execution:read:all": {"admin"},
-    "execution:read:own": {"admin", "developer", "operator", "viewer"},
-    "apikey:manage": {"admin"},
-    "settings:manage": {"admin"},
-    "model:read": {"admin", "developer", "operator", "viewer"},
-    "model:write": {"admin"},
-}
+# Permission matrix fallback (permission key → allowed roles).
+#
+# 唯一真源是 role_service.DEFAULT_SYSTEM_ROLE_PERMISSIONS（role → permissions，
+# 启动时写入 MongoDB），此处按需反转生成，避免两份矩阵手工双维护漂移。
+# 仅在 Redis 与 MongoDB 同时不可用时作为 get_role_permissions 的最后回退，
+# 以及 has_permission() 的静态判定依据。
+def _invert_role_permissions() -> dict[str, set[str]]:
+    from app.services.role_service import DEFAULT_SYSTEM_ROLE_PERMISSIONS
+
+    matrix: dict[str, set[str]] = {}
+    for role_name, perms in DEFAULT_SYSTEM_ROLE_PERMISSIONS.items():
+        for perm in perms:
+            matrix.setdefault(perm, set()).add(role_name)
+    return matrix
+
+
+DEFAULT_ROLE_PERMISSIONS: dict[str, set[str]] = _invert_role_permissions()
 
 # Backward-compatible alias
 ROLE_PERMISSIONS = DEFAULT_ROLE_PERMISSIONS

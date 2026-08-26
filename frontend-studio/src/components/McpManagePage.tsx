@@ -29,6 +29,7 @@ import { toolsApi, toolKeys } from '../services/tools-api';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
+import { usePermission } from '../hooks/use-permission';
 import { getErrorMessage } from '../lib/api-client';
 
 const STATUS_STYLES: Record<ConnectionStatus, { label: string; color: string; Icon: typeof CircleCheck }> = {
@@ -153,6 +154,9 @@ function parseJsonOrEmpty(text: string, field: string): Record<string, unknown> 
 
 export function McpManagePage() {
   const queryClient = useQueryClient();
+  // 写权限门控：新建/编辑/删除/测试连接（含发现工具）/分组管理后端均为 mcp:write，
+  // 无权限时隐藏入口（查看工具列表为只读，保留）
+  const canWrite = usePermission('mcp:write');
   const [search, setSearch] = useState('');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<McpConnection | null>(null);
@@ -294,12 +298,14 @@ export function McpManagePage() {
             管理 Model Context Protocol 连接：测试连通、发现工具、配置认证。
           </p>
         </div>
-        <button
-          onClick={() => { setError(null); setForm(emptyForm()); setCreating(true); }}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
-        >
-          <Plus className="w-4 h-4" /> 新建连接
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => { setError(null); setForm(emptyForm()); setCreating(true); }}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
+          >
+            <Plus className="w-4 h-4" /> 新建连接
+          </button>
+        )}
       </div>
 
       {/* Stats */}
@@ -339,12 +345,14 @@ export function McpManagePage() {
             ]}
           />
         </div>
-        <button
-          onClick={() => setCategoryModalOpen(true)}
-          className="flex items-center gap-1.5 px-3 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer"
-        >
-          <Folder className="w-4 h-4" /> 管理分组
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => setCategoryModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer"
+          >
+            <Folder className="w-4 h-4" /> 管理分组
+          </button>
+        )}
       </div>
 
       {error && (
@@ -405,22 +413,28 @@ export function McpManagePage() {
                     <td className="px-4 py-3 text-[11px] text-[#a1a1aa] font-mono">{c.tool_count ?? 0}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => { setError(null); testM.mutate(c); setTestingId(c.id); }} title="测试连接 + 发现工具" disabled={testingId === c.id}
-                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer disabled:opacity-50">
-                          {testingId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
-                        </button>
+                        {canWrite && (
+                          <button onClick={() => { setError(null); testM.mutate(c); setTestingId(c.id); }} title="测试连接 + 发现工具" disabled={testingId === c.id}
+                            className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer disabled:opacity-50">
+                            {testingId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                          </button>
+                        )}
                         <button onClick={() => setViewingConn(c)} title="查看工具"
                           className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-sky-400 hover:bg-[#27272a] transition cursor-pointer">
                           <Eye className="w-4 h-4" />
                         </button>
-                        <button onClick={() => { setError(null); setForm(connToForm(c)); setEditing(c); }} title="编辑"
-                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
-                          <Pencil className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleDelete(c)} title="删除"
-                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        {canWrite && (
+                          <button onClick={() => { setError(null); setForm(connToForm(c)); setEditing(c); }} title="编辑"
+                            className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                        )}
+                        {canWrite && (
+                          <button onClick={() => handleDelete(c)} title="删除"
+                            className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer">
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>

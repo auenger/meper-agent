@@ -6,6 +6,7 @@ import pytest
 from app.services.role_service import (
     _BACKFILL_V1_MARKER,
     _BACKFILL_V1_TARGETS,
+    _BACKFILL_V3_TARGETS,
     DEFAULT_SYSTEM_ROLE_PERMISSIONS,
     RoleService,
 )
@@ -23,6 +24,24 @@ class TestDefaultSystemRolePermissions:
     def test_developer_has_application_permissions(self) -> None:
         assert "application:read" in DEFAULT_SYSTEM_ROLE_PERMISSIONS["developer"]
         assert "application:write" in DEFAULT_SYSTEM_ROLE_PERMISSIONS["developer"]
+
+    def test_developer_has_tool_mcp_write_permissions(self) -> None:
+        """RBAC 迁移回归守卫：developer 必须保留工具/MCP 管理能力。"""
+        assert "tool:write" in DEFAULT_SYSTEM_ROLE_PERMISSIONS["developer"]
+        assert "mcp:write" in DEFAULT_SYSTEM_ROLE_PERMISSIONS["developer"]
+
+    def test_operator_viewer_have_tool_mcp_read_permissions(self) -> None:
+        """平台资源只读浏览对全员开放：operator/viewer 可读工具与 MCP。"""
+        for role in ("operator", "viewer"):
+            assert "tool:read" in DEFAULT_SYSTEM_ROLE_PERMISSIONS[role]
+            assert "mcp:read" in DEFAULT_SYSTEM_ROLE_PERMISSIONS[role]
+
+    def test_v3_backfill_targets_are_subset_of_defaults(self) -> None:
+        """v3 backfill targets 不得超出新默认矩阵授予的权限，
+        否则迁移会把权限补到矩阵不再承诺的范围。"""
+        for role, perms in _BACKFILL_V3_TARGETS.items():
+            defaults = set(DEFAULT_SYSTEM_ROLE_PERMISSIONS[role])
+            assert set(perms) <= defaults
 
 
 @pytest.fixture

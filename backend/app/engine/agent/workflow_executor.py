@@ -416,6 +416,50 @@ async def dispatch_workflow(
 
 
 # ---------------------------------------------------------------------------
+# Workflow-context abort tool — honest termination (non-interrupting)
+# ---------------------------------------------------------------------------
+
+# 工具名单一事实源：context.py 注入与 node_executor 扫描共用，避免魔法字符串漂移。
+ABORT_TOOL_NAME = "abort_workflow"
+
+
+@tool
+async def abort_workflow(reason: str, needed_info: str = "") -> str:
+    """Honest termination for autonomous workflow execution.
+
+    Call this ONLY when the input is so vague or incomplete that continuing
+    would be meaningless — you cannot make any reasonable assumption and any
+    output would be fabricated. The workflow will terminate with your
+    ``reason`` shown to the user as the failure explanation.
+
+    Do NOT call this when information is merely partial but a reasonable
+    assumption is possible — in that case proceed autonomously and state
+    your assumptions in the final output. Do NOT ask the user questions:
+    you are running unattended and no one will answer.
+
+    Args:
+        reason: Honest explanation of why execution cannot proceed
+            meaningfully (shown to the user as the task failure reason).
+        needed_info: What information would be needed to proceed.
+    """
+    logger.info(
+        "workflow_abort_requested",
+        reason=reason,
+        needed_info=needed_info,
+    )
+    return (
+        "终止请求已登记。请不要再调用任何其他工具，直接输出对 reason 的简短诚实总结"
+        "（含 needed_info 说明需要补充什么信息）作为最终答复。"
+    )
+
+
+# 工作流 agent 节点专属工具（execution_context="workflow" 时注入）。
+# abort_workflow 不调 interrupt()——节点执行器扫描 messages 中的 tool_call
+# 判定 AGENT_INPUT_INSUFFICIENT，工作流诚实失败终止，而非交互式挂起。
+_WORKFLOW_CONTEXT_TOOLS: list[BaseTool] = [abort_workflow]
+
+
+# ---------------------------------------------------------------------------
 # Tool list — exported for builder.py injection as built-in tools
 # ---------------------------------------------------------------------------
 

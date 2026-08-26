@@ -10,9 +10,13 @@ import { Spin } from 'antd'
 import { useAuthStore } from '../stores/auth-store'
 import { authApi } from '../services/auth-api'
 import { decodeAccessToken } from '../lib/jwt'
+import { usePermissionSync } from '../hooks/use-permission-sync'
 
 export function AuthInitializer({ children }: { children: ReactNode }) {
   const { isInitializing, setInitializing, setAuth, clearAuth } = useAuthStore()
+
+  // 登录态存续期间持续同步 /auth/me：角色/权限变更 ≤60s 或窗口聚焦即生效。
+  usePermissionSync()
 
   useEffect(() => {
     const refreshToken = localStorage.getItem('agentflow_refresh_token')

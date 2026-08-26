@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 
-from app.core.security import get_current_user, require_any_role
+from app.core.security import get_current_user, require_permission
 from app.models.mcp_connection import ConnectionStatus
 from app.schemas.mcp_connection import (
     McpConnectionCreate,
@@ -73,11 +73,11 @@ def _doc_to_response(doc: dict) -> McpConnectionResponse:
     response_model=McpConnectionResponse,
     status_code=201,
     summary="Create MCP connection",
-    responses={403: {"description": "Forbidden — developer+ role required"}},
+    responses={403: {"description": "Forbidden — mcp:write permission required"}},
 )
 async def create_connection(
     body: McpConnectionCreate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpConnectionResponse:
     """Create a new MCP server connection configuration."""
     doc = await McpConnectionService.create_connection(body.model_dump())
@@ -88,7 +88,7 @@ async def create_connection(
     "",
     response_model=McpConnectionListResponse,
     summary="List MCP connections",
-    responses={403: {"description": "Forbidden — viewer+ role required"}},
+    responses={403: {"description": "Forbidden — mcp:read permission required"}},
 )
 async def list_connections(
     page: int = Query(1, ge=1),
@@ -96,7 +96,7 @@ async def list_connections(
     name: str | None = Query(None, description="Filter by name (substring)"),
     status: ConnectionStatus | None = Query(None, description="Filter by status"),
     category_id: str | None = Query(None, description="Filter by category id"),
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("mcp:read")),
 ) -> McpConnectionListResponse:
     """List MCP connections with pagination and optional filtering."""
     items, total = await McpConnectionService.list_connections(
@@ -119,13 +119,13 @@ async def list_connections(
     response_model=McpConnectionResponse,
     summary="Get MCP connection",
     responses={
-        403: {"description": "Forbidden — viewer+ role required"},
+        403: {"description": "Forbidden — mcp:read permission required"},
         404: {"description": "Connection not found"},
     },
 )
 async def get_connection(
     connection_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer", "operator", "viewer")),
+    _: UserResponse = Depends(require_permission("mcp:read")),
 ) -> McpConnectionResponse:
     """Get an MCP connection by ID."""
     from app.core.errors import NotFoundError
@@ -144,14 +144,14 @@ async def get_connection(
     response_model=McpConnectionResponse,
     summary="Update MCP connection",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Connection not found"},
     },
 )
 async def update_connection(
     connection_id: str,
     body: McpConnectionUpdate,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpConnectionResponse:
     """Update an MCP connection configuration."""
     from app.core.errors import NotFoundError
@@ -172,13 +172,13 @@ async def update_connection(
     status_code=204,
     summary="Delete MCP connection",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Connection not found"},
     },
 )
 async def delete_connection(
     connection_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> None:
     """Delete an MCP connection and cascade-remove its MCP tools."""
     from app.core.errors import NotFoundError
@@ -196,13 +196,13 @@ async def delete_connection(
     response_model=McpTestResult,
     summary="Test MCP connection",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Connection not found"},
     },
 )
 async def test_connection(
     connection_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpTestResult:
     """Test an MCP server connection and update its status."""
     result = await McpConnectionService.test_connection(connection_id)
@@ -214,13 +214,13 @@ async def test_connection(
     response_model=McpDiscoverResult,
     summary="Discover MCP tools",
     responses={
-        403: {"description": "Forbidden — developer+ role required"},
+        403: {"description": "Forbidden — mcp:write permission required"},
         404: {"description": "Connection not found"},
     },
 )
 async def discover_tools(
     connection_id: str,
-    _: UserResponse = Depends(require_any_role("admin", "developer")),
+    _: UserResponse = Depends(require_permission("mcp:write")),
 ) -> McpDiscoverResult:
     """Discover tools from an MCP server and register to tool pool."""
     result = await McpConnectionService.discover_tools(connection_id)

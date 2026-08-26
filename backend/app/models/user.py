@@ -42,6 +42,9 @@ class User(BaseModel):
     password_hash: str = Field(..., exclude=True)  # Never serialize
     role: str = Field(default=UserRole.VIEWER.value)
     status: UserStatus = Field(default=UserStatus.ACTIVE)
+    # 超级管理员：初始 create-admin 的账户自动获得；普通管理员不可对
+    # 其他管理员执行管理写操作（锁定/删除/改角色/重置密码），仅超管可以。
+    is_super_admin: bool = Field(default=False)
     created_at: str = Field(default_factory=lambda: utc_now().isoformat())
     updated_at: str = Field(default_factory=lambda: utc_now().isoformat())
     last_login_at: str | None = Field(default=None)

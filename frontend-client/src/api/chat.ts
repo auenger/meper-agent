@@ -45,6 +45,30 @@ function withVisitor(path: string): string {
   return q ? `${path}${path.includes('?') ? '&' : '?'}${q}` : path
 }
 
+/**
+ * 停止该 Agent 上进行中的流式生成（mid-stream abort）。
+ *
+ * JWT 模式调用内部 stop 端点：服务端 task.cancel() 立即打断 LLM token 流/
+ * 工具执行，半截回复不落库，可直接开始新对话。不传 request_id——后端取
+ * 该用户在该 Agent 上的最新活跃运行。
+ *
+ * apikey 模式暂无对应的 ext stop 端点，no-op（本地 abort 已由调用方完成，
+ * 服务端会跑完并落库）。
+ *
+ * 任何失败（409 运行已结束 / 网络错误）都静默吞掉——不能打断本地停止流程。
+ */
+export async function stopAgentStream(agentId: string): Promise<void> {
+  if (AUTH_MODE === 'apikey') return
+  try {
+    await apiRequest(`/v1/agents/${encodeURIComponent(agentId)}/stop`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    })
+  } catch {
+    // fire-and-forget：本地 abort 才是用户可感知的主路径
+  }
+}
+
 export async function listAvailableAgents(): Promise<AgentSummary[]> {
   const path =
     AUTH_MODE === 'apikey' ? '/v1/ext/agents?page_size=200' : '/v1/agents?page_size=200'
@@ -260,6 +284,7 @@ export async function* streamMessage(
   fileIds: string[],
   filePaths: string[],
   signal: AbortSignal,
+  displayText?: string,
 ): AsyncGenerator<StreamEvent> {
   if (AUTH_MODE === 'apikey') {
     const response = await openStream(
@@ -269,6 +294,7 @@ export async function* streamMessage(
         session_id: sessionId,
         visitor_id: getVisitorId(),
         enable_thinking: true,
+        ...(displayText ? { display_text: displayText } : {}),
         ...(fileIds.length ? { file_ids: fileIds } : {}),
         ...(filePaths.length ? { file_paths: filePaths } : {}),
       },
@@ -283,6 +309,7 @@ export async function* streamMessage(
       input: content,
       session_id: sessionId,
       enable_thinking: true,
+      ...(displayText ? { display_text: displayText } : {}),
       ...(fileIds.length ? { file_ids: fileIds } : {}),
       ...(filePaths.length ? { file_paths: filePaths } : {}),
     },

@@ -3,7 +3,6 @@ export interface AuthUser {
   username: string
   role: string
   permissions: string[]
-  is_super_admin?: boolean
 }
 
 export interface TokenResponse {
@@ -83,6 +82,8 @@ export interface MessageRecord {
   session_id: string
   role: string
   content: string
+  /** 展示文案（快捷指令 label）——content 是实际发送给 AI 的内容，气泡优先展示该字段 */
+  display_text?: string | null
   /** 本轮执行请求 id——消息级反馈（§8.2）的轮次键 */
   request_id?: string
   timeline_entries?: Array<{
@@ -141,6 +142,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   /** user 消息:单个 text block;assistant 消息:按执行顺序交错的 blocks。 */
   content: ContentBlock[]
+  /** 展示文案（快捷指令 label）——设置时 user 气泡优先渲染它，隐藏实际发送的指令 */
+  displayText?: string
   attachments: AttachmentView[]
   charts: string[]
   status: 'loading' | 'success' | 'error' | 'abort'

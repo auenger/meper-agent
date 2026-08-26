@@ -60,6 +60,31 @@ def auth_viewer():
     app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def auth_role():
+    """Override get_current_user with an arbitrary role (factory).
+
+    用于自定义角色/其他系统角色的鉴权用例；权限集由 conftest 的
+    ``_perm_overrides``（默认矩阵 or 用例注入）解析。
+    """
+
+    def _make(role: str, user_id: str = "user_03HTEST") -> None:
+        user = UserResponse(
+            id=user_id,
+            username=role,
+            email=f"{role}@example.com",
+            role=role,
+            status=UserStatus.ACTIVE,
+            created_at="2026-01-01T00:00:00",
+            updated_at="2026-01-01T00:00:00",
+            permissions=[],
+        )
+        app.dependency_overrides[get_current_user] = lambda: user
+
+    yield _make
+    app.dependency_overrides.clear()
+
+
 def _fake_doc(agent_id: str = "agent_01HTEST", name: str = "Test Agent") -> dict:
     return {
         "_id": agent_id,
@@ -188,6 +213,44 @@ class TestCreateAgent:
             json={"name": "New Agent"},
         )
         assert resp.status_code == 401
+
+    def test_create_agent_developer_201(self, client, auth_role) -> None:
+        """系统 developer 角色默认含 agent:write，可创建。"""
+        auth_role("developer")
+        with patch(
+            "app.api.v1.agents.AgentService.create_agent",
+            new=AsyncMock(return_value=_fake_doc()),
+        ):
+            resp = client.post("/api/v1/agents", json={"name": "New Agent"})
+        assert resp.status_code == 201
+
+    def test_create_agent_operator_403(self, client, auth_role) -> None:
+        """operator 只有 agent:invoke/agent:read，无 agent:write。"""
+        auth_role("operator")
+        resp = client.post("/api/v1/agents", json={"name": "New Agent"})
+        assert resp.status_code == 403
+
+    def test_create_agent_custom_role_with_write_201(
+        self, client, auth_role, _perm_overrides
+    ) -> None:
+        """自定义角色被授予 agent:write 即可创建——权限驱动，不认角色名。"""
+        _perm_overrides["custom_dev"] = {"agent:read", "agent:write"}
+        auth_role("custom_dev")
+        with patch(
+            "app.api.v1.agents.AgentService.create_agent",
+            new=AsyncMock(return_value=_fake_doc()),
+        ):
+            resp = client.post("/api/v1/agents", json={"name": "New Agent"})
+        assert resp.status_code == 201
+
+    def test_create_agent_custom_role_without_write_403(
+        self, client, auth_role, _perm_overrides
+    ) -> None:
+        """自定义角色仅有 agent:read 时创建被拒。"""
+        _perm_overrides["custom_reader"] = {"agent:read"}
+        auth_role("custom_reader")
+        resp = client.post("/api/v1/agents", json={"name": "New Agent"})
+        assert resp.status_code == 403
 
 
 class TestGetAgent:
@@ -532,3 +595,157 @@ class TestAgentApiServiceContract:
             "AgentService.update_agent should not accept 'status' parameter. "
             "Status changes must go through publish_agent / archive_agent."
         )
+
+
+# ---------------------------------------------------------------------------
+# Stop (mid-stream abort)
+# ---------------------------------------------------------------------------
+
+
+class _FakeTask:
+    """Sync stand-in for asyncio.Task — done()/cancel() without an event loop.
+
+    TestClient 在独立事件循环里跑 app，跨循环注册真任务会 flaky；
+    stop 端点只依赖 done()/cancel() 两个动作，替身即可覆盖全部分支。
+    """
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def done(self) -> bool:
+        return self.cancelled
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class TestStopAgent:
+    """POST /api/v1/agents/{agent_id}/stop — mid-stream abort 端点."""
+
+    @staticmethod
+    def _register(request_id: str, *, agent_id: str, user_id: str, task: _FakeTask | None = None):
+        from app.services.run_registry import ActiveRun, register_run
+
+        run = ActiveRun(
+            task=task or _FakeTask(), request_id=request_id,
+            agent_id=agent_id, user_id=user_id, session_id="session_test",
+        )
+        register_run(run)
+        return run
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self):
+        from app.services import run_registry
+
+        yield
+        run_registry._ACTIVE_RUNS.clear()
+
+    def test_stop_no_active_run_returns_409(self, client, auth_admin):
+        """没有注册的活跃运行 → 409 RUN_NOT_ACTIVE."""
+        with patch("app.api.v1.agents.set_cancel_flag", new_callable=AsyncMock):
+            resp = client.post("/api/v1/agents/agent_01HTEST/stop", json={})
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "RUN_NOT_ACTIVE"
+
+    def test_stop_run_owned_by_other_user_returns_403(self, client, auth_admin):
+        """运行属于其他用户 → 403，且不动对方的任务."""
+        task = _FakeTask()
+        self._register("req_other", agent_id="agent_01HTEST", user_id="user_other", task=task)
+        with patch("app.api.v1.agents.set_cancel_flag", new_callable=AsyncMock):
+            resp = client.post(
+                "/api/v1/agents/agent_01HTEST/stop",
+                json={"request_id": "req_other"},
+            )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["code"] == "RUN_NOT_OWNED"
+        assert task.cancelled is False
+
+    def test_stop_by_request_id_cancels_task(self, client, auth_admin):
+        """按 request_id 停止自己的运行 → 202 + task.cancel() 被调用."""
+        task = _FakeTask()
+        self._register("req_mine", agent_id="agent_01HTEST", user_id="user_01HTEST", task=task)
+        with patch("app.api.v1.agents.set_cancel_flag", new_callable=AsyncMock) as mock_flag:
+            resp = client.post(
+                "/api/v1/agents/agent_01HTEST/stop",
+                json={"request_id": "req_mine"},
+            )
+        assert resp.status_code == 200
+        assert resp.json() == {"stopped": True, "request_id": "req_mine"}
+        assert task.cancelled is True
+        mock_flag.assert_awaited_once_with("req_mine")  # 迭代边界兜底闸也设置了
+
+    def test_stop_without_request_id_targets_latest_run(self, client, auth_admin):
+        """不传 request_id → 停该用户在该 Agent 上的最新活跃运行."""
+        old_task = _FakeTask()
+        new_task = _FakeTask()
+        run_old = self._register("req_old", agent_id="agent_01HTEST", user_id="user_01HTEST", task=old_task)
+        run_new = self._register("req_new", agent_id="agent_01HTEST", user_id="user_01HTEST", task=new_task)
+        run_old.started_at = 100.0
+        run_new.started_at = 200.0
+        with patch("app.api.v1.agents.set_cancel_flag", new_callable=AsyncMock):
+            resp = client.post("/api/v1/agents/agent_01HTEST/stop", json={})
+        assert resp.status_code == 200
+        assert resp.json()["request_id"] == "req_new"
+        assert new_task.cancelled is True
+        assert old_task.cancelled is False
+
+
+# ---------------------------------------------------------------------------
+# Cancelled-turn timeline finalization（取消轮展示层持久化）
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeCancelledTimeline:
+    """_finalize_cancelled_timeline — 半截文本合成 + 停止标记 + 空内容跳过。"""
+
+    def test_synthesizes_partial_text_and_marker(self):
+        from app.services.agent_execution_service import _finalize_cancelled_timeline
+
+        timeline = [
+            {"type": "tool_call", "tool_name": "bash", "args": {"command": "date"}},
+            {"type": "tool_result", "tool_name": "bash", "content": "Mon Aug 24", "status": "success"},
+            {"type": "text_delta", "content": "根据结果"},
+            {"type": "text_delta", "content": "，今天是……"},
+        ]
+        finalized = _finalize_cancelled_timeline(timeline)
+        types = [e["type"] for e in finalized]
+        # 原始事件保留 + 合成 text + 末尾标记
+        assert types[-2:] == ["text", "text"]
+        assert finalized[-2]["content"] == "根据结果，今天是……"
+        assert finalized[-1]["content"] == "⏹ 已停止生成"
+
+    def test_partial_only_after_last_complete_text(self):
+        """多轮对话：只合成最后一个完整 text 之后的 delta。"""
+        from app.services.agent_execution_service import _finalize_cancelled_timeline
+
+        timeline = [
+            {"type": "text", "content": "第一轮完整回复"},
+            {"type": "text_delta", "content": "第二轮的半截"},
+        ]
+        finalized = _finalize_cancelled_timeline(timeline)
+        assert finalized[-2]["content"] == "第二轮的半截"
+
+    def test_tool_only_cancel_still_persisted_with_marker(self):
+        """取消发生在工具后、文本开始前：工具事件 + 标记落库（无合成文本）。"""
+        from app.services.agent_execution_service import _finalize_cancelled_timeline
+
+        timeline = [{"type": "tool_call", "tool_name": "bash"}, {"type": "tool_result", "content": "ok"}]
+        finalized = _finalize_cancelled_timeline(timeline)
+        assert [e["type"] for e in finalized] == ["tool_call", "tool_result", "text"]
+        assert finalized[-1]["content"] == "⏹ 已停止生成"
+
+    def test_instant_cancel_returns_empty(self):
+        """完全无内容（连 delta 都没流出）→ 不落库。"""
+        from app.services.agent_execution_service import _finalize_cancelled_timeline
+
+        assert _finalize_cancelled_timeline([]) == []
+
+    def test_tiny_partial_still_persisted(self):
+        """只要流过 delta（哪怕一个字）就是用户看过的半截回复 → 持久化。"""
+        from app.services.agent_execution_service import _finalize_cancelled_timeline
+
+        finalized = _finalize_cancelled_timeline([
+            {"type": "text_delta", "content": "在"},
+        ])
+        assert finalized[-2]["content"] == "在"
+        assert finalized[-1]["content"] == "⏹ 已停止生成"

@@ -110,13 +110,20 @@ async function refreshAccessToken(): Promise<string> {
 }
 
 /**
- * Redirect to /login, clearing auth state. Used when refresh fails.
+ * Redirect to /login, clearing auth state. Used when the session is
+ * unrecoverable (refresh failed, or any non-expiry 401).
+ *
+ * `reason` is the backend error code (e.g. ACCOUNT_DISABLED); the Login page
+ * reads it from ?reason= to tell the user WHY they were logged out instead of
+ * making them re-enter credentials just to hit the same error.
  */
-function redirectToLogin(): void {
+function redirectToLogin(reason?: string): void {
   useAuthStore.getState().clearAuth()
   if (window.location.pathname !== '/login') {
     const redirect = encodeURIComponent(window.location.pathname + window.location.search)
-    window.location.href = `/login?redirect=${redirect}`
+    const params = new URLSearchParams({ redirect })
+    if (reason) params.set('reason', reason)
+    window.location.href = `/login?${params.toString()}`
   }
 }
 
@@ -151,6 +158,14 @@ apiClient.interceptors.response.use(
           normalizeError({ code: 'TOKEN_EXPIRED', message: '登录已过期，请重新登录' }),
         )
       }
+    }
+
+    // Any other 401 (invalid/revoked token, disabled or deleted account) means
+    // the session is unrecoverable — redirect to login with the reason instead
+    // of silently rejecting, which used to render every page as mysteriously
+    // empty while the username chip still showed the "logged in" user.
+    if (status === 401) {
+      redirectToLogin(errorCode)
     }
 
     return Promise.reject(normalizeError(error))

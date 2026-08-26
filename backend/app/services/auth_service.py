@@ -124,6 +124,20 @@ class AuthService:
                 message="用户名或密码错误",
             )
 
+        # Reject disabled accounts AFTER password verification: a correct
+        # password proves identity, while checking earlier would leak account
+        # existence to unauthenticated callers. Without this, a disabled user
+        # could "log in" successfully and then hit silent 401s on every API.
+        if user_doc.get("status") != UserStatus.ACTIVE.value:
+            logger.info(
+                "login_blocked_disabled",
+                username=username,
+            )
+            raise UnauthorizedError(
+                code="ACCOUNT_DISABLED",
+                message="账户已被停用，请联系管理员",
+            )
+
         # Success — reset failure counter
         await AuthService.reset_failed_login(username)
 
@@ -142,6 +156,7 @@ class AuthService:
             username=user_doc.get("username", ""),
             role=role,
             permissions=sorted(perms),
+            is_super_admin=bool(user_doc.get("is_super_admin", False)),
         )
 
         logger.info("login_success", username=username, user_id=user_id)
@@ -209,6 +224,7 @@ class AuthService:
             username=user_doc.get("username", ""),
             role=role,
             permissions=sorted(perms),
+            is_super_admin=bool(user_doc.get("is_super_admin", False)),
         )
 
         logger.info("token_refreshed", user_id=user_id)

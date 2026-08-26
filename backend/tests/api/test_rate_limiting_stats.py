@@ -45,37 +45,47 @@ def _override_auth(principal):
 # ---------------------------------------------------------------------------
 
 
+class _FakeEvalSlidingWindow:
+    """In-Python simulation of the rate limiter's Lua script (atomic semantics)."""
+
+    def __init__(self):
+        self.zset: dict[str, float] = {}
+
+    async def eval(self, script, numkeys, key, now, window, limit, member, ttl):
+        now, window, limit = float(now), float(window), int(limit)
+        self.zset = {m: s for m, s in self.zset.items() if s > now - window}
+        count = len(self.zset)
+        if count < limit:
+            self.zset[member] = now
+            oldest = min(self.zset.values())
+            return [1, limit - count - 1, int(oldest + window)]
+        oldest = min(self.zset.values())
+        return [0, 0, int(oldest + window)]
+
+
 class TestRateLimiter:
-    """Unit tests for the sliding window rate limiter."""
+    """Unit tests for the sliding window rate limiter (atomic Lua script)."""
 
     @pytest.mark.asyncio
     async def test_allowed_within_limit(self):
-        """Request within limit should be allowed."""
-        pipe = MagicMock()
-        pipe.execute = AsyncMock(return_value=[0, 5, 1, 1])
-        mock_redis = MagicMock()
-        mock_redis.pipeline.return_value = pipe
-
-        with patch("app.core.rate_limiter.get_redis_client", new_callable=AsyncMock, return_value=mock_redis):
-            allowed, remaining, reset_ts = await check_rate_limit("key1", limit=10)
-
-        assert allowed is True
-        assert remaining == 4  # 10 - 5 - 1
+        """Requests within limit should be allowed with correct remaining."""
+        fake = _FakeEvalSlidingWindow()
+        for expected_remaining in (9, 8, 7):
+            with patch("app.core.rate_limiter.get_redis_client", new_callable=AsyncMock, return_value=fake):
+                allowed, remaining, _reset = await check_rate_limit("key1", limit=10)
+            assert allowed is True
+            assert remaining == expected_remaining
 
     @pytest.mark.asyncio
     async def test_denied_over_limit(self):
-        """Request exceeding limit should be denied."""
-        pipe = MagicMock()
-        pipe.execute = AsyncMock(return_value=[0, 10, 1, 1])
-        mock_redis = MagicMock()
-        mock_redis.pipeline.return_value = pipe
-        mock_redis.zrem = AsyncMock()
-
-        with patch("app.core.rate_limiter.get_redis_client", new_callable=AsyncMock, return_value=mock_redis):
-            allowed, remaining, reset_ts = await check_rate_limit("key1", limit=10)
-
-        assert allowed is False
-        assert remaining == 0
+        """Requests beyond the limit should be denied with remaining=0."""
+        fake = _FakeEvalSlidingWindow()
+        outcomes = []
+        for _ in range(3):
+            with patch("app.core.rate_limiter.get_redis_client", new_callable=AsyncMock, return_value=fake):
+                allowed, remaining, _reset = await check_rate_limit("key1", limit=2)
+            outcomes.append((allowed, remaining))
+        assert outcomes == [(True, 1), (True, 0), (False, 0)]
 
 
 # ---------------------------------------------------------------------------

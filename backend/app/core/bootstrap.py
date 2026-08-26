@@ -53,6 +53,15 @@ async def init_critical_path() -> None:
 
     await start_event_bridge_listener()
 
+    # Super-admin backfill — 若环境中还没有任何超管，把创建最早的 admin
+    # 提升为超管（"初始管理员即超管"）。失败不阻塞启动（下次启动重试）。
+    try:
+        from app.services.user_service import UserService
+
+        await UserService.ensure_super_admin_backfill()
+    except Exception as exc:  # pragma: no cover - defensive boot path
+        logger.warning("super_admin_backfill_failed", error=str(exc))
+
 
 # ---------------------------------------------------------------------------
 # Background boot — deferred, non-blocking
@@ -86,17 +95,16 @@ async def ensure_all_indexes() -> TriggerRepository:
 
     # init_system_roles depends on RoleService.ensure_indexes completing.
     await RoleService.init_system_roles()
-    # Backfill stale system-role permission lists written by older code
-    # (marker-guarded, runs once per database).
-    await RoleService.backfill_system_role_permissions()
-    # v2（§7.6 权限原则）：viewer 补 execution:read:own（个人数据），
-    # operator/viewer 补 knowledge:read（平台资源只读全员开放）
+    # Backfill stale system-role permission lists written by older code.
+    # marker-guarded：每个迁移（v1→v3）各自最多执行一次，数据集中在
+    # role_service，避免调用方字面量重写漂移。
+    await RoleService.run_all_system_role_backfills()
+    # v3（权限体系统一）：agents invoke 类端点从 4 角色白名单迁移到
+    # require_permission("agent:invoke")，viewer 需补该键以保持"会话对
+    # 全员开放"的现状行为。
     await RoleService._backfill_permissions(
-        "backfill_user_scoped_perms_v2",
-        {
-            "viewer": ["execution:read:own", "knowledge:read"],
-            "operator": ["knowledge:read"],
-        },
+        "backfill_viewer_agent_invoke_v3",
+        {"viewer": ["agent:invoke"]},
     )
     # Backfill misclassified ext-call execution logs (marker-guarded, once).
     await ExecutionLogService.backfill_source_channel()

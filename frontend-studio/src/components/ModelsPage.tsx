@@ -26,6 +26,7 @@ import {
 } from '../services/model-api';
 import { Select } from './ui';
 import { confirmDialog } from './ui/confirm';
+import { usePermission } from '../hooks/use-permission';
 import { getErrorMessage } from '../lib/api-client';
 
 const COMPATIBILITY_LABELS: Record<CompatibilityType, string> = {
@@ -103,6 +104,10 @@ function modelToForm(m: Model): ModelForm {
 
 export function ModelsPage() {
   const queryClient = useQueryClient();
+  // 写权限门控：新建/编辑/删除为 model:write；"测试连通性"后端为
+  // model:read（探针不改配置），与路由同键，无权限时隐藏入口。
+  const canWrite = usePermission('model:write');
+  const canTest = usePermission('model:read');
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<ModelStatus | 'all'>('all');
   const [editing, setEditing] = useState<Model | null>(null);
@@ -236,13 +241,15 @@ export function ModelsPage() {
             配置 LLM 接入（接口 / Key / 模型 / 协议），供 Agent 与工作流调用。
           </p>
         </div>
-        <button
-          onClick={handleOpenCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
-        >
-          <Plus className="w-4 h-4" />
-          新建模型
-        </button>
+        {canWrite && (
+          <button
+            onClick={handleOpenCreate}
+            className="flex items-center gap-2 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-semibold transition cursor-pointer shadow-md shadow-indigo-600/20"
+          >
+            <Plus className="w-4 h-4" />
+            新建模型
+          </button>
+        )}
       </div>
 
       {/* ── Stats ── */}
@@ -357,27 +364,33 @@ export function ModelsPage() {
                   </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center justify-end gap-1">
-                      <button
-                        onClick={() => handleOpenTest(m)}
-                        title="测试连通性"
-                        className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer"
-                      >
-                        <Zap className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleOpenEdit(m)}
-                        title="编辑"
-                        className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer"
-                      >
-                        <Pencil className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(m)}
-                        title="删除"
-                        className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
+                      {canTest && (
+                        <button
+                          onClick={() => handleOpenTest(m)}
+                          title="测试连通性"
+                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer"
+                        >
+                          <Zap className="w-4 h-4" />
+                        </button>
+                      )}
+                      {canWrite && (
+                        <button
+                          onClick={() => handleOpenEdit(m)}
+                          title="编辑"
+                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer"
+                        >
+                          <Pencil className="w-4 h-4" />
+                        </button>
+                      )}
+                      {canWrite && (
+                        <button
+                          onClick={() => handleDelete(m)}
+                          title="删除"
+                          className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -545,14 +558,16 @@ export function ModelsPage() {
                 >
                   取消
                 </button>
-                <button
-                  type="submit"
-                  disabled={createM.isPending || updateM.isPending}
-                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shadow-md cursor-pointer font-semibold disabled:opacity-60 flex items-center gap-2"
-                >
-                  {(createM.isPending || updateM.isPending) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                  {editing ? '保存' : '创建'}
-                </button>
+                {canWrite && (
+                  <button
+                    type="submit"
+                    disabled={createM.isPending || updateM.isPending}
+                    className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg shadow-md cursor-pointer font-semibold disabled:opacity-60 flex items-center gap-2"
+                  >
+                    {(createM.isPending || updateM.isPending) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    {editing ? '保存' : '创建'}
+                  </button>
+                )}
               </div>
             </form>
           </div>

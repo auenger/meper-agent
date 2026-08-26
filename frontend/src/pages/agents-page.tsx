@@ -28,6 +28,7 @@ import {
   FilterOutlined,
 } from '@ant-design/icons'
 import { useTheme } from '../contexts/ThemeContext'
+import { usePermission } from '../hooks/use-permission'
 import {
   agentApi,
   agentKeys,
@@ -66,6 +67,8 @@ export default function AgentsPage() {
   const { t } = useTheme()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  // 权限：是否可执行写操作（新建/发布/下架/复制/删除）
+  const canWrite = usePermission('agent:write')
 
   /* ─── Filter state ─── */
   const [searchInput, setSearchInput] = useState('')
@@ -229,14 +232,16 @@ export default function AgentsPage() {
             创建、配置和部署 AI Agent
           </p>
         </div>
-        <button
-          onClick={handleCreate}
-          className="flex items-center gap-1.5 px-4 h-9 text-[13px] font-medium text-white border-0 cursor-pointer"
-          style={{ background: t.primary, borderRadius: 6 }}
-        >
-          <PlusOutlined style={{ fontSize: 12 }} />
-          新建 Agent
-        </button>
+        {canWrite && (
+          <button
+            onClick={handleCreate}
+            className="flex items-center gap-1.5 px-4 h-9 text-[13px] font-medium text-white border-0 cursor-pointer"
+            style={{ background: t.primary, borderRadius: 6 }}
+          >
+            <PlusOutlined style={{ fontSize: 12 }} />
+            新建 Agent
+          </button>
+        )}
       </div>
 
       {/* ════════ Stats bar (inline, not cards) ════════ */}
@@ -321,14 +326,16 @@ export default function AgentsPage() {
         >
           <InboxOutlined className="text-3xl text-muted mb-2" />
           <p className="text-[13px] text-txt-2 mb-3">暂无 Agent</p>
-          <button
-            onClick={handleCreate}
-            className="flex items-center gap-1.5 px-4 h-8 text-[13px] font-medium text-white border-0 cursor-pointer"
-            style={{ background: t.primary, borderRadius: 6 }}
-          >
-            <PlusOutlined style={{ fontSize: 12 }} />
-            创建第一个 Agent
-          </button>
+          {canWrite && (
+            <button
+              onClick={handleCreate}
+              className="flex items-center gap-1.5 px-4 h-8 text-[13px] font-medium text-white border-0 cursor-pointer"
+              style={{ background: t.primary, borderRadius: 6 }}
+            >
+              <PlusOutlined style={{ fontSize: 12 }} />
+              创建第一个 Agent
+            </button>
+          )}
         </div>
       )}
 
@@ -434,7 +441,8 @@ export default function AgentsPage() {
 
                   {/* Actions */}
                   <div className="flex items-center gap-0.5 justify-end" onClick={(e) => e.stopPropagation()}>
-                    {canPublish && (
+                    {/* 发布/下架在状态判断基础上叠加写权限 */}
+                    {canPublish && canWrite && (
                       <Tooltip title="发布">
                         <button
                           onClick={() => handlePublish(agent)}
@@ -446,7 +454,7 @@ export default function AgentsPage() {
                         </button>
                       </Tooltip>
                     )}
-                    {canArchive && (
+                    {canArchive && canWrite && (
                       <Tooltip title="下架">
                         <button
                           onClick={() => handleArchive(agent)}
@@ -458,26 +466,30 @@ export default function AgentsPage() {
                         </button>
                       </Tooltip>
                     )}
-                    <Tooltip title="复制">
-                      <button
-                        onClick={() => handleDuplicate(agent)}
-                        disabled={isPending}
-                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center text-txt-muted hover:text-txt hover:bg-surface-muted transition-colors duration-150 text-[13px] disabled:opacity-40"
-                        style={{ borderRadius: 4 }}
-                      >
-                        <CopyOutlined />
-                      </button>
-                    </Tooltip>
-                    <Tooltip title="删除">
-                      <button
-                        onClick={() => handleDelete(agent)}
-                        disabled={isPending}
-                        className="border-0 bg-transparent w-7 h-7 flex items-center justify-center text-txt-muted hover:text-error hover:bg-error/10 transition-colors duration-150 text-[13px] disabled:opacity-40"
-                        style={{ borderRadius: 4 }}
-                      >
-                        <DeleteOutlined />
-                      </button>
-                    </Tooltip>
+                    {canWrite && (
+                      <Tooltip title="复制">
+                        <button
+                          onClick={() => handleDuplicate(agent)}
+                          disabled={isPending}
+                          className="border-0 bg-transparent w-7 h-7 flex items-center justify-center text-txt-muted hover:text-txt hover:bg-surface-muted transition-colors duration-150 text-[13px] disabled:opacity-40"
+                          style={{ borderRadius: 4 }}
+                        >
+                          <CopyOutlined />
+                        </button>
+                      </Tooltip>
+                    )}
+                    {canWrite && (
+                      <Tooltip title="删除">
+                        <button
+                          onClick={() => handleDelete(agent)}
+                          disabled={isPending}
+                          className="border-0 bg-transparent w-7 h-7 flex items-center justify-center text-txt-muted hover:text-error hover:bg-error/10 transition-colors duration-150 text-[13px] disabled:opacity-40"
+                          style={{ borderRadius: 4 }}
+                        >
+                          <DeleteOutlined />
+                        </button>
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               )

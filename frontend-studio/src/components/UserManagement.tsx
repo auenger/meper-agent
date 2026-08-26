@@ -1,12 +1,14 @@
 import { useState, FormEvent, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import {
-  Users, Shield, Search, Plus, Lock, Pencil, ChevronLeft, ChevronRight, KeyRound, RefreshCw, Copy,
+  Users, Shield, Search, Plus, Lock, Pencil, ChevronLeft, ChevronRight, KeyRound, RefreshCw, Crown,
 } from 'lucide-react';
 import { userApi } from '../services/user-api';
 import { roleApi, type RoleUpdatePayload } from '../services/role-api';
 import { toStudioUser } from '../services/adapters';
-import { Select } from './ui';
+import { usePermission } from '../hooks/use-permission';
+import { useAuthStore } from '../stores/auth-store';
+import { Select, Popover } from './ui';
 import { confirmDialog } from './ui/confirm';
 import { toast } from './ui/toast';
 import { PermissionTree } from './ui/PermissionTree';
@@ -60,12 +62,15 @@ export function UserManagement() {
   const [searchQuery, setSearchQuery] = useState('');
   const [page, setPage] = useState(1);
   const [selectedUserForRole, setSelectedUserForRole] = useState<string | null>(null);
-
-  // 重置密码弹窗状态（管理员代用户重置，用户忘记密码场景）
-  const [resetTarget, setResetTarget] = useState<User | null>(null);
-  const [resetPasswordValue, setResetPasswordValue] = useState('');
-  const [resetError, setResetError] = useState<string | null>(null);
-  const [resetDone, setResetDone] = useState(false);
+  // 用户与角色的全部写操作（新增/删除/锁定/改角色/角色 CRUD）统一由
+  // user:write 门控，与后端 admin.py/roles.py 的授权口径对齐。
+  const canWrite = usePermission('user:write');
+  // 超管门控：普通管理员不可对其他管理员执行锁定/删除/改角色/重置密码，
+  // 也不可将任何用户提升为 admin（后端 SUPER_ADMIN_REQUIRED 守卫兜底）。
+  const isSuperAdmin = useAuthStore((s) => Boolean(s.user?.isSuperAdmin));
+  const currentUserId = useAuthStore((s) => s.user?.id);
+  // 行内角色菜单：同一时间只开一个；徽章本身是触发器，样式全程不变
+  const [openRoleMenuUserId, setOpenRoleMenuUserId] = useState<string | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -84,6 +89,11 @@ export function UserManagement() {
   // Field-level / form-level error rendered inside the create-user modal so
   // the user sees why it failed instead of the dialog silently closing.
   const [createFormError, setCreateFormError] = useState<NormalizedApiError | null>(null);
+
+  // Reset-password modal state — target user is null while closed.
+  const [resetPwdTarget, setResetPwdTarget] = useState<User | null>(null);
+  const [resetPwdValue, setResetPwdValue] = useState('');
+  const [resetPwdError, setResetPwdError] = useState<NormalizedApiError | null>(null);
 
   // Role modal state — create & edit share one form (mode distinguishes them).
   const [roleModalMode, setRoleModalMode] = useState<'create' | 'edit' | null>(null);
@@ -126,6 +136,11 @@ export function UserManagement() {
   // the user sees. This lets custom roles created in the side panel be
   // assigned to users instead of being hidden behind a hardcoded list.
   const roleOptions = roles.map((r) => ({ value: r.name, label: r.display_name }));
+  // 非超管不可把用户提升为 admin：角色选择器（改角色菜单 + 新建用户表单）
+  // 一律隐藏 admin 选项，后端 SUPER_ADMIN_REQUIRED 守卫兜底。
+  const assignableRoleOptions = isSuperAdmin
+    ? roleOptions
+    : roleOptions.filter((o) => o.value !== 'admin');
   const roleDisplayName = (key: string): string =>
     roles.find((r) => r.name === key)?.display_name ?? key;
 
@@ -147,47 +162,15 @@ export function UserManagement() {
     },
   });
 
-  const resetPwM = useMutation({
-    mutationFn: ({ id, newPassword }: { id: string; newPassword: string }) =>
-      userApi.resetPassword(id, { new_password: newPassword }),
-    onSuccess: () => {
-      setResetDone(true);
-      setResetError(null);
-      toast.success(`已重置「${resetTarget?.name ?? ''}」的密码`);
-    },
-  });
-
-  const openResetPassword = (user: User) => {
-    setResetTarget(user);
-    setResetPasswordValue(generatePassword());
-    setResetError(null);
-    setResetDone(false);
-  };
-
-  const handleResetPassword = (e: FormEvent) => {
-    e.preventDefault();
-    if (!resetTarget || resetPasswordValue.length < 8) return;
-    setResetError(null);
-    resetPwM.mutate(
-      { id: resetTarget.id, newPassword: resetPasswordValue },
-      {
-        onError: (err) => {
-          const normalized = err as NormalizedApiError;
-          setResetError(
-            normalized?.fieldErrors
-              ? Object.entries(normalized.fieldErrors)
-                  .map(([f, m]) => (f === '_form' ? m.join('；') : `${f}: ${m.join('；')}`))
-                  .join('\n')
-              : normalized?.message ?? '重置失败',
-          );
-        },
-      },
-    );
-  };
-
   const deleteM = useMutation({
     mutationFn: (id: string) => userApi.delete(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['users'] }),
+  });
+
+  const resetPwdM = useMutation({
+    mutationFn: ({ id, newPassword }: { id: string; newPassword: string }) =>
+      userApi.resetPassword(id, { new_password: newPassword }),
+    // 成功 toast / 失败提示均在 handleResetPassword 内处理（弹窗内展示）。
   });
 
   const createRoleM = useMutation({
@@ -227,6 +210,34 @@ export function UserManagement() {
     deleteRoleM.mutate(role.id);
   };
 
+  const handleDeleteUser = async (user: User) => {
+    const ok = await confirmDialog({
+      title: `删除用户「${user.name}」？`,
+      description: '删除后不可恢复，该用户的会话与个人数据将一并移除。',
+      okText: '删除',
+      danger: true,
+    });
+    if (!ok) return;
+    deleteM.mutate(user.id);
+  };
+
+  const handleResetPassword = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!resetPwdTarget || resetPwdValue.length < 8) return;
+    setResetPwdError(null);
+    try {
+      await resetPwdM.mutateAsync({ id: resetPwdTarget.id, newPassword: resetPwdValue });
+      toast.success(`已重置「${resetPwdTarget.name}」的密码`);
+      setResetPwdTarget(null);
+      setResetPwdValue('');
+    } catch (err) {
+      // Show the concrete backend message (e.g. weak-password 422) inside
+      // the modal so the user can fix the input and retry.
+      const normalized = err as NormalizedApiError;
+      setResetPwdError(normalized);
+    }
+  };
+
   const handleCreateUser = async (e: FormEvent) => {
     e.preventDefault();
     if (!newName || !newEmail || !newPassword) return;
@@ -256,7 +267,7 @@ export function UserManagement() {
 
   const handleChangeRole = (userId: string, roleKey: string) => {
     updateM.mutate({ id: userId, body: { role: roleKey } });
-    setSelectedUserForRole(null);
+    setOpenRoleMenuUserId(null);
   };
 
   const handleToggleStatus = (userId: string, current: User['status']) => {
@@ -318,9 +329,11 @@ export function UserManagement() {
   const roleFormPending = roleModalMode === 'edit' ? updateRoleM.isPending : createRoleM.isPending;
 
   return (
-    <div className="space-y-6">
+    // 固定视口高度布局（App.tsx 中 users tab 已切到 overflow-hidden 分支）：
+    // 页面框架不随用户/角色数量增高，表格与角色列表各自内部滚动。
+    <div className="flex flex-col h-full min-h-0 gap-6">
       {/* Top action bar */}
-      <div className="flex flex-col sm:flex-row justify-between sm:items-center p-4 bg-[#18181b] rounded-xl border border-[#27272a] gap-4">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center p-4 bg-[#18181b] rounded-xl border border-[#27272a] gap-4 shrink-0">
         <div className="flex items-center gap-3">
           <Shield className="w-5 h-5 text-emerald-400" />
           <div className="space-y-0.5">
@@ -341,45 +354,61 @@ export function UserManagement() {
             />
           </div>
 
-          <button
-            onClick={() => { setCreateFormError(null); setIsAdding(true); }}
-            id="btn_add_user"
-            className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow transition cursor-pointer flex items-center gap-1 font-sans"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            新增成员
-          </button>
+          {canWrite && (
+            <button
+              onClick={() => { setCreateFormError(null); setIsAdding(true); }}
+              id="btn_add_user"
+              className="px-3 py-1.5 text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl shadow transition cursor-pointer flex items-center gap-1 font-sans"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              新增成员
+            </button>
+          )}
         </div>
       </div>
 
       {/* RENDER MEMBERS TABLE */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 p-5 bg-[#18181b] border border-[#27272a] rounded-xl space-y-4 shadow-lg">
-          <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-1">
+      {/* grid-rows：单列（窄屏）时约束两行行高，防止内容把 grid 撑破裁切；lg 单行满高。 */}
+      <div className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-3 gap-6 grid-rows-[minmax(0,3fr)_minmax(0,2fr)] lg:grid-rows-1">
+        <div className="lg:col-span-2 p-5 bg-[#18181b] border border-[#27272a] rounded-xl flex flex-col min-h-0 shadow-lg">
+          <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-1 shrink-0">
             <Users className="w-3.5 h-3.5 text-indigo-400" />
             团队成员授权列表
             <span className="font-mono normal-case">（共 {total} 人{isFetching ? ' · 加载中…' : ''}）</span>
           </h3>
 
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left text-slate-400 leading-normal">
+          {/* overscroll-contain：滚到边界后不再向祖先链式滚动，杜绝整个页面被带着滚 */}
+          <div className="flex-1 min-h-0 overflow-auto scrollbar-custom overscroll-contain mt-4">
+            {/* border-separate 是 sticky 表头的前提：Tailwind preflight 给 table 设了
+                border-collapse:collapse，而 Chromium 在 collapse 模式下 th 的
+                position:sticky 不生效（表头会随内容滚走）。spacing-0 保持视觉零间距。 */}
+            <table className="w-full text-xs text-left text-slate-400 leading-normal border-separate border-spacing-0">
               <thead>
-                <tr className="border-b border-[#27272a] text-[#71717a] font-semibold">
-                  <th className="py-2.5 px-3">基本信息</th>
-                  <th className="py-2.5 px-3">系统角色</th>
-                  <th className="py-2.5 px-3">账号状态</th>
-                  <th className="py-2.5 px-3 text-right">操作</th>
+                {/* 吸顶表头：sticky 放在 th 上（tr 的 border 会随滚动消失，边框移到 th）。
+                    bg 用卡片色 #18181b，light 主题由 index.css 的 .theme-light 覆写映射。 */}
+                <tr className="text-[#71717a] font-semibold">
+                  <th className="py-2.5 px-3 sticky top-0 z-10 bg-[#18181b] border-b border-[#27272a]">基本信息</th>
+                  <th className="py-2.5 px-3 sticky top-0 z-10 bg-[#18181b] border-b border-[#27272a]">系统角色</th>
+                  <th className="py-2.5 px-3 sticky top-0 z-10 bg-[#18181b] border-b border-[#27272a]">账号状态</th>
+                  <th className="py-2.5 px-3 text-right sticky top-0 z-10 bg-[#18181b] border-b border-[#27272a]">操作</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#27272a]/60">
+              {/* border-separate 模式下 tr 边框不绘制，行分隔线用 td 的 border-b */}
+              <tbody>
                 {isLoading ? (
-                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a]">加载中…</td></tr>
+                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a] border-b border-[#27272a]/60">加载中…</td></tr>
                 ) : users.length === 0 ? (
-                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a]">{searchQuery ? '没有匹配的成员' : '暂无成员'}</td></tr>
+                  <tr><td colSpan={4} className="py-4 px-3 text-[#71717a] border-b border-[#27272a]/60">{searchQuery ? '没有匹配的成员' : '暂无成员'}</td></tr>
                 ) : users.map((user) => {
+                  // 超管门控（行级）：
+                  // - 重置密码：对"自己"始终可用（后端对 self 豁免），其他管理员目标仅超管；
+                  // - 锁定/删除/改角色：管理员目标仅超管，且不对自己开放（防自锁/自删）。
+                  const isSelf = user.id === currentUserId;
+                  const canManageUser = canWrite && !isSelf && (user.role !== 'admin' || isSuperAdmin);
+                  const canResetPwd = canWrite && (isSelf || user.role !== 'admin' || isSuperAdmin);
                   return (
                     <tr key={user.id} className="hover:bg-[#121214]/60 transition-colors">
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-3 border-b border-[#27272a]/60">
                         <div className="flex items-center gap-3">
                           <div
                             className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold uppercase shrink-0 text-white"
@@ -388,25 +417,59 @@ export function UserManagement() {
                             {initialsOf(user.name)}
                           </div>
                           <div className="min-w-0">
-                            <span className="font-semibold text-white truncate block font-sans">{user.name}</span>
+                            <span className="font-semibold text-white truncate block font-sans inline-flex items-center gap-1">
+                              {user.name}
+                              {user.isSuperAdmin && (
+                                <Crown className="w-3 h-3 text-amber-400 shrink-0" aria-label="超级管理员" />
+                              )}
+                            </span>
                             <span className="text-[10px] text-slate-500 font-mono block">{user.email}</span>
                           </div>
                         </div>
                       </td>
 
-                      <td className="py-3.5 px-3">
-                        {selectedUserForRole === user.id ? (
-                          <Select
-                            size="small"
-                            value={user.role}
-                            onChange={(v) => handleChangeRole(user.id, v ?? 'viewer')}
-                            className="min-w-[120px]"
-                            options={roleOptions}
-                          />
+                      <td className="py-3.5 px-3 border-b border-[#27272a]/60">
+                        {/* 点击徽章直接弹角色菜单（Popover 自带定位/翻转/外部点击关闭），
+                            不再切换成 Select 输入框——字段样式全程保持徽章原样，零跳变。
+                            管理员目标仅超管可改角色（后端守卫兜底）。 */}
+                        {canManageUser ? (
+                          <Popover
+                            trigger="click"
+                            open={openRoleMenuUserId === user.id}
+                            onOpenChange={(v) => setOpenRoleMenuUserId(v ? user.id : null)}
+                            content={
+                              <div className="flex flex-col">
+                                {assignableRoleOptions.map((o) => (
+                                  <button
+                                    key={o.value}
+                                    onClick={() => handleChangeRole(user.id, o.value)}
+                                    className={`px-2.5 py-1.5 text-xs text-left rounded cursor-pointer hover:bg-[#1E5EFF]/10 ${
+                                      o.value === user.role ? 'text-[#1E5EFF] font-medium' : 'text-[#fafafa]'
+                                    }`}
+                                  >
+                                    {o.label}
+                                  </button>
+                                ))}
+                              </div>
+                            }
+                          >
+                            <span
+                              className={`inline-flex items-center h-7 px-2.5 rounded-full text-[10px] font-bold tracking-wide font-sans cursor-pointer hover:bg-[#121214] ${
+                                user.role === 'admin'
+                                  ? 'bg-rose-500/10 text-rose-400'
+                                  : user.role === 'developer'
+                                  ? 'bg-indigo-500/10 text-indigo-400'
+                                  : user.role === 'operator'
+                                  ? 'bg-amber-500/10 text-amber-500'
+                                  : 'bg-slate-900 text-slate-400'
+                              }`}
+                            >
+                              {roleDisplayName(user.role)} ✎
+                            </span>
+                          </Popover>
                         ) : (
                           <span
-                            onClick={() => setSelectedUserForRole(user.id)}
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold tracking-wide font-sans cursor-pointer hover:bg-[#121214] ${
+                            className={`inline-flex items-center h-7 px-2.5 rounded-full text-[10px] font-bold tracking-wide font-sans ${
                               user.role === 'admin'
                                 ? 'bg-rose-500/10 text-rose-400'
                                 : user.role === 'developer'
@@ -416,12 +479,12 @@ export function UserManagement() {
                                 : 'bg-slate-900 text-slate-400'
                             }`}
                           >
-                            {roleDisplayName(user.role)} ✎
+                            {roleDisplayName(user.role)}
                           </span>
                         )}
                       </td>
 
-                      <td className="py-3.5 px-3">
+                      <td className="py-3.5 px-3 border-b border-[#27272a]/60">
                         <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold ${
                           user.status === 'active'
                             ? 'bg-emerald-500/10 text-emerald-400'
@@ -432,27 +495,43 @@ export function UserManagement() {
                         </span>
                       </td>
 
-                      <td className="py-3.5 px-3 text-right space-x-2">
-                        <button
-                          onClick={() => handleToggleStatus(user.id, user.status)}
-                          className={`text-[10px] uppercase font-bold hover:underline transition cursor-pointer ${
-                            user.status === 'active' ? 'text-red-400 hover:text-red-300' : 'text-emerald-400'
-                          }`}
-                        >
-                          {user.status === 'active' ? '锁定' : '激活'}
-                        </button>
-                        <button
-                          onClick={() => openResetPassword(user)}
-                          className="text-[10px] uppercase font-bold text-amber-400 hover:text-amber-300 hover:underline transition cursor-pointer"
-                        >
-                          重置密码
-                        </button>
-                        <button
-                          onClick={() => deleteM.mutate(user.id)}
-                          className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
-                        >
-                          删除
-                        </button>
+                      <td className="py-3.5 px-3 text-right space-x-2 border-b border-[#27272a]/60">
+                        {canManageUser || canResetPwd ? (
+                          <>
+                            {canManageUser && (
+                              <button
+                                onClick={() => handleToggleStatus(user.id, user.status)}
+                                className={`text-[10px] uppercase font-bold hover:underline transition cursor-pointer ${
+                                  user.status === 'active' ? 'text-red-400 hover:text-red-300' : 'text-emerald-400'
+                                }`}
+                              >
+                                {user.status === 'active' ? '锁定' : '激活'}
+                              </button>
+                            )}
+                            {canResetPwd && (
+                              <button
+                                onClick={() => {
+                                  setResetPwdError(null);
+                                  setResetPwdValue('');
+                                  setResetPwdTarget(user);
+                                }}
+                                className="text-[10px] uppercase font-bold text-slate-500 hover:text-amber-400 transition cursor-pointer"
+                              >
+                                重置密码
+                              </button>
+                            )}
+                            {canManageUser && (
+                              <button
+                                onClick={() => void handleDeleteUser(user)}
+                                className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                              >
+                                删除
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <span className="text-[10px] text-[#52525b]">—</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -491,40 +570,46 @@ export function UserManagement() {
         </div>
 
         {/* ROLES PANEL (管理并入此页) */}
-        <div className="p-5 bg-[#18181b] border border-[#27272a] rounded-xl space-y-4 shadow-lg">
-          <div className="flex items-center justify-between">
+        <div className="p-5 bg-[#18181b] border border-[#27272a] rounded-xl flex flex-col min-h-0 shadow-lg">
+          <div className="flex items-center justify-between shrink-0">
             <h3 className="text-xs font-semibold text-slate-400 tracking-wider uppercase flex items-center gap-1.5">
               <Lock className="w-3.5 h-3.5 text-indigo-400" />
               角色管理 ({roles.length})
             </h3>
-            <button
-              onClick={openRoleCreate}
-              className="text-[10px] text-indigo-400 hover:underline cursor-pointer"
-            >
-              + 新建角色
-            </button>
+            {canWrite && (
+              <button
+                onClick={openRoleCreate}
+                className="text-[10px] text-indigo-400 hover:underline cursor-pointer"
+              >
+                + 新建角色
+              </button>
+            )}
           </div>
 
-          <div className="space-y-2">
+          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-custom overscroll-contain space-y-2 mt-4 pr-1">
             {roles.map((r) => (
               <div key={r.id} className="p-3 bg-[#121214]/60 rounded-lg border border-[#27272a]">
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-bold text-[#fafafa]">{r.display_name}</span>
                   <div className="flex items-center gap-2">
                     <span className="text-[9px] text-[#71717a] font-mono">{r.role_type}</span>
-                    <button
-                      onClick={() => openRoleEdit(r)}
-                      className="text-[10px] uppercase font-bold text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
-                    >
-                      编辑
-                    </button>
-                    {r.role_type === 'custom' && (
-                      <button
-                        onClick={() => handleDeleteRole(r)}
-                        className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
-                      >
-                        删除
-                      </button>
+                    {canWrite && (
+                      <>
+                        <button
+                          onClick={() => openRoleEdit(r)}
+                          className="text-[10px] uppercase font-bold text-indigo-400 hover:text-indigo-300 transition cursor-pointer"
+                        >
+                          编辑
+                        </button>
+                        {r.role_type === 'custom' && (
+                          <button
+                            onClick={() => handleDeleteRole(r)}
+                            className="text-[10px] uppercase font-bold text-slate-500 hover:text-rose-400 transition cursor-pointer"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -549,114 +634,6 @@ export function UserManagement() {
           </div>
         </div>
       </div>
-
-      {/* RESET PASSWORD DIALOG（管理员代用户重置，用户忘记密码场景） */}
-      {resetTarget && (
-        <div className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
-            <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
-              <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">
-                <KeyRound className="w-4 h-4 text-amber-400" />
-                重置密码 · {resetTarget.name}
-              </h3>
-              <button
-                onClick={() => setResetTarget(null)}
-                className="text-slate-500 hover:text-slate-300 font-bold cursor-pointer"
-              >
-                ✕
-              </button>
-            </div>
-
-            {resetDone ? (
-              <div className="p-5 space-y-4 text-xs">
-                <p className="text-emerald-400 font-semibold font-sans">密码已重置，请将新密码告知该成员：</p>
-                <div className="flex items-center gap-2 p-3 bg-[#121214] border border-[#27272a] rounded-lg">
-                  <code className="flex-1 font-mono text-slate-200 break-all">{resetPasswordValue}</code>
-                  <button
-                    onClick={() => {
-                      void navigator.clipboard.writeText(resetPasswordValue);
-                      toast.success('已复制到剪贴板');
-                    }}
-                    className="p-1.5 rounded-md border border-[#27272a] text-slate-400 hover:text-white hover:bg-[#18181b] transition cursor-pointer shrink-0"
-                    title="复制"
-                  >
-                    <Copy className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-                <p className="text-[10px] text-[#71717a] font-sans">
-                  该成员下次登录使用新密码；如他已登录，现有会话不受影响，建议提醒其尽快修改。
-                </p>
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setResetTarget(null)}
-                    className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg cursor-pointer font-semibold"
-                  >
-                    完成
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <form onSubmit={handleResetPassword} className="p-5 space-y-4 text-xs">
-                {resetError && (
-                  <div className="px-3 py-2 rounded-lg bg-rose-950/30 border border-rose-700/40 text-rose-300 text-xs whitespace-pre-line">
-                    {resetError}
-                  </div>
-                )}
-                <div className="space-y-1">
-                  <label className="text-slate-400 font-medium font-sans flex items-center justify-between">
-                    <span>新密码</span>
-                    <span className={`text-[10px] font-mono ${resetPasswordValue.length > 0 && resetPasswordValue.length < 8 ? 'text-rose-400' : 'text-slate-500'}`}>
-                      {resetPasswordValue.length}/8 位
-                    </span>
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      required
-                      minLength={8}
-                      value={resetPasswordValue}
-                      onChange={(e) => setResetPasswordValue(e.target.value)}
-                      placeholder="至少 8 位"
-                      className={`flex-1 px-3 py-2 bg-[#121214] rounded-lg text-slate-200 focus:outline-none transition font-mono ${
-                        resetPasswordValue.length > 0 && resetPasswordValue.length < 8
-                          ? 'border border-rose-700/60 focus:border-rose-500'
-                          : 'border border-[#27272a] focus:border-amber-500'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setResetPasswordValue(generatePassword())}
-                      title="重新生成随机强密码"
-                      className="px-3 py-2 border border-[#27272a] rounded-lg text-slate-400 hover:text-white hover:bg-[#121214] transition cursor-pointer shrink-0 flex items-center gap-1.5"
-                    >
-                      <RefreshCw className="w-3.5 h-3.5" /> 随机
-                    </button>
-                  </div>
-                </div>
-                <p className="text-[10px] text-[#71717a] font-sans">
-                  默认已生成 12 位随机强密码，可直接使用，也可改为自定义密码（至少 8 位）。
-                </p>
-                <div className="p-4 border-t border-[#27272a] bg-[#121214] flex justify-end gap-3 pt-4">
-                  <button
-                    type="button"
-                    onClick={() => setResetTarget(null)}
-                    className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-slate-400 hover:text-white rounded-lg cursor-pointer font-semibold"
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={resetPwM.isPending || resetPasswordValue.length < 8}
-                    className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-md cursor-pointer font-sans disabled:opacity-60"
-                  >
-                    {resetPwM.isPending ? '重置中…' : '确认重置'}
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* CREATE USER DIALOG MODAL */}
       {isAdding && (
@@ -719,7 +696,7 @@ export function UserManagement() {
                   value={newRole}
                   onChange={(v) => setNewRole(v ?? 'viewer')}
                   placeholder="选择角色"
-                  options={roleOptions}
+                  options={assignableRoleOptions}
                 />
               </div>
 
@@ -731,6 +708,97 @@ export function UserManagement() {
                 <button type="submit" disabled={createM.isPending}
                   className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg shadow-md cursor-pointer font-sans disabled:opacity-60">
                   {createM.isPending ? '创建中…' : '挂载该成员'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* RESET PASSWORD MODAL（admin 重置成员密码，POST /users/{id}/reset-password） */}
+      {resetPwdTarget && (
+        <div id="modal_reset_password" className="fixed inset-0 flex items-center justify-center p-4 z-50 animate-fade-in">
+          <div className="w-full max-w-md bg-[#18181b] border border-[#27272a] rounded-xl overflow-hidden shadow-2xl relative">
+            <div className="p-4 border-b border-[#27272a] flex items-center justify-between">
+              <h3 className="text-normal font-sans font-bold text-[#fafafa] flex items-center gap-1.5">
+                <KeyRound className="w-4 h-4 text-amber-400" />
+                重置密码 — {resetPwdTarget.name}
+              </h3>
+              <button
+                onClick={() => { setResetPwdError(null); setResetPwdTarget(null); }}
+                className="text-slate-500 hover:text-slate-300 font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleResetPassword} className="p-5 space-y-4 text-xs">
+              <p className="text-slate-400 font-sans">
+                重置后原密码立即失效，请将新密码告知该用户。
+              </p>
+
+              {resetPwdError && (
+                <div className="px-3 py-2 rounded-lg bg-rose-950/30 border border-rose-700/40 text-rose-300 text-xs whitespace-pre-line">
+                  {resetPwdError.fieldErrors
+                    ? Object.entries(resetPwdError.fieldErrors)
+                        .map(([field, msgs]) =>
+                          field === '_form' ? msgs.join('；') : `${field}: ${msgs.join('；')}`,
+                        )
+                        .join('\n')
+                    : resetPwdError.message}
+                </div>
+              )}
+
+              <div className="space-y-1">
+                <label className="text-slate-400 font-medium font-sans flex items-center justify-between">
+                  <span>新密码</span>
+                  <span className={`text-[10px] font-mono ${resetPwdValue.length > 0 && resetPwdValue.length < 8 ? 'text-rose-400' : 'text-slate-500'}`}>
+                    {resetPwdValue.length}/8 位
+                  </span>
+                </label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    required
+                    minLength={8}
+                    autoFocus
+                    value={resetPwdValue}
+                    onChange={(e) => setResetPwdValue(e.target.value)}
+                    placeholder="至少 8 位，可点右侧随机生成"
+                    className={`flex-1 px-3 py-2 bg-[#121214] rounded-lg text-slate-200 focus:outline-none transition font-mono ${
+                      resetPwdValue.length > 0 && resetPwdValue.length < 8
+                        ? 'border border-rose-700/60 focus:border-rose-500'
+                        : 'border border-[#27272a] focus:border-emerald-500'
+                    }`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setResetPwdValue(generatePassword())}
+                    title="重新生成 12 位随机强密码"
+                    className="px-3 py-2 border border-[#27272a] rounded-lg text-slate-400 hover:text-white hover:bg-[#121214] transition cursor-pointer shrink-0 flex items-center gap-1.5"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> 随机
+                  </button>
+                </div>
+                {resetPwdValue.length > 0 && resetPwdValue.length < 8 && (
+                  <p className="text-[10px] text-rose-400 font-sans">密码至少需要 8 个字符</p>
+                )}
+              </div>
+
+              <div className="p-4 border-t border-[#27272a] bg-[#121214] flex justify-end gap-3 pt-4">
+                <button
+                  type="button"
+                  onClick={() => { setResetPwdError(null); setResetPwdTarget(null); }}
+                  className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-slate-400 hover:text-white rounded-lg cursor-pointer font-semibold"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  disabled={resetPwdM.isPending}
+                  className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg shadow-md cursor-pointer font-sans disabled:opacity-60"
+                >
+                  {resetPwdM.isPending ? '重置中…' : '重置密码'}
                 </button>
               </div>
             </form>

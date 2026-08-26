@@ -1530,19 +1530,30 @@ class TaskService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def get_stats() -> dict[str, Any]:
-        """Get concurrency and Task statistics."""
+    async def get_stats(created_by: str | None = None) -> dict[str, Any]:
+        """Get concurrency and Task statistics.
+
+        Args:
+            created_by: Optional user id to scope the stats to that user's
+                Tasks (per-user data isolation). None = global view.
+        """
         db = get_database()
+        base_query: dict[str, Any] = {}
+        if created_by:
+            base_query["created_by"] = created_by
+        running_query = {**base_query, "status": TaskStatus.RUNNING.value}
+        pending_query = {**base_query, "status": TaskStatus.PENDING.value}
+
         running_count = await db[TaskService.COLLECTION].count_documents(
-            {"status": TaskStatus.RUNNING.value}
+            running_query
         )
         pending_count = await db[TaskService.COLLECTION].count_documents(
-            {"status": TaskStatus.PENDING.value}
+            pending_query
         )
 
         # Per-user running counts (top 10)
         pipeline = [
-            {"$match": {"status": TaskStatus.RUNNING.value}},
+            {"$match": running_query},
             {"$group": {"_id": "$created_by", "running": {"$sum": 1}}},
             {"$sort": {"running": -1}},
             {"$limit": 10},

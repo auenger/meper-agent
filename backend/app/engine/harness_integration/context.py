@@ -10,6 +10,8 @@ from typing import Any
 
 from loguru import logger
 
+from app.core.perf import phases_if_debug, timed_phase
+
 
 def get_checkpointer() -> Any:
     """返回 harness 的 checkpointer 单例。
@@ -31,7 +33,8 @@ _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
 )
 
 # 可配子集 —— 用户可在 Agent 配置页勾选的内建工具(其余始终开启、不可关闭)。
-# ask_clarification 是能力型工具,关闭会导致 Agent 无法澄清,故始终开启。
+# ask_clarification 在聊天上下文始终开启(能力型工具,关闭会导致 Agent 无法澄清);
+# 工作流上下文(execution_context="workflow")例外——见 _resolve_builtin_tools。
 # run_code(代码即工具编排)默认启用:新建 Agent 的 DEFAULT_BUILTIN_CONFIG
 # 自动包含;存量 Agent 在配置页手动勾选后生效。
 _CONFIGURABLE_BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
@@ -92,12 +95,20 @@ def _decrypt_user_args(tool_doc: dict, user_args: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _resolve_builtin_tools(agent: dict) -> list:
+def _resolve_builtin_tools(agent: dict, execution_context: str = "chat") -> list:
     """解析内建工具(task/workflow 工具 + harness 内建工具 + parse_file)。
 
-    task/workflow 工具始终注入;harness 内建工具与 app 层 parse_file 按
-    builtin_config 白名单过滤(ask_clarification 等不可配工具始终注入)。
-    bash 选中时连带 read/write/edit。
+    execution_context:
+        "chat" — 聊天/预览语义(默认):注入 task/workflow 工具 + ask_clarification,
+            Agent 可反问用户、可派发工作流。
+        "workflow" — 工作流 agent 节点语义(无人值守):剥离全部交互式与任务编排
+            工具 —— ask_clarification 的 interrupt 会被工作流误判为取消导致停摆;
+            _TASK_TOOLS 整组(dispatch/intervene/cancel 等)会 造成循环派发或
+            干预父任务 —— 改注入 abort_workflow 诚实终止通道。
+            工作流嵌套的正确方式是 subflow 节点,不是 agent 内 dispatch。
+
+    chat 语义下 task/workflow 工具始终注入;harness 内建工具与 app 层 parse_file
+    按 builtin_config 白名单过滤。bash 选中时连带 read/write/edit。
     run_code 受全局开关 RUN_CODE_ENABLED 控制,关闭时视为未配置。
     """
     from agent_flow_harness import BUILTIN_TOOLS
@@ -105,9 +116,13 @@ def _resolve_builtin_tools(agent: dict) -> list:
     from app.core.config import settings
     from app.engine.agent.chart_tool import _CHART_TOOLS
     from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
-    from app.engine.agent.workflow_executor import _TASK_TOOLS
+    from app.engine.agent.workflow_executor import _TASK_TOOLS, _WORKFLOW_CONTEXT_TOOLS
 
-    tools = list(_TASK_TOOLS)  # app-level task/workflow 工具始终注入
+    tools: list = []
+    if execution_context == "workflow":
+        tools += list(_WORKFLOW_CONTEXT_TOOLS)  # abort_workflow 诚实终止
+    else:
+        tools += list(_TASK_TOOLS)  # app-level task/workflow 工具始终注入
     tools += list(_CHART_TOOLS)  # render_chart 图表工具始终注入
 
     builtin_config = set(agent.get("builtin_config") or [])
@@ -121,6 +136,8 @@ def _resolve_builtin_tools(agent: dict) -> list:
         tool = BUILTIN_TOOLS.get(name) or PARSE_TOOL_BY_NAME.get(name)
         if tool is None:
             continue
+        if name == "ask_clarification" and execution_context == "workflow":
+            continue  # 工作流无人值守:反问会 interrupt 挂起导致工作流停摆
         if name not in _CONFIGURABLE_BUILTIN_TOOL_NAMES:
             tools.append(tool)  # 始终开启的能力型工具
         elif name in builtin_config:
@@ -357,38 +374,51 @@ async def resolve_all_tools(
     session_id: str = "",
     loaded_tracker: set | None = None,
     request_id: str = "",
+    execution_context: str = "chat",
+    phases: dict[str, int] | None = None,
 ) -> tuple[list, list[dict]]:
     """统一工具解析入口 —— 运行时和 preview 共用。
 
     传 user_id（平台用户）时额外装配：load_skill 双根（个人技能）+
     skill_manage / memory 常驻工具（§2）；preview 不传则保持原工具集。
 
+    execution_context 透传给 _resolve_builtin_tools：workflow 上下文剥离
+    交互式/任务编排工具并注入 abort_workflow（见其 docstring）。
+
+    phases 非空时逐段计时（DEBUG 诊断专用，见 app/core/perf.py）。
+
     Returns:
         (all_tools, load_errors)
     """
-    all_tools = _resolve_builtin_tools(agent)
-    all_tools.extend(
-        await _resolve_skill_tools(agent, user_id, session_id, loaded_tracker, request_id=request_id)
-    )
-    all_tools.extend(await _resolve_kb_tools(agent))
-    mcp_tools, mcp_errors = await _resolve_mcp_tools(agent)
+    with timed_phase(phases, "build_tools_builtin"):
+        all_tools = _resolve_builtin_tools(agent, execution_context)
+    with timed_phase(phases, "build_tools_skills"):
+        all_tools.extend(
+            await _resolve_skill_tools(agent, user_id, session_id, loaded_tracker, request_id=request_id)
+        )
+    with timed_phase(phases, "build_tools_kb"):
+        all_tools.extend(await _resolve_kb_tools(agent))
+    with timed_phase(phases, "build_tools_mcp"):
+        mcp_tools, mcp_errors = await _resolve_mcp_tools(agent)
     all_tools.extend(mcp_tools)
-    custom_tools, custom_errors = await _resolve_custom_tools(agent)
+    with timed_phase(phases, "build_tools_custom"):
+        custom_tools, custom_errors = await _resolve_custom_tools(agent)
     all_tools.extend(custom_tools)
     if user_id and not user_id.startswith("channel:"):
         from app.db.mongodb import get_database
         from app.engine.user_skills.tools import make_user_skill_tools
 
-        # 管理员无个人技能：会话内 create 直接产出官方（§7.6）——按角色装配
-        is_admin = False
-        user_doc = await get_database()["users"].find_one(
-            {"_id": user_id}, {"role": 1}
-        )
-        if user_doc and (user_doc.get("role") or "") in ("admin", "developer"):
-            is_admin = True
-        all_tools.extend(
-            make_user_skill_tools(user_id, session_id, loaded_tracker or set(), is_admin=is_admin)
-        )
+        with timed_phase(phases, "build_tools_user"):
+            # 管理员无个人技能：会话内 create 直接产出官方（§7.6）——按角色装配
+            is_admin = False
+            user_doc = await get_database()["users"].find_one(
+                {"_id": user_id}, {"role": 1}
+            )
+            if user_doc and (user_doc.get("role") or "") in ("admin", "developer"):
+                is_admin = True
+            all_tools.extend(
+                make_user_skill_tools(user_id, session_id, loaded_tracker or set(), is_admin=is_admin)
+            )
     errors = mcp_errors + custom_errors
     return all_tools, errors
 
@@ -400,11 +430,13 @@ async def resolve_harness_context(
     enable_thinking: bool = False,
     workspace: Any | None = None,
     user_token: str | None = None,
+    execution_context: str = "chat",
 ) -> dict:
     """装配 harness 执行所需的全部注入物,返回 dict 供 graph + config 使用。
 
     合并工具策略(统一由 resolve_all_tools 解析):
-      ① 内建工具(task/workflow 工具 + bash/read/write/glob/grep + ask_clarification)
+      ① 内建工具(task/workflow 工具 + bash/read/write/glob/grep + ask_clarification;
+         execution_context="workflow" 时剥离交互式/编排工具,注入 abort_workflow)
       ② Skill(load_skill)— harness SkillManager
       ③ 知识库(kb_glob/grep/read + kb_search)
       ④ MCP(逐连接,走 get_mcp_tools_cached 缓存)
@@ -415,6 +447,8 @@ async def resolve_harness_context(
         user_token: 可选,外部终端用户 token(回调验证模式)。设置后 MCP
             工具调用会把该 token 放进 Authorization header 透传给 MCP
             server;为 None 时(兼容模式/平台用户)用 MCP connection 静态凭证。
+        execution_context: "chat"(默认,聊天/preview)或 "workflow"(工作流
+            agent 节点,无人值守语义,影响工具集与 prompt 声明)。
 
     Returns:
         dict 含 keys: agent_doc, llm, tools, sb_token, ws_token,
@@ -432,6 +466,8 @@ async def resolve_harness_context(
         has_workspace=workspace is not None,
     )
     load_errors: list[dict] = []
+    # DEBUG 诊断：分段计时（关闭时为 None，timed_phase 直通零开销）
+    timing_phases = phases_if_debug()
 
     from pathlib import Path
 
@@ -447,14 +483,17 @@ async def resolve_harness_context(
     from app.engine.agent.builtin_tools import set_workspace_context
     from app.engine.agent.context import get_context_window_async
     from app.engine.llm_factory import get_llm_client
+    from app.models.compat import resolve_default_model
 
     # 1. 解析 LLM + context_window
-    llm = await get_llm_client(agent, enable_thinking=enable_thinking)
-    model_ref = agent.get("default_model") or (agent.get("llm_config") or {}).get("default_model", "")
-    context_window = await get_context_window_async(model_ref)
+    with timed_phase(timing_phases, "build_llm_client"):
+        llm = await get_llm_client(agent, enable_thinking=enable_thinking)
+        model_ref = resolve_default_model(agent)
+        context_window = await get_context_window_async(model_ref)
 
     # 2. 工具解析:统一调用 resolve_all_tools(与 preview 共用,消除双路径不一致)。
     #    平台用户额外装配个人技能双根 + skill_manage/memory 工具(§2)。
+    #    工作流上下文(execution_context="workflow")在此剥离交互式/编排工具。
     loaded_tracker: set[str] = set()
     all_tools, load_errors = await resolve_all_tools(
         agent,
@@ -462,6 +501,8 @@ async def resolve_harness_context(
         session_id=state.get("session_id", ""),
         loaded_tracker=loaded_tracker,
         request_id=state.get("request_id", ""),
+        execution_context=execution_context,
+        phases=timing_phases,
     )
 
     # 3. 构造 agent_doc(含 token budget guard 防止会话被滥用)
@@ -479,6 +520,7 @@ async def resolve_harness_context(
     sandbox_config = DockerSandboxConfig(
         image=settings.SANDBOX_IMAGE,
         enabled=settings.SANDBOX_ENABLED,
+        allow_local_fallback=settings.SANDBOX_FALLBACK == "local",
         mem_limit=settings.SANDBOX_MEM_LIMIT,
         cpu_quota=settings.SANDBOX_CPU_QUOTA,
         timeout=settings.SANDBOX_TIMEOUT,
@@ -489,38 +531,39 @@ async def resolve_harness_context(
     )
 
     # 7. workspace
-    if workspace is not None:
-        ws_token = set_workspace_context(workspace)
-        work_dir = workspace.tmp_dir
-        work_dir.mkdir(parents=True, exist_ok=True)
-        sandbox_mounts = {
-            "tmp": workspace.tmp_dir,
-            "input": workspace.input_dir,
-            "output": workspace.output_dir,
-        }
-        sandbox_id = f"{state.get('session_id') or workspace.root.name}"
-    else:
-        session_id = state.get("session_id", "")
-        user_id = state.get("user_id", "")
-        ws_token = None
-        if session_id and user_id:
-            try:
-                from app.engine.tool.workspace import WorkspaceManager
-                ws = WorkspaceManager.get_workspace(user_id, session_id)
-                ws.input_dir.mkdir(parents=True, exist_ok=True)
-                ws.output_dir.mkdir(parents=True, exist_ok=True)
-                ws.tmp_dir.mkdir(parents=True, exist_ok=True)
-                ws_token = set_workspace_context(ws)
-            except Exception:
-                pass
-        work_dir = Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "tmp"
-        work_dir.mkdir(parents=True, exist_ok=True)
-        sandbox_mounts = {
-            "tmp": work_dir,
-            "input": Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "input",
-            "output": Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "output",
-        }
-        sandbox_id = f"{session_id}"
+    with timed_phase(timing_phases, "build_workspace"):
+        if workspace is not None:
+            ws_token = set_workspace_context(workspace)
+            work_dir = workspace.tmp_dir
+            work_dir.mkdir(parents=True, exist_ok=True)
+            sandbox_mounts = {
+                "tmp": workspace.tmp_dir,
+                "input": workspace.input_dir,
+                "output": workspace.output_dir,
+            }
+            sandbox_id = f"{state.get('session_id') or workspace.root.name}"
+        else:
+            session_id = state.get("session_id", "")
+            user_id = state.get("user_id", "")
+            ws_token = None
+            if session_id and user_id:
+                try:
+                    from app.engine.tool.workspace import WorkspaceManager
+                    ws = WorkspaceManager.get_workspace(user_id, session_id)
+                    ws.input_dir.mkdir(parents=True, exist_ok=True)
+                    ws.output_dir.mkdir(parents=True, exist_ok=True)
+                    ws.tmp_dir.mkdir(parents=True, exist_ok=True)
+                    ws_token = set_workspace_context(ws)
+                except Exception:
+                    pass
+            work_dir = Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "tmp"
+            work_dir.mkdir(parents=True, exist_ok=True)
+            sandbox_mounts = {
+                "tmp": work_dir,
+                "input": Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "input",
+                "output": Path(settings.WORKSPACES_CONTAINER_DIR) / user_id / session_id / "output",
+            }
+            sandbox_id = f"{session_id}"
 
     sandbox = DockerSandbox(
         sandbox_id=sandbox_id,
@@ -592,6 +635,8 @@ async def resolve_harness_context(
         "tb_token": tb_token,
         "middlewares": [UsageMiddleware()],
         "context_window": context_window,
+        # DEBUG 分段计时（关闭时为 None；execution.py 汇总进 agent_phase_timing 日志）
+        "_timing_phases": timing_phases,
         # 压缩配置(全局可配)。
         "protected_turns": settings.COMPRESSION_PROTECTED_TURNS,
         "compression_threshold": settings.COMPRESSION_THRESHOLD,

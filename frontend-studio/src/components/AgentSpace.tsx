@@ -6,6 +6,7 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys } from '../services/agent-api';
 import { toStudioAgent } from '../services/adapters';
+import { usePermission } from '../hooks/use-permission';
 import type { Agent } from '../types';
 import AvatarRender from './AvatarRender';
 import { Popover } from './ui';
@@ -25,6 +26,9 @@ export function AgentSpace({
   onOpenEdit?: (id: string) => void;
 } = {}) {
   const queryClient = useQueryClient();
+  // 写操作（创建/编辑/删除/发布/归档）统一由 agent:write 权限门控，
+  // 与后端 PUT/DELETE/publish 端点同一把钥匙。
+  const canWrite = usePermission('agent:write');
   const [isCreating, setIsCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
@@ -98,14 +102,16 @@ export function AgentSpace({
           </h2>
           <p className="text-xs text-[#71717a]">配置与发布具备独立推理心智、专用微调工具、及特定提示词模版的 AI 单元。</p>
         </div>
-        <button
-          onClick={() => setIsCreating(true)}
-          id="btn_add_agent"
-          className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-lg shadow-indigo-600/10 transition flex items-center gap-1.5 cursor-pointer"
-        >
-          <Plus className="w-4 h-4 text-emerald-400 font-bold" />
-          创建独立 Agent
-        </button>
+        {canWrite && (
+          <button
+            onClick={() => setIsCreating(true)}
+            id="btn_add_agent"
+            className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-500 rounded-lg shadow-lg shadow-indigo-600/10 transition flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-emerald-400 font-bold" />
+            创建独立 Agent
+          </button>
+        )}
       </div>
 
       {error && (
@@ -158,19 +164,23 @@ export function AgentSpace({
                               <MessageSquare className="w-3.5 h-3.5" /> 详情与测试
                             </button>
                           )}
-                          <button
-                            onClick={() => { setMenuOpenFor(null); onOpenEdit?.(agent.id); }}
-                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[#d4d4d8] hover:bg-[#121214] hover:text-white transition cursor-pointer"
-                          >
-                            <Edit className="w-3.5 h-3.5" /> 编辑配置
-                          </button>
-                          <div className="border-t border-[#27272a] my-1" />
-                          <button
-                            onClick={() => { setMenuOpenFor(null); void handleDelete(agent); }}
-                            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-rose-400 hover:bg-rose-950/30 transition cursor-pointer"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" /> 删除
-                          </button>
+                          {canWrite && (
+                            <>
+                              <button
+                                onClick={() => { setMenuOpenFor(null); onOpenEdit?.(agent.id); }}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-[#d4d4d8] hover:bg-[#121214] hover:text-white transition cursor-pointer"
+                              >
+                                <Edit className="w-3.5 h-3.5" /> 编辑配置
+                              </button>
+                              <div className="border-t border-[#27272a] my-1" />
+                              <button
+                                onClick={() => { setMenuOpenFor(null); void handleDelete(agent); }}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-rose-400 hover:bg-rose-950/30 transition cursor-pointer"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" /> 删除
+                              </button>
+                            </>
+                          )}
                         </div>
                       }
                     >
@@ -204,7 +214,7 @@ export function AgentSpace({
                 {/* Footer: publish/archive */}
                 <div className="px-5 py-3 border-t border-[#27272a] bg-[#121214]/40 flex items-center justify-between">
                   <span className="text-[10px] text-[#71717a] font-sans">{agent.lastActive}</span>
-                  {isPublished ? (
+                  {canWrite && (isPublished ? (
                     <button
                       onClick={() => archiveM.mutate(agent.id)}
                       disabled={archiveM.isPending}
@@ -222,7 +232,7 @@ export function AgentSpace({
                       {publishM.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Rocket className="w-3 h-3" />}
                       发布
                     </button>
-                  )}
+                  ))}
                 </div>
               </div>
             );
