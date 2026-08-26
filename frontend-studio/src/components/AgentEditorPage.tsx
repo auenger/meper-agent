@@ -143,216 +143,222 @@ export function AgentEditorPage({
   const set = (patch: Partial<Agent>) => setForm({ ...form, ...patch });
 
   return (
-    <div className="space-y-4 max-w-3xl mx-auto pb-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition cursor-pointer">
-            <ArrowLeft className="w-4 h-4" />
-          </button>
-          <div>
-            <div className="flex items-center gap-2 text-xs text-[#71717a]">
-              <Bot className="w-3.5 h-3.5" />
-              <span>智能体</span><span>/</span>
-              <span className="text-white font-semibold">{form.name || '未命名'}</span>
+    <div className="flex-1 min-h-0 flex flex-col">
+      {/* Scrollable form column — owns its own padding because content_stage
+          renders p-0/overflow-hidden when the editor is open (see App.tsx). */}
+      <div className="flex-1 min-h-0 overflow-y-auto max-w-3xl w-full mx-auto px-6 py-6 space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={onBack} className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition cursor-pointer">
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+            <div>
+              <div className="flex items-center gap-2 text-xs text-[#71717a]">
+                <Bot className="w-3.5 h-3.5" />
+                <span>智能体</span><span>/</span>
+                <span className="text-white font-semibold">{form.name || '未命名'}</span>
+              </div>
+              <h2 className="text-sm font-bold text-white mt-0.5">编辑 Agent 配置</h2>
             </div>
-            <h2 className="text-sm font-bold text-white mt-0.5">编辑 Agent 配置</h2>
+          </div>
+          <div className="flex items-center gap-2">
+            {isPublished ? (
+              <button
+                onClick={() => archiveM.mutate()}
+                disabled={archiveM.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60"
+              >
+                {archiveM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
+                归档
+              </button>
+            ) : (
+              <button
+                onClick={() => publishM.mutate()}
+                disabled={publishM.isPending}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60"
+              >
+                {publishM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />}
+                发布
+              </button>
+            )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          {isPublished ? (
-            <button
-              onClick={() => archiveM.mutate()}
-              disabled={archiveM.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60"
-            >
-              {archiveM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Archive className="w-3.5 h-3.5" />}
-              归档
-            </button>
-          ) : (
-            <button
-              onClick={() => publishM.mutate()}
-              disabled={publishM.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-60"
-            >
-              {publishM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />}
-              发布
-            </button>
-          )}
-        </div>
-      </div>
 
-      {/* ── Section: 基本信息 ── */}
-      <Section title="基本信息" icon={<Bot className="w-3.5 h-3.5" />} defaultOpen>
-        <Field label="智能体名称 *">
-          <input className={inputCls} value={form.name} onChange={(e) => set({ name: e.target.value })} />
-        </Field>
-        <Field label="头像">
-          <AvatarField value={form.avatar} entityId={agentId} onChange={(url) => set({ avatar: url })} />
-        </Field>
-        <Field label="职责描述">
-          <input className={inputCls} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="这个 Agent 专门解决什么问题…" />
-        </Field>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={form.voiceEnabled}
-          onClick={() => set({ voiceEnabled: !form.voiceEnabled })}
-          className="flex min-h-11 w-full items-center justify-between gap-4 rounded-lg border border-[#27272a] bg-[#121214] px-3 py-2 text-left transition-colors duration-200 hover:border-[#3f3f46] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
-        >
-          <span className="flex min-w-0 items-center gap-2.5">
-            <Mic className={`h-4 w-4 shrink-0 ${form.voiceEnabled ? 'text-sky-400' : 'text-[#71717a]'}`} />
-            <span>
-              <span className="block text-xs font-semibold text-[#f4f4f5]">允许语音对话</span>
-              <span className="mt-0.5 block text-[11px] leading-relaxed text-[#71717a]">
-                还需配置全局语音凭证，两个条件满足后才显示麦克风入口。
+        {/* ── Section: 基本信息 ── */}
+        <Section title="基本信息" icon={<Bot className="w-3.5 h-3.5" />} defaultOpen>
+          <Field label="智能体名称 *">
+            <input className={inputCls} value={form.name} onChange={(e) => set({ name: e.target.value })} />
+          </Field>
+          <Field label="头像">
+            <AvatarField value={form.avatar} entityId={agentId} onChange={(url) => set({ avatar: url })} />
+          </Field>
+          <Field label="职责描述">
+            <input className={inputCls} value={form.description} onChange={(e) => set({ description: e.target.value })} placeholder="这个 Agent 专门解决什么问题…" />
+          </Field>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={form.voiceEnabled}
+            onClick={() => set({ voiceEnabled: !form.voiceEnabled })}
+            className="flex min-h-11 w-full items-center justify-between gap-4 rounded-lg border border-[#27272a] bg-[#121214] px-3 py-2 text-left transition-colors duration-200 hover:border-[#3f3f46] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
+          >
+            <span className="flex min-w-0 items-center gap-2.5">
+              <Mic className={`h-4 w-4 shrink-0 ${form.voiceEnabled ? 'text-sky-400' : 'text-[#71717a]'}`} />
+              <span>
+                <span className="block text-xs font-semibold text-[#f4f4f5]">允许语音对话</span>
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-[#71717a]">
+                  还需配置全局语音凭证，两个条件满足后才显示麦克风入口。
+                </span>
               </span>
             </span>
-          </span>
-          <span
-            className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors duration-200 ${
-              form.voiceEnabled
-                ? 'border-sky-400 bg-sky-500'
-                : 'border-[#52525b] bg-[#27272a]'
-            }`}
-            aria-hidden="true"
-          >
             <span
-              className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
-                form.voiceEnabled ? 'translate-x-5' : 'translate-x-0.5'
+              className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors duration-200 ${
+                form.voiceEnabled
+                  ? 'border-sky-400 bg-sky-500'
+                  : 'border-[#52525b] bg-[#27272a]'
               }`}
-            />
-          </span>
-        </button>
-      </Section>
-
-      {/* ── Section: Prompt 配置 ── */}
-      <Section title="Prompt 配置" icon={<Cpu className="w-3.5 h-3.5" />} defaultOpen>
-        <Field label="角色定义 *（Role — 必填）">
-          <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：你是一位资深产品经理…" value={form.rolePrompt ?? ''} onChange={(e) => set({ rolePrompt: e.target.value })} />
-        </Field>
-        <Field label="任务描述 *（Task — 必填）">
-          <textarea rows={3} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：根据用户需求，输出功能拆解与优先级。" value={form.taskPrompt ?? ''} onChange={(e) => set({ taskPrompt: e.target.value })} />
-        </Field>
-        <div className="grid grid-cols-1 gap-4">
-          <Field label="约束规则（Constraints · 可选）">
-            <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：回答必须用中文；不臆测。" value={form.constraintsPrompt ?? ''} onChange={(e) => set({ constraintsPrompt: e.target.value })} />
-          </Field>
-          <Field label="上下文信息（Context · 可选）">
-            <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：当前项目 meper-agent，技术栈 React+FastAPI。" value={form.contextPrompt ?? ''} onChange={(e) => set({ contextPrompt: e.target.value })} />
-          </Field>
-          <Field label="输出格式（Output Format · 可选）">
-            <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：用 Markdown 表格输出。" value={form.outputFormatPrompt ?? ''} onChange={(e) => set({ outputFormatPrompt: e.target.value })} />
-          </Field>
-          <Field label="补充说明（System Prompt · 可选）">
-            <textarea rows={3} className={`${inputCls} font-mono text-xs`} value={form.systemPrompt} onChange={(e) => set({ systemPrompt: e.target.value })} />
-          </Field>
-        </div>
-      </Section>
-
-      {/* ── Section: 欢迎与引导（终端用户首屏） ── */}
-      <Section title="欢迎与引导" icon={<Sparkles className="w-3.5 h-3.5" />} defaultOpen={false}>
-        <Field label="欢迎词（Markdown，展示在终端用户首屏）">
-          <textarea rows={3} className={`${inputCls} text-xs`} placeholder="如：你好！我是销售助理，可以问我业绩、客户、订单等相关问题。" value={form.welcomeMessage ?? ''} onChange={(e) => set({ welcomeMessage: e.target.value })} />
-          <div className="text-[11px] text-slate-500 mt-1">留空则使用默认欢迎语。支持 Markdown 语法（加粗、列表等）。</div>
-        </Field>
-        <Field label="推荐问题 / 操作（终端用户可一键点击发送）">
-          <div className="space-y-2">
-            {(form.recommendedItems ?? []).map((item, idx) => (
-              <div key={idx} className="rounded-lg border border-[#27272a] bg-[#121214] p-3 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-[#71717a] font-mono">推荐项 #{idx + 1}</span>
-                  <button type="button" onClick={() => set({ recommendedItems: (form.recommendedItems ?? []).filter((_, i) => i !== idx) })} className="flex items-center gap-1 text-[#ef4444] text-[10px] hover:underline cursor-pointer">
-                    <Trash2 className="w-3 h-3" /> 删除
-                  </button>
-                </div>
-                <input className={inputCls} placeholder="显示文案（必填），如：导出本月报表" value={item.label} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, label: e.target.value } : it) })} />
-                <input className={inputCls} placeholder="实际发送内容（留空则同显示文案）" value={item.prompt} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it) })} />
-              </div>
-            ))}
-            {(form.recommendedItems ?? []).length === 0 && (
-              <div className="text-xs text-[#71717a] text-center py-3">暂无推荐项，点击下方按钮添加</div>
-            )}
-            <button
-              type="button"
-              onClick={() => set({ recommendedItems: [...(form.recommendedItems ?? []), { label: '', prompt: '' }] })}
-              disabled={(form.recommendedItems ?? []).length >= 10}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-hidden="true"
             >
-              <Plus className="w-3.5 h-3.5" /> 添加推荐项
-            </button>
-            <div className="text-[11px] text-slate-500">最多 10 条。「实际发送内容」留空时，点击按钮直接发送「显示文案」。</div>
+              <span
+                className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                  form.voiceEnabled ? 'translate-x-5' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+          </button>
+        </Section>
+
+        {/* ── Section: Prompt 配置 ── */}
+        <Section title="Prompt 配置" icon={<Cpu className="w-3.5 h-3.5" />} defaultOpen>
+          <Field label="角色定义 *（Role — 必填）">
+            <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：你是一位资深产品经理…" value={form.rolePrompt ?? ''} onChange={(e) => set({ rolePrompt: e.target.value })} />
+          </Field>
+          <Field label="任务描述 *（Task — 必填）">
+            <textarea rows={3} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：根据用户需求，输出功能拆解与优先级。" value={form.taskPrompt ?? ''} onChange={(e) => set({ taskPrompt: e.target.value })} />
+          </Field>
+          <div className="grid grid-cols-1 gap-4">
+            <Field label="约束规则（Constraints · 可选）">
+              <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：回答必须用中文；不臆测。" value={form.constraintsPrompt ?? ''} onChange={(e) => set({ constraintsPrompt: e.target.value })} />
+            </Field>
+            <Field label="上下文信息（Context · 可选）">
+              <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：当前项目 meper-agent，技术栈 React+FastAPI。" value={form.contextPrompt ?? ''} onChange={(e) => set({ contextPrompt: e.target.value })} />
+            </Field>
+            <Field label="输出格式（Output Format · 可选）">
+              <textarea rows={2} className={`${inputCls} font-mono text-xs placeholder-[#52525b]`} placeholder="如：用 Markdown 表格输出。" value={form.outputFormatPrompt ?? ''} onChange={(e) => set({ outputFormatPrompt: e.target.value })} />
+            </Field>
+            <Field label="补充说明（System Prompt · 可选）">
+              <textarea rows={3} className={`${inputCls} font-mono text-xs`} value={form.systemPrompt} onChange={(e) => set({ systemPrompt: e.target.value })} />
+            </Field>
           </div>
-        </Field>
-      </Section>
+        </Section>
 
-      {/* ── Section: 执行参数 ── */}
-      <Section title="执行参数" icon={<RefreshCw className="w-3.5 h-3.5" />} defaultOpen>
-        <Field label="推理模型">
-          <Select
-            value={form.model || null}
-            onChange={(v) => set({ model: v ?? '' })}
-            placeholder={activeModels.length === 0 ? '暂无可用模型，请先在模型配置页添加' : '— 未选择 —'}
-            groups={modelGroups}
-          />
-        </Field>
-        <Field label={`思维活性 Temperature: ${form.temperature}`}>
-          <input type="range" min="0" max="1.0" step="0.1" value={form.temperature} onChange={(e) => set({ temperature: parseFloat(e.target.value) })} className="w-full accent-indigo-500 cursor-pointer" />
-        </Field>
-        <Field label="最大重试次数（0-10）">
-          <input type="number" min="0" max="10" className={`${inputCls} font-mono`} value={form.maxRetry ?? 3} onChange={(e) => set({ maxRetry: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })} />
-        </Field>
-        <Field label="会话 Token 上限（0 = 全局默认）">
-          <input type="number" min="0" max="10000000" step="10000" className={`${inputCls} font-mono`} value={form.maxTokens ?? 0} onChange={(e) => set({ maxTokens: Math.max(0, Number(e.target.value) || 0) })} placeholder="0 = 使用全局默认" />
-          <div className="text-[11px] text-slate-500 mt-1">单次会话累计 Token 上限，超出后 Agent 自动停止。0 表示使用全局默认值（200000）。</div>
-        </Field>
-      </Section>
+        {/* ── Section: 欢迎与引导（终端用户首屏） ── */}
+        <Section title="欢迎与引导" icon={<Sparkles className="w-3.5 h-3.5" />} defaultOpen={false}>
+          <Field label="欢迎词（Markdown，展示在终端用户首屏）">
+            <textarea rows={3} className={`${inputCls} text-xs`} placeholder="如：你好！我是销售助理，可以问我业绩、客户、订单等相关问题。" value={form.welcomeMessage ?? ''} onChange={(e) => set({ welcomeMessage: e.target.value })} />
+            <div className="text-[11px] text-slate-500 mt-1">留空则使用默认欢迎语。支持 Markdown 语法（加粗、列表等）。</div>
+          </Field>
+          <Field label="推荐问题 / 操作（终端用户可一键点击发送）">
+            <div className="space-y-2">
+              {(form.recommendedItems ?? []).map((item, idx) => (
+                <div key={idx} className="rounded-lg border border-[#27272a] bg-[#121214] p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] text-[#71717a] font-mono">推荐项 #{idx + 1}</span>
+                    <button type="button" onClick={() => set({ recommendedItems: (form.recommendedItems ?? []).filter((_, i) => i !== idx) })} className="flex items-center gap-1 text-[#ef4444] text-[10px] hover:underline cursor-pointer">
+                      <Trash2 className="w-3 h-3" /> 删除
+                    </button>
+                  </div>
+                  <input className={inputCls} placeholder="显示文案（必填），如：导出本月报表" value={item.label} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, label: e.target.value } : it) })} />
+                  <input className={inputCls} placeholder="实际发送内容（留空则同显示文案）" value={item.prompt} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it) })} />
+                </div>
+              ))}
+              {(form.recommendedItems ?? []).length === 0 && (
+                <div className="text-xs text-[#71717a] text-center py-3">暂无推荐项，点击下方按钮添加</div>
+              )}
+              <button
+                type="button"
+                onClick={() => set({ recommendedItems: [...(form.recommendedItems ?? []), { label: '', prompt: '' }] })}
+                disabled={(form.recommendedItems ?? []).length >= 10}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Plus className="w-3.5 h-3.5" /> 添加推荐项
+              </button>
+              <div className="text-[11px] text-slate-500">最多 10 条。「实际发送内容」留空时，点击按钮直接发送「显示文案」。</div>
+            </div>
+          </Field>
+        </Section>
 
-      {/* ── Section: 工具绑定 ── */}
-      <Section title="工具绑定" icon={<Wrench className="w-3.5 h-3.5" />} defaultOpen>
-        <ToolGroup title="内置工具 (Built-in)" hint={builtinTools.length === 0 ? '后端无内置工具' : undefined}>
-          {builtinTools.map((t) => (
-            <ToolChip key={`builtin:${t.name}`} label={t.name} checked={form.skills.includes(`builtin:${t.name}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `builtin:${t.name}`) })} />
-          ))}
-        </ToolGroup>
-        <ToolGroup title="技能 (Skills)" hint={skillTools.length === 0 ? '无已上传技能' : undefined}>
-          {skillTools.map((t) => (
-            <ToolChip key={t.id} label={t.name} checked={form.skills.includes(t.id)} onToggle={() => set({ skills: toggleSkill(form.skills, t.id) })} />
-          ))}
-        </ToolGroup>
-        <ToolGroup title="MCP 连接" hint={mcpConnections.length === 0 ? '无 MCP 连接' : undefined}>
-          {mcpConnections.map((c) => (
-            <ToolChip key={`mcp:${c.id}`} label={c.name} checked={form.skills.includes(`mcp:${c.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `mcp:${c.id}`) })} />
-          ))}
-        </ToolGroup>
-        <ToolGroup title="工作流 (Workflows)" hint={workflows.length === 0 ? '无工作流' : undefined}>
-          {workflows.map((w) => (
-            <ToolChip key={w.id} label={w.name} checked={form.skills.includes(`workflow:${w.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `workflow:${w.id}`) })} />
-          ))}
-        </ToolGroup>
-        <ToolGroup title="知识库 (Knowledge Base)" hint={knowledgeBases.length === 0 ? '无知识库' : undefined}>
-          {knowledgeBases.map((kb) => (
-            <ToolChip key={`kb:${kb.id}`} label={kb.name} checked={form.skills.includes(`kb:${kb.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `kb:${kb.id}`) })} />
-          ))}
-        </ToolGroup>
-      </Section>
+        {/* ── Section: 执行参数 ── */}
+        <Section title="执行参数" icon={<RefreshCw className="w-3.5 h-3.5" />} defaultOpen>
+          <Field label="推理模型">
+            <Select
+              value={form.model || null}
+              onChange={(v) => set({ model: v ?? '' })}
+              placeholder={activeModels.length === 0 ? '暂无可用模型，请先在模型配置页添加' : '— 未选择 —'}
+              groups={modelGroups}
+            />
+          </Field>
+          <Field label={`思维活性 Temperature: ${form.temperature}`}>
+            <input type="range" min="0" max="1.0" step="0.1" value={form.temperature} onChange={(e) => set({ temperature: parseFloat(e.target.value) })} className="w-full accent-indigo-500 cursor-pointer" />
+          </Field>
+          <Field label="最大重试次数（0-10）">
+            <input type="number" min="0" max="10" className={`${inputCls} font-mono`} value={form.maxRetry ?? 3} onChange={(e) => set({ maxRetry: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })} />
+          </Field>
+          <Field label="会话 Token 上限（0 = 全局默认）">
+            <input type="number" min="0" max="10000000" step="10000" className={`${inputCls} font-mono`} value={form.maxTokens ?? 0} onChange={(e) => set({ maxTokens: Math.max(0, Number(e.target.value) || 0) })} placeholder="0 = 使用全局默认" />
+            <div className="text-[11px] text-slate-500 mt-1">单次会话累计 Token 上限，超出后 Agent 自动停止。0 表示使用全局默认值（200000）。</div>
+          </Field>
+        </Section>
 
-      {/* Sticky save bar — sticks to the bottom of the content scroll area
-          (not the viewport), so it stays within the main column and never
-          overlaps the left nav rail. Width follows the max-w-3xl content
-          column. bg-[#09090b]/95 is theme-aware via the index.css override. */}
-      <div className="sticky bottom-0 pt-4 pb-1 bg-[#09090b]/95 backdrop-blur-sm flex justify-end gap-3 z-30">
-        <button onClick={onBack} className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg cursor-pointer font-semibold text-xs">
-          取消
-        </button>
-        <button
-          onClick={handleSave}
-          disabled={updateM.isPending}
-          className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer font-semibold text-xs disabled:opacity-60"
-        >
-          {updateM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-          保存配置
-        </button>
+        {/* ── Section: 工具绑定 ── */}
+        <Section title="工具绑定" icon={<Wrench className="w-3.5 h-3.5" />} defaultOpen>
+          <ToolGroup title="内置工具 (Built-in)" hint={builtinTools.length === 0 ? '后端无内置工具' : undefined}>
+            {builtinTools.map((t) => (
+              <ToolChip key={`builtin:${t.name}`} label={t.name} checked={form.skills.includes(`builtin:${t.name}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `builtin:${t.name}`) })} />
+            ))}
+          </ToolGroup>
+          <ToolGroup title="技能 (Skills)" hint={skillTools.length === 0 ? '无已上传技能' : undefined}>
+            {skillTools.map((t) => (
+              <ToolChip key={t.id} label={t.name} checked={form.skills.includes(t.id)} onToggle={() => set({ skills: toggleSkill(form.skills, t.id) })} />
+            ))}
+          </ToolGroup>
+          <ToolGroup title="MCP 连接" hint={mcpConnections.length === 0 ? '无 MCP 连接' : undefined}>
+            {mcpConnections.map((c) => (
+              <ToolChip key={`mcp:${c.id}`} label={c.name} checked={form.skills.includes(`mcp:${c.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `mcp:${c.id}`) })} />
+            ))}
+          </ToolGroup>
+          <ToolGroup title="工作流 (Workflows)" hint={workflows.length === 0 ? '无工作流' : undefined}>
+            {workflows.map((w) => (
+              <ToolChip key={w.id} label={w.name} checked={form.skills.includes(`workflow:${w.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `workflow:${w.id}`) })} />
+            ))}
+          </ToolGroup>
+          <ToolGroup title="知识库 (Knowledge Base)" hint={knowledgeBases.length === 0 ? '无知识库' : undefined}>
+            {knowledgeBases.map((kb) => (
+              <ToolChip key={`kb:${kb.id}`} label={kb.name} checked={form.skills.includes(`kb:${kb.id}`)} onToggle={() => set({ skills: toggleSkill(form.skills, `kb:${kb.id}`) })} />
+            ))}
+          </ToolGroup>
+        </Section>
+
+      </div>
+
+      {/* Footer save bar — a flex sibling of the scroll area, so it is pinned
+          flush to the bottom of the main column with no gap. bg-[#09090b] and
+          border-[#27272a] are theme-aware via the index.css overrides. */}
+      <div className="shrink-0 border-t border-[#27272a] bg-[#09090b] px-6 py-3">
+        <div className="max-w-3xl mx-auto flex justify-end gap-3">
+          <button onClick={onBack} className="px-4 py-2 border border-[#27272a] hover:bg-[#18181b] text-[#a1a1aa] hover:text-white rounded-lg cursor-pointer font-semibold text-xs">
+            取消
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={updateM.isPending}
+            className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg cursor-pointer font-semibold text-xs disabled:opacity-60"
+          >
+            {updateM.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            保存配置
+          </button>
+        </div>
       </div>
     </div>
   );

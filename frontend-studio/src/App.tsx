@@ -466,6 +466,8 @@ export default function App() {
           activeTab === 'chat' ? 'h-full flex flex-col p-0 overflow-hidden' :
           activeTab === 'voice' ? 'h-full flex flex-col p-0 overflow-hidden' :
           activeTab === 'board' ? 'h-full flex flex-col p-6 overflow-hidden' :
+          // Agent 编辑页自带贴底 footer，stage 需去掉 p-6 由页面内部控制滚动与留白
+          activeTab === 'agents' && openAgent?.mode === 'edit' ? 'h-full flex flex-col p-0 overflow-hidden' :
           'overflow-y-auto p-6'
         }`}>
           {activeTab === 'chat' && (
