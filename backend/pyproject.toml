@@ -120,6 +120,8 @@ disable_error_code = ["no-any-return", "misc", "union-attr", "arg-type", "attr-d
 
 [[tool.mypy.overrides]]
 # These modules are imported by the app but lack py.typed markers.
+# torch / silero_vad 是 optional extra（--extra vad），CI/未启用语音的环境
+# 不安装 —— mypy 必须忽略其缺失，否则 type check 失败。
 module = [
     "celery",
     "croniter",
@@ -134,6 +136,8 @@ module = [
     "rapidocr_onnxruntime",
     "redis",
     "redis.asyncio",
+    "silero_vad",
+    "torch",
     "ulid",
     "yaml",
 ]

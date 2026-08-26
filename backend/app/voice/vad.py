@@ -75,7 +75,7 @@ class SileroVAD(VADDetector):
 
     def __init__(self, threshold: float = 0.5, silence_ms: int = 600) -> None:
         import torch  # noqa: F401  (silero-vad requires torch)
-        from silero_vad import (  # type: ignore[import-untyped]
+        from silero_vad import (  # mypy 缺失忽略见 pyproject [tool.mypy.overrides]
             VADIterator,
             load_silero_vad,
         )
