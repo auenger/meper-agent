@@ -187,6 +187,190 @@ class TestNodeConfiguration:
         assert any(i.code == "EMPTY_GATEWAY_CONDITIONS" for i in result.warnings)
 
 
+class TestAgentNodeNewConfigs:
+    """agent 节点新配置（insufficient_branch / output_schema）校验。"""
+
+    def test_insufficient_branch_to_missing_node_fails(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "insufficient_branch": "ghost_node",  # 不存在
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_INSUFFICIENT_BRANCH" for i in result.errors)
+
+    def test_insufficient_branch_to_self_fails(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "insufficient_branch": "agent1",  # 指向自身（回边）
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_INSUFFICIENT_BRANCH" for i in result.errors)
+
+    def test_valid_insufficient_branch_passes(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "insufficient_branch": "human1",
+            }},
+            {"node_id": "human1", "type": "human", "config": {
+                "title": "请补充信息", "next_nodes": [{"target": "end"}],
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert result.is_valid
+        # insufficient_branch 计入连边索引：human1 不因无 next_nodes 入边被判孤儿
+        assert not any(
+            i.code == "ORPHAN_NODE" and i.node_id == "human1" for i in result.warnings
+        )
+
+    def test_response_schema_invalid_type(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [
+                    {"name": "status", "type": "object-typo"},
+                ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_enum_requires_values(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [
+                    {"name": "status", "type": "enum"},  # 缺 enum_values
+                ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_missing_name(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [{"type": "string"}]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_illegal_field_name(self):
+        """字段名含特殊字符会破坏 {{node.response.field}} 引用。"""
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [
+                    {"name": "bad-name", "type": "string"},
+                ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_third_level_rejected(self):
+        """嵌套最多两层：第三层 object 报错。"""
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [
+                    {"name": "a", "type": "object", "fields": [
+                        {"name": "b", "type": "object", "fields": [
+                            {"name": "c", "type": "string"},
+                        ]},
+                    ]},
+                ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_empty_fields_rejected(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": []},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert not result.is_valid
+        assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
+
+    def test_response_schema_text_is_valid(self):
+        """type=text 等价未声明（零配置），合法。"""
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "text"},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert result.is_valid
+
+    def test_response_schema_valid_nested_passes(self):
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [
+                    {"name": "status", "type": "enum", "required": True,
+                     "enum_values": ["completed", "insufficient_info"]},
+                    {"name": "summary", "type": "string", "required": True},
+                    {"name": "author", "type": "object", "fields": [
+                        {"name": "name", "type": "string"},
+                    ]},
+                ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert result.is_valid
+
+
 # ── Edge Cases ──
 
 

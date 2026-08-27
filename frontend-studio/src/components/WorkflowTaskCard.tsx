@@ -274,7 +274,9 @@ export function WorkflowTaskCard({ created }: { created: TaskCreated }) {
             </div>
           ) : null}
 
-          {status === 'completed' || status === 'running' ? <TaskOutputFiles taskId={created.task_id} /> : null}
+          {/* 产物文件不按任务状态过滤：节点已产出并注册的文件（如 agent 成功、
+              后续 human 超时导致 task failed 的场景）同样应可见；无文件时组件自渲染 null */}
+          <TaskOutputFiles taskId={created.task_id} />
 
           {/* 操作区（按状态） */}
           <div className="flex flex-wrap items-center gap-1.5 pt-1">

@@ -36,6 +36,37 @@ class TestResolve:
         assert engine.resolve(None) is None  # type: ignore[arg-type]
 
 
+# ── 深解析：markdown 围栏 ──
+
+
+class TestFencedJsonDeepParse:
+    """围栏 JSON 深解析——围栏内容不是 JSON 时不得丢失原值。
+
+    回归：此前 _try_parse_json 无条件把值替换成第一个围栏内容，
+    response 含非 JSON 代码块（如 ```python```）时整个值被替换成围栏
+    正文，前后文字静默丢失。
+    """
+
+    def test_json_fence_unwraps_and_parses(self) -> None:
+        engine = ExpressionEngine({
+            "agent1": {"response": '```json\n{"status": "ok"}\n```'},
+        })
+        assert engine.resolve("{{ agent1.response.status }}") == "ok"
+
+    def test_non_json_fence_preserves_original(self) -> None:
+        """非 JSON 围栏（python 代码块）不得吞掉正文。"""
+        raw = "分析如下：```python\nprint(1)\n``` 结论：完成"
+        engine = ExpressionEngine({"agent1": {"response": raw}})
+        assert engine.resolve("{{ agent1.response }}") == raw
+
+    def test_json_fence_with_prose_outside_still_parses(self) -> None:
+        """围栏外有说明文字 + 围栏内是合法 JSON → 解析围栏内容。"""
+        engine = ExpressionEngine({
+            "agent1": {"response": '结果：```json\n{"n": 2}\n``` 如上'},
+        })
+        assert engine.resolve("{{ agent1.response.n }}") == 2
+
+
 # ── type preservation ──
 
 

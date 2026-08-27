@@ -6,7 +6,9 @@ The ``WorkflowEngine`` selects the appropriate executor based on node type.
 from __future__ import annotations
 
 import asyncio
+import json
 import operator as _operator
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -195,9 +197,183 @@ class EndNodeExecutor(BaseNodeExecutor):
 
 # ── Agent ──
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```", re.DOTALL)
+
+_VALID_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+_VALID_FIELD_TYPES = {"string", "number", "boolean", "enum", "object"}
+
+
+def _normalize_response_schema(node_config: dict[str, Any]) -> dict[str, Any] | None:
+    """归一化 agent 节点的 response 结构声明，未声明/无效返回 None。
+
+    新格式 ``{type: "object"|"array", fields: [...]}``（text 缺省 = 未声明）。
+    兼容旧 ``output_schema``（list[字段] → {type: "object", fields: [...]},
+    该格式未发布无真实存量）；旧 ``output_variables`` 的默认 [response]
+    视同未声明（后端从不消费它）。非法字段在运行时宽容跳过（validator
+    已在保存时拦截）。
+    """
+    raw = node_config.get("response_schema")
+    if isinstance(raw, dict) and raw.get("type") in ("object", "array"):
+        fields = _clean_schema_fields(raw.get("fields"), depth=0)
+        if fields:
+            return {"type": raw["type"], "fields": fields}
+        return None
+    # 兼容旧 output_schema（未发布格式，直接转译）
+    legacy = node_config.get("output_schema")
+    if isinstance(legacy, list):
+        fields = _clean_schema_fields(legacy, depth=0)
+        if fields:
+            return {"type": "object", "fields": fields}
+    return None
+
+
+def _clean_schema_fields(fields: Any, *, depth: int) -> list[dict[str, Any]]:
+    """清洗字段列表：过滤非法项；第一层 object 字段保留一层子 fields。
+
+    每个字段可带 ``is_list``（列表标志，任何基础类型都可为列表——
+    string 列表 / enum 列表 / object 列表）；第二层允许标量列表，
+    object 列表只能出现在第一层（其 fields 即第二层）。
+    """
+    if not isinstance(fields, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for f in fields:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "").strip()
+        ftype = str(f.get("type") or "string")
+        if not name or not _VALID_FIELD_NAME_RE.fullmatch(name):
+            continue
+        if ftype not in _VALID_FIELD_TYPES:
+            continue
+        entry = dict(f)
+        entry["name"], entry["type"] = name, ftype
+        entry["is_list"] = bool(f.get("is_list"))
+        if ftype == "object" and depth == 0:
+            # 第二层：剥离再嵌套的 fields（不可再嵌）
+            sub = _clean_schema_fields(f.get("fields"), depth=1)
+            for g in sub:
+                g.pop("fields", None)
+            entry["fields"] = sub
+        else:
+            entry.pop("fields", None)
+        cleaned.append(entry)
+    return cleaned
+
+
+def _validate_schema_fields(
+    obj: Any,
+    fields: list[dict[str, Any]],
+    *,
+    path: str = "",
+    depth: int = 0,
+) -> str:
+    """校验 dict 是否符合字段契约（嵌套最多两层），返回错误串或空串。"""
+    if not isinstance(obj, dict):
+        return f"{path or '值'} 应为对象"
+    for f in fields:
+        name = str(f.get("name") or "").strip()
+        if not name:
+            continue
+        label = f"{path}.{name}" if path else name
+        if f.get("required") and name not in obj:
+            return f"缺少必填字段 {label}"
+        if name not in obj:
+            continue
+        err = _validate_field_value(obj[name], f, label, depth)
+        if err:
+            return err
+    return ""
+
+
+def _validate_field_value(
+    value: Any, f: dict[str, Any], label: str, depth: int,
+) -> str:
+    """校验单个字段值（列表/类型/枚举/嵌套对象），返回错误串或空串。"""
+    # 列表字段：拆包后逐元素按基础类型校验（object 列表 = 逐元素按 fields）
+    if f.get("is_list"):
+        if not isinstance(value, list):
+            return f"字段 {label} 应为列表，实际为 {type(value).__name__}"
+        base = {k: v for k, v in f.items() if k != "is_list"}
+        for idx, item in enumerate(value):
+            err = _validate_field_value(item, base, f"{label}[{idx}]", depth)
+            if err:
+                return err
+        return ""
+
+    ftype = str(f.get("type") or "string")
+    enum_values = f.get("enum_values") or []
+    if enum_values or ftype == "enum":
+        if value not in enum_values:
+            return f"字段 {label} 的值 {value!r} 不在允许枚举 {enum_values} 内"
+        return ""
+    if ftype == "object":
+        if not isinstance(value, dict):
+            return f"字段 {label} 应为 object，实际为 {type(value).__name__}"
+        if depth >= 1:
+            return ""  # 第二层不允许再嵌（配置侧已拦，运行时防御）
+        return _validate_schema_fields(
+            value, f.get("fields") or [], path=label, depth=depth + 1,
+        )
+    if ftype == "number":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return f"字段 {label} 应为 number，实际为 {type(value).__name__}"
+        return ""
+    if ftype == "boolean":
+        if not isinstance(value, bool):
+            return f"字段 {label} 应为 boolean，实际为 {type(value).__name__}"
+        return ""
+    # string（默认）
+    if not isinstance(value, str):
+        return f"字段 {label} 应为 string，实际为 {type(value).__name__}"
+    return ""
+
+
+def _extract_json_payload(text: str) -> tuple[dict[str, Any] | list[Any] | None, str]:
+    """从模型输出文本中提取 JSON（对象或数组），返回 (value, error)。
+
+    依次尝试：裸 JSON → ```json 围栏块 → 首个 ``{``/``[`` 到最后一个
+    ``}``/``]`` 的子串（容忍 JSON 前后的解释性文字）。标量不符合
+    Output Contract。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None, "输出为空，无法解析 JSON"
+
+    candidates: list[str] = [raw]
+    fence_match = _JSON_FENCE_RE.search(raw)
+    if fence_match:
+        candidates.append(fence_match.group(1).strip())
+    for open_ch, close_ch in (("{", "}"), ("[", "]")):
+        start, end = raw.find(open_ch), raw.rfind(close_ch)
+        if 0 <= start < end:
+            candidates.append(raw[start : end + 1])
+
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, (dict, list)):
+            return value, ""
+    return None, "无法从输出中解析出 JSON"
+
 
 class AgentNodeExecutor(BaseNodeExecutor):
     """Invoke an Agent to perform reasoning/actions.
+
+    输出 = 类 API 返回体（固定字段恒定，分支间结构一致）::
+
+        {
+            "status": "ok" | "insufficient",   # 固定信号
+            "response": str | dict | list,     # 默认文本；契约模式下原生 dict/list
+            "agent_id": "...",                 # 固定
+            "files": [...],                    # 固定（insufficient 时 []）
+            "usage": {...},                    # 固定（insufficient 时 {}）
+            "needed_info": "...",              # 固定（insufficient 时有值，否则 ""）
+            "thinking": "..."                  # 可选，非空才写
+        }
 
     Config::
 
@@ -205,7 +381,18 @@ class AgentNodeExecutor(BaseNodeExecutor):
             "agent_id": "agent_xxx",
             "system_prompt_override": "...",  # optional
             "input_prompt": "{{ ... }}",       # prompt template
-            "temperature": 0.7                 # optional
+            "temperature": 0.7,                # optional
+            "insufficient_branch": "node_y",   # optional — abort_workflow 触发
+                                               # 时走该澄清分支而非硬失败
+            "response_schema": {               # optional — response 结构契约
+                "type": "object",              #   text(默认)|object|array
+                "fields": [
+                    {"name": "status", "type": "enum", "required": true,
+                     "enum_values": ["completed", "insufficient_info"]},
+                    {"name": "author", "type": "object",
+                     "fields": [{"name": "name", "type": "string"}]}   # 最多两层
+                ]
+            }
         }
     """
 
@@ -271,6 +458,20 @@ class AgentNodeExecutor(BaseNodeExecutor):
             legacy_slot_ctx = self.node_config.get("slot_values", {}).get("context", "")
             resolved_context = engine.resolve_str(legacy_slot_ctx) if legacy_slot_ctx else ""
 
+        # response 结构契约（opt-in，API 返回体心智模型）：
+        # {type: "text"|"object"|"array", fields: [{name, type, required,
+        # enum_values, description, fields(第二层)}]}（嵌套最多两层）。
+        # object/array 时 system prompt 追加 Output Contract 段——最终回复
+        # 即 response 字段的值，必须是符合契约的 JSON；输出后确定性解析为
+        # 原生 dict/list 写入变量池（下游 {{node.response.field}} 直接取值，
+        # 不依赖 JSON 字符串深解析）。text（默认）零配置、行为不变。
+        response_schema = _normalize_response_schema(self.node_config)
+
+        # 信息不足分支（opt-in）：abort_workflow 触发时不再硬失败，而是
+        # success + sufficiency="insufficient" + selected_branch 只走该分支
+        # （如 human 澄清节点）。未配置时维持诚实硬失败语义（现状）。
+        insufficient_branch = str(self.node_config.get("insufficient_branch") or "").strip()
+
         try:
             from langchain_core.messages import SystemMessage
 
@@ -299,11 +500,14 @@ class AgentNodeExecutor(BaseNodeExecutor):
 
             # execution_context="workflow"：无人值守语义——工具声明去掉
             # Clarification/Task 段，追加自主执行规则（禁反问 + abort_workflow）。
+            # response_schema（opt-in）：追加 Output Contract 段，最终回复即
+            # response 字段的值（见 _parse_structured_output）。
             system_text = await render_system_prompt_full(
                 agent_doc,
                 node_slot_overrides=context_overrides,
                 variable_pool=variables,
                 execution_context="workflow",
+                response_schema=response_schema,
             )
         except Exception as exc:
             # 展开 ExceptionGroup 以显示真正原因
@@ -392,8 +596,17 @@ class AgentNodeExecutor(BaseNodeExecutor):
         # 记录被取消时的 agent thread_id，供 engine 保存到 checkpoint
         self.agent_thread_id: str = ""
 
+        # ── response 结构契约的反馈重试状态 ──
+        # 契约校验失败时同 thread 追加一条 HumanMessage 反馈再跑一轮
+        # （add_messages 语义：完整历史保留，反馈轮不重复 SystemMessage）。
+        # 独立于 max_retry（异常重试是"原样重跑"，反馈重试是"带矫正信号"），
+        # 固定 1 次防死循环。
+        pending_messages: list | None = None
+        schema_retry_used = False
+        total_attempts = 1 + max_retry + (1 if response_schema else 0)
+
         try:
-            for attempt in range(1 + max_retry):
+            for attempt in range(total_attempts):
                 try:
                     # 取消检查器：每轮 REACT 循环在 compress_node 检查 task 状态，
                     # 若已 CANCELLED 则 interrupt() 优雅挂起，完整上下文存入 checkpointer。
@@ -432,11 +645,16 @@ class AgentNodeExecutor(BaseNodeExecutor):
                     else:
                         from app.engine.harness_integration import invoke
 
+                        # pending_messages 非空 = schema 反馈轮：只带反馈消息，
+                        # 历史（system prompt/工具调用/违规输出）由 checkpointer
+                        # 按 thread_id 追加恢复，不重复注入 SystemMessage。
                         result = await asyncio.wait_for(
                             invoke(
                                 agent_doc,
                                 {
-                                    "messages": initial_messages,
+                                    "messages": pending_messages
+                                    if pending_messages is not None
+                                    else initial_messages,
                                     "session_id": _thread_id,
                                     "user_id": user_id,
                                     "agent_id": agent_id,
@@ -448,6 +666,7 @@ class AgentNodeExecutor(BaseNodeExecutor):
                             ),
                             timeout=timeout_ms / 1000,
                         )
+                        pending_messages = None  # 反馈轮只生效一次
 
                     # ── 检测 LangGraph interrupt ──
                     # interrupt() 后 ainvoke 返回的 state 带 __interrupt__ 键。
@@ -484,8 +703,12 @@ class AgentNodeExecutor(BaseNodeExecutor):
                     # ── 检测 abort_workflow 诚实终止 ──
                     # 输入含糊到执行无意义时，Agent 调 abort_workflow(reason,
                     # needed_info)（非 interrupt 工具）。扫描 messages 中的
-                    # tool_call 判定，工作流以失败终止并把原因展示给用户。
-                    # 确定性失败，直接 return 不进重试。
+                    # tool_call 判定（确定性信号，不进重试）：
+                    # - 未配置 insufficient_branch（默认）：工作流诚实失败终止，
+                    #   reason 展示给用户。
+                    # - 配置了 insufficient_branch：转为可路由信号——节点
+                    #   success + status="insufficient"，执行流只走该分支
+                    #   （如 human 澄清节点），由作者设计澄清后的续接路径。
                     abort_args = self._find_abort_request(
                         result.get("messages") if isinstance(result, dict) else None,
                     )
@@ -493,29 +716,110 @@ class AgentNodeExecutor(BaseNodeExecutor):
                         reason = str(abort_args.get("reason") or "").strip()
                         needed = str(abort_args.get("needed_info") or "").strip()
                         parts = [p for p in (reason, f"需要补充: {needed}" if needed else "") if p]
+                        abort_summary = "；".join(parts) or "Agent 判定输入信息不足以继续执行"
                         logger.warning(
                             "node_agent_abort_requested",
                             node_id=self.node_id,
                             agent_id=agent_id,
                             reason=reason,
                             needed_info=needed,
+                            insufficient_branch=insufficient_branch or None,
                         )
+                        if insufficient_branch:
+                            # 信号模式：固定字段集与正常分支一致（API 返回体
+                            # 恒定结构）。response 为 reason 汇总文本——信息
+                            # 不足时无结构可依，不解析 response 契约；下游
+                            # 澄清分支可用 {{agent_x.response}} /
+                            # {{agent_x.needed_info}} 展示原因并收集补充信息。
+                            return NodeResult(
+                                success=True,
+                                output={
+                                    "status": "insufficient",
+                                    "response": abort_summary,
+                                    "agent_id": agent_id,
+                                    "files": [],
+                                    "usage": {},
+                                    "needed_info": needed,
+                                },
+                                selected_branch=insufficient_branch,
+                            )
                         return NodeResult(
                             success=False,
                             output={},
-                            error_message="；".join(parts) or "Agent 判定输入信息不足以继续执行",
+                            error_message=abort_summary,
                             error_code="AGENT_INPUT_INSUFFICIENT",
                         )
+                    # ── 提取最终输出（response 恒为纯文本正文）──
+                    # content 可能是 str（多数 provider）、标准块列表
+                    # （Anthropic thinking+text 各自成块）或 GLM quirk
+                    # （无视 thinking disabled，正文藏在 thinking 块的
+                    # 额外 text 字段里）。统一走 extract_answer_text 提取，
+                    # signature/thinking 等元数据不进 response。
                     output_content = ""
+                    thinking_content = ""
                     if result.get("messages"):
                         last_msg = result["messages"][-1]
-                        # 兼容 LangChain AIMessage（.content）和 dict（["content"] / .get("content")）
-                        if isinstance(last_msg, dict):
-                            output_content = last_msg.get("content", str(last_msg))
-                        elif hasattr(last_msg, "content"):
-                            output_content = last_msg.content
-                        else:
-                            output_content = str(last_msg)
+                        # 兼容 LangChain AIMessage（.content）和 dict（["content"]）
+                        raw_content = (
+                            last_msg.get("content") if isinstance(last_msg, dict)
+                            else getattr(last_msg, "content", None)
+                        )
+                        from app.engine.harness_integration.adapters.content import (
+                            extract_answer_text,
+                            extract_thinking_text,
+                        )
+
+                        output_content = extract_answer_text(raw_content)
+                        # 网关违规返回的思考过程保留到节点输出（response 只含正文）
+                        thinking_content = extract_thinking_text(last_msg)
+
+                    # ── response 结构契约校验（opt-in）──
+                    # JSON 解析/枚举校验是确定性信号（区别于启发式文本检测）：
+                    # 违规 → 同 thread 追加反馈重跑一轮（至多 1 次）；
+                    # 二次仍违规 → 节点诚实失败（不与 max_retry 的原样重跑混语义）。
+                    parsed_output: dict[str, Any] | list[Any] | None = None
+                    if response_schema:
+                        parsed_output, schema_error = self._parse_structured_output(
+                            output_content, response_schema,
+                        )
+                        if schema_error:
+                            if schema_retry_used:
+                                logger.warning(
+                                    "node_agent_schema_violation",
+                                    node_id=self.node_id,
+                                    agent_id=agent_id,
+                                    error=schema_error,
+                                )
+                                return NodeResult(
+                                    success=False,
+                                    output={},
+                                    error_message=(
+                                        "Agent 输出不符合 response_schema 契约: "
+                                        f"{schema_error}"
+                                    ),
+                                    error_code="AGENT_OUTPUT_SCHEMA_VIOLATION",
+                                )
+                            schema_retry_used = True
+                            feedback = (
+                                "你上一轮的最终输出不符合约定的 response JSON 契约："
+                                f"{schema_error}。请重新给出最终答复：只输出符合契约"
+                                "的 JSON（response 的值），JSON 之外不要有任何文字；"
+                                "若信息确实不足无法完成，请调用 abort_workflow"
+                                "(reason, needed_info) 诚实终止。"
+                            )
+                            from langchain_core.messages import HumanMessage
+
+                            pending_messages = [HumanMessage(content=feedback)]
+                            last_error = (
+                                f"Agent 输出不符合 response_schema 契约: {schema_error}"
+                            )
+                            logger.info(
+                                "node_agent_schema_retry",
+                                node_id=self.node_id,
+                                agent_id=agent_id,
+                                error=schema_error,
+                            )
+                            continue  # 立即带反馈重跑（不 sleep）
 
                     # ── 提取 Agent 工具生成的文件引用（Story 4-15）──
                     # 1) MCP / artifact-based (legacy path)
@@ -536,16 +840,32 @@ class AgentNodeExecutor(BaseNodeExecutor):
                         mcp_files, registered_files,
                     )
 
+                    # ── 组装节点输出（API 返回体恒定结构）──
+                    # 固定字段集在正常/insufficient 分支间恒定，下游引用永不
+                    # 踩空：status / response / agent_id / files / usage /
+                    # needed_info（thinking 非空才写，调试性可选字段）。
+                    # response 在契约模式下是解析后的原生 dict/list——下游
+                    # {{node.response.field.sub}} 原生取值，无深解析依赖。
+                    output: dict[str, Any] = {
+                        "status": "ok",
+                        "response": parsed_output
+                        if parsed_output is not None
+                        else output_content,
+                        "agent_id": agent_id,
+                        "files": files_output,
+                        # Token usage from harness (execution.py puts mw.summary
+                        # into result["usage"]); surfaced for timeline + task total.
+                        "usage": result.get("usage") or {},
+                        "needed_info": "",
+                    }
+                    if thinking_content:
+                        # GLM 等网关无视 thinking disabled 时仍返回思考过程；
+                        # 保留到节点输出供调试/展示，仅在非空时写入。
+                        output["thinking"] = thinking_content
+
                     return NodeResult(
                         success=True,
-                        output={
-                            "response": output_content,
-                            "agent_id": agent_id,
-                            "files": files_output,
-                            # Token usage from harness (execution.py puts mw.summary
-                            # into result["usage"]); surfaced for timeline + task total.
-                            "usage": result.get("usage") or {},
-                        },
+                        output=output,
                     )
                 except TimeoutError:
                     last_error = f"Agent 执行超时 ({timeout_ms}ms)"
@@ -554,7 +874,7 @@ class AgentNodeExecutor(BaseNodeExecutor):
                     last_error = f"Agent 执行失败: {exc}"
                     logger.error("node_agent_failed", node_id=self.node_id, error=str(exc), attempt=attempt + 1)
 
-                if attempt < max_retry:
+                if attempt < total_attempts - 1:
                     logger.info("agent_retry", node_id=self.node_id, attempt=attempt + 1, max_retry=max_retry)
                     await asyncio.sleep(retry_delay_ms / 1000)
         finally:
@@ -644,6 +964,41 @@ class AgentNodeExecutor(BaseNodeExecutor):
                 args = tc.get("args")
                 return args if isinstance(args, dict) else {}
         return None
+
+    @staticmethod
+    def _parse_structured_output(
+        response: str,
+        schema: dict[str, Any],
+    ) -> tuple[dict[str, Any] | list[Any] | None, str]:
+        """按 response_schema 契约校验最终输出，返回 (parsed, error)。
+
+        agent 输出是类 API 返回体：LLM 最终回复即 response 字段的值。
+        schema = {type: "object"|"array", fields: [...]}，嵌套最多两层
+        （第一层 object 字段可带子 fields，第二层不可再嵌）。契约违背是
+        确定性信号（JSON 解析失败/必填缺失/枚举越界/类型不符均为机器
+        判定，无启发式误报），调用方据此带反馈重试或诚实失败。未知字段
+        宽容放行（LLM 附加字段不破坏下游对已声明字段的消费）。
+        """
+        value, extract_err = _extract_json_payload(response)
+        if value is None:
+            return None, extract_err
+
+        if schema.get("type") == "array":
+            if not isinstance(value, list):
+                return None, "response 契约要求 JSON 数组，实际不是数组"
+            fields = schema.get("fields") or []
+            for idx, item in enumerate(value):
+                item_err = _validate_schema_fields(item, fields, path=f"[{idx}]")
+                if item_err:
+                    return None, item_err
+            return value, ""
+
+        if not isinstance(value, dict):
+            return None, "response 契约要求 JSON 对象，实际不是对象"
+        err = _validate_schema_fields(value, schema.get("fields") or [])
+        if err:
+            return None, err
+        return value, ""
 
     @staticmethod
     def _merge_file_outputs(

@@ -50,6 +50,35 @@ if not result.is_valid:
 | `tool` | `tool_id` |
 | `gateway` | `conditions`（警告级别） |
 
+agent 节点的输出模型与 opt-in 配置另有专项校验：
+
+**agent 输出 = 类 API 返回的 JSON 对象**（所有执行分支结构恒定，下游引用永不踩空）：
+
+| 字段 | 类型 | 说明 |
+|-----|---------|------|
+| `status` | string | `"ok"`（正常）/ `"insufficient"`（信息不足信号） |
+| `response` | string / object / array | 核心内容：默认文本；声明返回结构后为原生 dict/list |
+| `agent_id` | string | 固定 |
+| `files` | array | 产出文件（insufficient 时恒为 `[]`） |
+| `usage` | object | token 用量（insufficient 时恒为 `{}`） |
+| `needed_info` | string | 信息不足时 Agent 说明需补充的内容，否则 `""` |
+
+- **`insufficient_branch`（信息不足分支）**：abort_workflow 触发时不再硬失败，而是
+  输出 `status="insufficient"` 并只执行该分支（典型：human 澄清节点）。校验
+  目标节点存在且不指向自身（计入连边索引，参与 DAG/孤儿检测）。
+- **`response_schema`（response 返回结构）**：`{type: "text"|"object"|"array",
+  fields: [...]}`；字段 `{name, type: string|number|boolean|enum|object,
+  required, enum_values, description, fields(第二层)}`，**嵌套最多两层**。
+  校验：type 白名单、字段名须为合法标识符（特殊字符会破坏
+  `{{node.response.field}}` 引用）、enum 必须带非空 `enum_values`、第三层嵌套
+  报错。运行时 Agent 最终回复必须是符合契约的 JSON（违规自动带反馈重试一次，
+  二次违规按 `AGENT_OUTPUT_SCHEMA_VIOLATION` 失败），解析后的原生 dict/list
+  写入 `response`，下游 `{{node.response.field.sub}}` 直接取值；array 用数字
+  下标（`{{node.response.0.title}}`）。
+
+注意：DAG 不允许回边，信息不足分支澄清后不能回环重跑原 agent 节点，需由作者
+接续新节点。
+
 ### 4. 循环调用检测（异步）
 
 静态分析 Agent→Workflow→Agent 的调用链，检测潜在的循环调用：
@@ -136,6 +165,8 @@ await engine.run_and_persist(task_id)
 | `MISSING_AGENT_ID` | ERROR | Agent 节点缺少 agent_id |
 | `MISSING_WORKFLOW_ID` | ERROR | Subflow 节点缺少 workflow_id |
 | `MISSING_TOOL_ID` | ERROR | Tool 节点缺少 tool_id |
+| `INVALID_INSUFFICIENT_BRANCH` | ERROR | agent 节点 insufficient_branch 指向不存在/自身的节点 |
+| `INVALID_RESPONSE_SCHEMA` | ERROR | agent 节点 response_schema 结构定义不合法（类型/字段名/枚举/嵌套超两层） |
 | `MULTIPLE_START_NODES` | WARNING | 多个 start 节点 |
 | `ORPHAN_NODE` | WARNING | 孤立节点（不可达） |
 | `EMPTY_GATEWAY_CONDITIONS` | WARNING | Gateway 无条件 |

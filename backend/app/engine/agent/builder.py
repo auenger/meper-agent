@@ -15,6 +15,8 @@ this module.
 """
 from __future__ import annotations
 
+import json
+
 from loguru import logger
 
 from app.models.compat import (
@@ -69,6 +71,8 @@ async def build_tool_declaration(
     exclude_names: set[str] | None = None,
     *,
     execution_context: str = "chat",
+    response_schema: dict | None = None,
+    output_schema: list[dict] | None = None,
 ) -> str:
     """Build the complete tool declaration text for the system prompt.
 
@@ -84,8 +88,19 @@ async def build_tool_declaration(
     - Workflow 列表与 Task Management 段不生成（这些工具运行时已剥离，
       防 dispatch 循环派发/干预父任务，声明与工具集保持一致）
     - Built-in 段追加 Autonomous Execution 规则（禁反问 + abort_workflow）
+    - 配置了 response_schema 时追加 Output Contract 段（response 的结构
+      契约——API 返回体心智：固定字段引擎填，response 结构用户声明，
+      最终回复必须是符合契约的 JSON）
     """
     sections: list[str] = []
+
+    # 废弃参数兼容：旧调用方传 output_schema(list) → 转译 response_schema。
+    # 主要防热重载进程中新旧模块混载时旧调用方直接炸 unexpected keyword。
+    if response_schema is None and output_schema:
+        logger.warning(
+            "build_tool_declaration: output_schema 参数已废弃，请改用 response_schema",
+        )
+        response_schema = {"type": "object", "fields": output_schema}
 
     skill_ids = resolve_skill_ids(agent)
     if skill_ids:
@@ -126,6 +141,11 @@ async def build_tool_declaration(
         # 自主执行规则是行为契约（禁反问 + 诚实终止），不依赖 builtin_config，
         # 无论 Agent 配了哪些内建工具都必须注入。
         sections.append("\n".join(_build_autonomous_execution_section()))
+        # response 结构契约（opt-in）：agent 输出是类 API 返回体——固定字段
+        # （status/files/usage/...）由引擎填充，response 的结构由用户声明；
+        # 最终回复 = response 的值，必须是符合契约的 JSON。
+        if response_schema and response_schema.get("type") in ("object", "array"):
+            sections.append("\n".join(_build_output_contract_section(response_schema)))
 
     if execution_context != "workflow":
         # task/workflow 编排工具仅聊天上下文注入，工作流上下文已剥离。
@@ -544,6 +564,72 @@ def _build_autonomous_execution_section() -> list[str]:
         "  could not actually do.",
         "",
     ]
+
+
+def _build_output_contract_section(response_schema: dict) -> list[str]:
+    """工作流 agent 节点的 response 结构契约段（opt-in，node_executor 解析校验）。
+
+    agent 输出是类 API 返回体：固定字段（status/files/usage/...）由引擎
+    填充，LLM 的最终回复就是 ``response`` 字段的值。schema 形如
+    ``{type: "object"|"array", fields: [{name, type, required,
+    enum_values, description, fields(第二层)}]}``（嵌套最多两层）。
+    解析后的 response 以原生 dict/list 写入变量池，下游
+    ``{{node.response.field.sub}}`` 直接取值。
+    """
+    schema_type = response_schema.get("type")
+    fields = [f for f in (response_schema.get("fields") or []) if isinstance(f, dict)]
+    is_array = schema_type == "array"
+
+    lines = [
+        "",
+        "## Output Contract",
+        "",
+        "Your final reply is the value of the ``response`` field consumed by",
+        "downstream nodes. It MUST be "
+        + ("a JSON array of objects, each with fields:" if is_array else "a JSON object with fields:"),
+        "no prose, no markdown fences, nothing outside the JSON.",
+        "If the input is too vague or incomplete to produce a meaningful",
+        "answer, call **abort_workflow** instead of producing JSON.",
+        "",
+    ]
+    lines.extend(_render_schema_fields(fields, indent=0))
+    lines.append("")
+    return lines
+
+
+def _render_schema_fields(fields: list[dict], indent: int) -> list[str]:
+    """渲染契约字段列表（最多两层：第一层 object 字段可带子 fields）。
+
+    每个字段可带 ``is_list``（string list / enum list / object list）。
+    """
+    pad = "  " * indent
+    lines: list[str] = []
+    for f in fields:
+        name = str(f.get("name") or "").strip()
+        if not name:
+            continue
+        ftype = str(f.get("type") or "string")
+        is_list = bool(f.get("is_list"))
+        req = "required" if f.get("required") else "optional"
+        enum_values = f.get("enum_values") or []
+        enum_note = (
+            f", one of {json.dumps([str(v) for v in enum_values], ensure_ascii=False)}"
+            if enum_values
+            else ""
+        )
+        desc = str(f.get("description") or "").strip()
+        desc_note = f" — {desc}" if desc else ""
+        type_note = f"{ftype} list" if is_list else ftype
+        lines.append(f"{pad}- `{name}` ({type_note}, {req}{enum_note}){desc_note}")
+        if ftype == "object":
+            sub_fields = [g for g in (f.get("fields") or []) if isinstance(g, dict)]
+            if sub_fields:
+                if is_list:
+                    lines.append(f"{pad}  each list element is an object with fields:")
+                else:
+                    lines.append(f"{pad}  nested object fields:")
+                lines.extend(_render_schema_fields(sub_fields, indent=indent + 2))
+    return lines
 
 
 def _build_task_tool_declaration() -> str:

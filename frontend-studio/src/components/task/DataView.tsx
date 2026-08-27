@@ -26,11 +26,13 @@
 import { useState, useContext, createContext, type ReactNode } from 'react'
 import {
   ChevronRight, AlertTriangle, ExternalLink, Workflow as WorkflowIcon,
-  Wrench, GitBranch, UserCheck, Clock,
+  Wrench, GitBranch, UserCheck, Clock, FileText, Download,
 } from 'lucide-react'
 import { Tag } from '../ui'
 import { Markdown } from '../Markdown'
 import { NODE_TYPE_LABEL } from './task-flow-utils'
+import { downloadFile } from '../../services/file-api'
+import { formatFileSize } from '../../lib/file-preview'
 
 export type DataViewContext =
   | 'node_output' | 'event_data' | 'task_input' | 'approval_upstream' | 'generic'
@@ -57,7 +59,8 @@ const MAX_TAGS = 12
 const FIELD_LABEL: Record<string, string> = {
   node_id: '节点 ID', node_type: '节点类型', node_label: '节点名称',
   output_summary: '输出摘要', output: '输出',
-  response: '回答', result: '执行结果',
+  response: '回答', result: '执行结果', thinking: '思考过程',
+  files: '产出文件', file_id: '文件 ID', needed_info: '待补充信息',
   usage: 'Token 用量', total_tokens: 'Token 消耗', input_tokens: '输入 Tokens', output_tokens: '输出 Tokens',
   llm_calls: 'LLM 调用', tool_calls: '工具调用',
   agent_id: 'Agent', tool_name: '工具名称', tool_id: '工具 ID',
@@ -308,6 +311,54 @@ function LongText({ text, tone = 'default' }: { text: string; tone?: 'default' |
   )
 }
 
+/** files（agent 产物文件列表）→ 文件卡片组；下载走 file-api，无 file_id 的条目仅展示 */
+function FilesValue({ items }: { items: Record<string, unknown>[] }) {
+  return (
+    <div className="space-y-1">
+      {items.map((it, idx) => (
+        <FileCard key={typeof it.file_id === 'string' ? it.file_id : idx} item={it} />
+      ))}
+    </div>
+  )
+}
+
+function FileCard({ item }: { item: Record<string, unknown> }) {
+  const fileId = typeof item.file_id === 'string' ? item.file_id : null
+  const name = typeof item.name === 'string' && item.name ? item.name : '未命名文件'
+  const size = typeof item.size === 'number' ? item.size : null
+  const [downloading, setDownloading] = useState(false)
+  const handleDownload = async () => {
+    if (!fileId || downloading) return
+    setDownloading(true)
+    try {
+      await downloadFile(fileId, name)
+    } catch (err) {
+      console.error('[download_file]', err)
+    } finally {
+      setDownloading(false)
+    }
+  }
+  return (
+    <div className="flex items-center gap-2 rounded bg-[#09090b] border border-[#27272a] px-2 py-1.5 min-w-0">
+      <FileText size={12} className="text-[#71717a] shrink-0" />
+      <span className="flex-1 truncate text-[11px] text-[#d4d4d8]" title={name}>{name}</span>
+      {size != null && (
+        <span className="text-[10px] font-mono text-[#52525b] shrink-0">{formatFileSize(size)}</span>
+      )}
+      {fileId && (
+        <button
+          onClick={handleDownload}
+          disabled={downloading}
+          className="inline-flex items-center text-[10px] text-[#a1a1aa] hover:text-[#1E5EFF] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+          title="下载"
+        >
+          <Download size={12} />
+        </button>
+      )}
+    </div>
+  )
+}
+
 /** 同质原始值数组 → 标签组（>12 折叠 +N） */
 function TagList({ items }: { items: (string | number | boolean)[] }) {
   const [expanded, setExpanded] = useState(false)
@@ -455,6 +506,15 @@ function matchKnownField(
   // 键值网格已在字段上方展示「回答」标签，这里不再包 LabeledCard，避免双重标签。
   if (k === 'response' && typeof value === 'string') {
     return <MarkdownBlock content={value} />
+  }
+
+  // files（agent 产物文件列表）→ 文件卡片（名称/大小 + 下载；
+  // 富预览走任务级「产物文件」区 TaskOutputFiles）
+  if (
+    k === 'files' && Array.isArray(value) && value.length > 0 &&
+    value.every((it) => it != null && typeof it === 'object')
+  ) {
+    return <FilesValue items={value as Record<string, unknown>[]} />
   }
 
   // result（tool 输出）→ 自带边框的文本/递归内容（网格已有「执行结果」标签）

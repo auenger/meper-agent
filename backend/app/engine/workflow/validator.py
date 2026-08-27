@@ -29,6 +29,79 @@ from pydantic import BaseModel, Field
 
 _EXPRESSION_PATTERN = re.compile(r"\{\{(.+?)\}\}")
 
+_RESPONSE_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESPONSE_FIELD_TYPES = {"string", "number", "boolean", "enum", "object"}
+
+
+def _check_agent_response_schema(
+    node_id: str, schema: Any,
+) -> list[ValidationIssue]:
+    """校验 agent 节点 response_schema（response 结构契约，API 返回体模型）。
+
+    规则：type ∈ {text, object, array}（text 等价未声明）；object/array
+    必须带非空 fields；字段名须为合法标识符（点号/特殊字符会破坏下游
+    {{node.response.field}} 平铺引用）；enum 必须带非空 enum_values；
+    嵌套最多两层（第一层 object 字段可带子 fields，第二层不可再嵌）。
+    """
+    issues: list[ValidationIssue] = []
+
+    def err(message: str) -> None:
+        issues.append(ValidationIssue(
+            severity=ValidationSeverity.ERROR,
+            code="INVALID_RESPONSE_SCHEMA",
+            message=message,
+            node_id=node_id,
+        ))
+
+    def check_fields(fields: Any, *, layer: int, prefix: str) -> None:
+        if not isinstance(fields, list) or not fields:
+            err(f"response_schema.{prefix}fields 必须是非空字段列表")
+            return
+        for idx, f in enumerate(fields):
+            if not isinstance(f, dict):
+                err(f"response_schema.{prefix}fields[{idx}] 不是对象")
+                continue
+            name = str(f.get("name") or "").strip()
+            if not name:
+                err(f"response_schema.{prefix}fields[{idx}] 缺少 name")
+                continue
+            if not _RESPONSE_FIELD_NAME_RE.fullmatch(name):
+                err(
+                    f"response_schema 字段名 '{name}' 不合法（仅限字母/数字/下划线，"
+                    f"且以字母或下划线开头——特殊字符会破坏 {{node.response.field}} 引用）"
+                )
+                continue
+            ftype = str(f.get("type") or "string")
+            if ftype not in _RESPONSE_FIELD_TYPES:
+                err(
+                    f"response_schema 字段 '{name}' 的 type '{ftype}' 不合法"
+                    f"（应为 {sorted(_RESPONSE_FIELD_TYPES)} 之一）"
+                )
+                continue
+            if ftype == "enum" and not (f.get("enum_values") or []):
+                err(f"response_schema 字段 '{name}' 为 enum 类型，必须提供非空 enum_values")
+            if ftype == "object":
+                if layer >= 2:
+                    err(f"response_schema 嵌套最多两层：'{name}' 已在第二层，不可再为 object")
+                    continue
+                sub_fields = f.get("fields")
+                if sub_fields is not None:
+                    check_fields(sub_fields, layer=layer + 1, prefix=f"{name}.")
+
+    if not isinstance(schema, dict):
+        err("response_schema 必须是对象（{type, fields}）")
+        return issues
+
+    schema_type = str(schema.get("type") or "text")
+    if schema_type not in ("text", "object", "array"):
+        err(f"response_schema.type '{schema_type}' 不合法（应为 text/object/array 之一）")
+        return issues
+    if schema_type == "text":
+        return issues  # 等价未声明，零配置
+
+    check_fields(schema.get("fields"), layer=1, prefix="")
+    return issues
+
 
 class ValidationSeverity(StrEnum):
     """Severity level of a validation issue."""
@@ -139,6 +212,14 @@ class WorkflowValidator:
                     edge = {"source": node_id, "target": default_branch}
                     self._out_edges.setdefault(node_id, []).append(edge)
                     self._in_edges.setdefault(default_branch, []).append(edge)
+
+            # Agent: insufficient_branch (abort_workflow 信号化的澄清分支)
+            if node.get("type") == "agent":
+                tgt = str(config.get("insufficient_branch") or "").strip()
+                if tgt:
+                    edge = {"source": node_id, "target": tgt}
+                    self._out_edges.setdefault(node_id, []).append(edge)
+                    self._in_edges.setdefault(tgt, []).append(edge)
 
             # Parallel: branches[*].start_node
             if node.get("type") == "parallel":
@@ -384,6 +465,9 @@ class WorkflowValidator:
             node_id = node.get("node_id", "")
             node_type = node.get("type", "")
             config = node.get("config", {})
+            # 报错信息用可读标识：label 优先，缺省回退 node_id（裸 node_id
+            # 用户难以对应到画布上的具体节点）
+            node_label = str(node.get("label") or "").strip() or node_id
 
             if not node_id:
                 issues.append(ValidationIssue(
@@ -399,16 +483,44 @@ class WorkflowValidator:
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.ERROR,
                         code="MISSING_AGENT_ID",
-                        message="Agent node is missing agent_id",
+                        message=f'Agent 节点 "{node_label}" 未选择 Agent（agent_id 为空）',
                         node_id=node_id,
                     ))
+
+                # insufficient_branch：abort_workflow 触发时的澄清分支
+                # （未配置 = 诚实硬失败，现状语义）。指向不存在的节点会让
+                # 执行流静默中断，按 ERROR 处理。
+                insufficient_branch = str(config.get("insufficient_branch") or "").strip()
+                if insufficient_branch and insufficient_branch not in self.node_map:
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        code="INVALID_INSUFFICIENT_BRANCH",
+                        message=(
+                            f"insufficient_branch 指向的节点 '{insufficient_branch}' 不存在"
+                        ),
+                        node_id=node_id,
+                    ))
+                elif insufficient_branch and insufficient_branch == node_id:
+                    issues.append(ValidationIssue(
+                        severity=ValidationSeverity.ERROR,
+                        code="INVALID_INSUFFICIENT_BRANCH",
+                        message="insufficient_branch 不能指向节点自身（工作流不允许回边）",
+                        node_id=node_id,
+                    ))
+
+                # response_schema：response 结构契约（API 返回体模型）合法性。
+                response_schema = config.get("response_schema")
+                if response_schema is not None:
+                    issues.extend(
+                        _check_agent_response_schema(node_id, response_schema)
+                    )
 
             elif node_type == "subflow":
                 if not config.get("workflow_id"):
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.ERROR,
                         code="MISSING_WORKFLOW_ID",
-                        message="Subflow node is missing workflow_id",
+                        message=f'Subflow 节点 "{node_label}" 未选择子工作流（workflow_id 为空）',
                         node_id=node_id,
                     ))
 
@@ -417,7 +529,7 @@ class WorkflowValidator:
                     issues.append(ValidationIssue(
                         severity=ValidationSeverity.ERROR,
                         code="MISSING_TOOL_ID",
-                        message="Tool node is missing tool_id",
+                        message=f'工具节点 "{node_label}" 未选择工具（tool_id 为空）',
                         node_id=node_id,
                     ))
 

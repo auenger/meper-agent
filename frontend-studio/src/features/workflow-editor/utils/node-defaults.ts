@@ -21,6 +21,8 @@ const DEFAULT_CONFIGS: Record<string, Record<string, unknown>> = {
     temperature: 0.7,
     max_retry: 3,
     timeout_ms: 300000,
+    insufficient_branch: null as string | null,
+    response_schema: null as { type: 'text' | 'object' | 'array'; fields?: unknown[] } | null,
     next_nodes: [] as NextNodeRef[],
   },
   tool: {

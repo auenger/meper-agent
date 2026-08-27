@@ -40,10 +40,17 @@ def _try_parse_json(value: Any) -> Any:
     if not isinstance(value, str):
         return value
 
-    # Strip markdown code blocks if present
+    # Strip markdown code blocks if present — 仅当围栏内容确实是 JSON 时才
+    # 采用，否则保留原字符串。否则非 JSON 代码块（如 ```python ...```）会把
+    # 整个值替换成围栏内容，造成前后正文静默丢失。
     match = _MARKDOWN_CODE_BLOCK.search(value)
     if match:
-        value = match.group(1).strip()
+        fenced = match.group(1).strip()
+        if _JSON_PATTERN.match(fenced):
+            try:
+                return json.loads(fenced)
+            except (json.JSONDecodeError, ValueError):
+                pass  # 围栏内不是合法 JSON → 回退原字符串继续尝试
 
     # Quick check: does it look like JSON?
     if not _JSON_PATTERN.match(value):

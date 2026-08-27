@@ -91,6 +91,8 @@ async def render_system_prompt_full(
     strict: bool = True,
     exclude_skill_names: set[str] | None = None,
     execution_context: str = "chat",
+    response_schema: dict | None = None,
+    output_schema: list[dict] | None = None,
 ) -> str:
     """Render the full system prompt from Agent's prompt_slots.
 
@@ -99,13 +101,27 @@ async def render_system_prompt_full(
         node_slot_overrides: Per-node slot overrides (highest priority).
         variable_pool: Variable pool for Jinja2 ``{{var}}`` resolution.
         strict: When True (default), missing required slots raise ValueError.
-            When False, missing slots are silently skipped (for preview).
+            When False, missing required slots are silently skipped (for preview).
         execution_context: "chat"(默认)或 "workflow"(工作流 agent 节点,
             无人值守——工具声明去掉 Clarification/Task 段,追加自主执行规则)。
+        response_schema: 工作流 agent 节点的 response 结构契约(可选,
+            {type: object|array, fields: [...]} 嵌套最多两层)。配置时
+            tool_declaration 追加 Output Contract 段,最终回复必须是
+            符合契约的 JSON(即 response 的值)。
+        output_schema: **已废弃**（旧格式 list[字段]）。仅为兼容热重载
+            进程中残留的旧调用方保留——收到时转译为 response_schema 并
+            打 warning 日志；新代码请勿使用。
 
     Returns:
         Fully assembled system prompt string.
     """
+    if response_schema is None and output_schema:
+        from loguru import logger
+
+        logger.warning(
+            "render_system_prompt_full: output_schema 参数已废弃，请改用 response_schema",
+        )
+        response_schema = {"type": "object", "fields": output_schema}
     agent_slots = agent_doc.get("prompt_slots", {})
     overrides = node_slot_overrides or {}
 
@@ -200,6 +216,7 @@ async def render_system_prompt_full(
         agent_doc,
         exclude_names=exclude_skill_names,
         execution_context=execution_context,
+        response_schema=response_schema,
     )
     if tool_decl:
         parts.append(tool_decl)

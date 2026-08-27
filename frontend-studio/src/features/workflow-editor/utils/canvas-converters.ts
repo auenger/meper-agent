@@ -154,6 +154,16 @@ export function deriveXyflowEdgesFromNodes(nodes: WorkflowNode[]): Edge[] {
           edges.push(makeDerivedEdge(node.node_id, nxt.target, nxt.label ?? '', nxt.condition ?? undefined))
         }
       }
+      // agent 节点额外派生 insufficient_branch（信息不足澄清分支，条件边样式）
+      if (nodeType === 'agent') {
+        const insufficient = config.insufficient_branch as string | undefined
+        if (insufficient) {
+          edges.push({
+            ...makeDerivedEdge(node.node_id, insufficient, '信息不足', 'insufficient'),
+            id: `e-${node.node_id}-${insufficient}-insufficient`,
+          })
+        }
+      }
     }
   }
 
@@ -213,6 +223,12 @@ export function syncEdgeChangesToNodes(
         const branches = [...((config.branches as Array<{ start_node?: string; label?: string }>) ?? [])]
         config.branches = branches.filter((b) => b.start_node !== target)
         return { ...n, config }
+      }
+
+      // agent: 删除信息不足分支边 → 清空 insufficient_branch（target 可能
+      // 同时在 next_nodes 中，继续走下方 next_nodes 清理）
+      if (n.type === 'agent' && config.insufficient_branch === target) {
+        config.insufficient_branch = null
       }
     }
 

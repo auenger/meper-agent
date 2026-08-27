@@ -860,8 +860,10 @@ class WorkflowEngine:
                     message=f"等待人工审批: {result.output.get('title', '')}",
                 )
 
-            # Handle gateway: follow selected branch only
-            if node_type == "gateway" and result.selected_branch:
+            # 互斥分支：执行器已选出唯一下游时只走该分支。
+            # gateway 按条件选路；agent 节点配置了 insufficient_branch 时
+            # abort_workflow 触发同样走 selected_branch（澄清分支而非硬失败）。
+            if result.selected_branch:
                 await self._execute_node(result.selected_branch)
                 return result
 
@@ -959,18 +961,27 @@ def _summarise_output(output: dict[str, Any], max_len: int = 200) -> str:
 
     优先提取常见文本字段（agent 的 response / tool 的 result 等），避免
     str(dict) 产生带单引号的 Python repr（前端既无法解析也不美观）。
+    response 为结构化输出（dict/list，response_schema 模式）时用 JSON
+    短摘要，而不是漏给下一个字符串字段（agent_id）。
     """
+    import json
+
     for key in ("response", "answer", "result", "output", "content", "message", "text"):
         v = output.get(key)
         if isinstance(v, str) and v.strip():
             return v[:max_len] + ("..." if len(v) > max_len else "")
+        if key == "response" and isinstance(v, (dict, list)):
+            try:
+                text = json.dumps(v, ensure_ascii=False, default=str)
+            except Exception:
+                text = str(v)
+            return text[:max_len] + ("..." if len(text) > max_len else "")
     # 次选：dict 里第一个有意义的字符串值
     for v in output.values():
         if isinstance(v, str) and v.strip():
             return v[:max_len] + ("..." if len(v) > max_len else "")
     # 回退：JSON 字符串（双引号，前端可结构化解析），而非 str() 的单引号 repr
     try:
-        import json
         text = json.dumps(output, ensure_ascii=False, default=str)
     except Exception:
         text = str(output)

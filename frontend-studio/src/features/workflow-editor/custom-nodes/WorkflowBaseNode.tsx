@@ -92,6 +92,24 @@ function getNodeSummary(type: string, config: Record<string, unknown>): string {
   }
 }
 
+/**
+ * 必填配置完整性检查（与后端 validator 的 MISSING_* 规则对齐）。
+ * 不完整的节点在画布上以琥珀色边框 + 角标警示，避免执行时才被
+ * WORKFLOW_VALIDATION_FAILED 拦下、对着裸 node_id 找不到节点。
+ */
+function isIncomplete(type: string, config: Record<string, unknown>): boolean {
+  switch (type) {
+    case 'agent':
+      return !config.agent_id
+    case 'tool':
+      return !config.tool_id
+    case 'subflow':
+      return !config.workflow_id
+    default:
+      return false
+  }
+}
+
 function WorkflowBaseNode({ data, selected }: Props) {
   const { typeColor, workflowNode } = data
   const nodeType = workflowNode.type
@@ -99,15 +117,23 @@ function WorkflowBaseNode({ data, selected }: Props) {
   const isEnd = nodeType === 'end'
   const icon = TYPE_ICONS[nodeType]
   const summary = getNodeSummary(nodeType, workflowNode.config as Record<string, unknown>)
+  const incomplete = isIncomplete(nodeType, workflowNode.config as Record<string, unknown>)
 
   return (
     <div
       className={`
         relative rounded-md bg-[#18181b] shadow-sm border transition-shadow cursor-pointer
-        ${selected ? 'border-[#1E5EFF] shadow-md' : 'border-[#27272a] hover:shadow-md'}
+        ${selected ? 'border-[#1E5EFF] shadow-md' : incomplete ? 'border-amber-500 hover:shadow-md' : 'border-[#27272a] hover:shadow-md'}
       `}
       style={{ minWidth: 110, maxWidth: 160 }}
     >
+      {/* 配置不完整角标 */}
+      {incomplete && (
+        <span
+          title="配置不完整：缺少必填项（如未选择 Agent），执行前校验会拦截"
+          className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-amber-500"
+        />
+      )}
       {/* 主体 */}
       <div className="px-2 py-1.5">
         {/* 图标 + 名称 */}
