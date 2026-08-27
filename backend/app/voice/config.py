@@ -39,6 +39,7 @@ class VoiceRuntimeConfig:
     vad_mode: str
     vad_threshold: float
     vad_silence_ms: int
+    tts_enabled: bool = True
 
 
 async def get_runtime_config() -> VoiceRuntimeConfig:
@@ -108,4 +109,5 @@ async def get_runtime_config() -> VoiceRuntimeConfig:
         vad_mode=cfg.vad.mode,
         vad_threshold=cfg.vad.threshold,
         vad_silence_ms=cfg.vad.silence_ms,
+        tts_enabled=cfg.tts_enabled,
     )

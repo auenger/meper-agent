@@ -63,8 +63,13 @@ class VoiceConfigService:
 
         old_zhipu = existing.zhipu if existing else ZhipuConfig()
         old_aliyun = existing.aliyun if existing else AliyunConfig()
+        if body.tts_enabled is None:
+            tts_enabled = existing.tts_enabled if existing else True
+        else:
+            tts_enabled = body.tts_enabled
         cfg = VoiceConfig(
             active_provider=body.active_provider,
+            tts_enabled=tts_enabled,
             api_key_enc=resolve_api_key(
                 body.api_key, existing.api_key_enc if existing else ""
             ),
@@ -140,6 +145,7 @@ class VoiceConfigService:
 
         return {
             "active_provider": cfg.active_provider,
+            "tts_enabled": cfg.tts_enabled,
             "api_key_masked": mask(cfg.api_key_enc),
             "asr": {
                 "resource_id": cfg.asr.resource_id,

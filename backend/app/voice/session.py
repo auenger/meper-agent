@@ -485,10 +485,12 @@ class VoiceSession:
             return
         async with self._turn_lock:
             turn = TurnContext(transcript=transcript)
-            turn.tts_queue = asyncio.Queue()
+            if self.cfg.tts_enabled:
+                turn.tts_queue = asyncio.Queue()
             self._active_turn = turn
             await self._set_state(P.STATE_THINKING)
-            turn.tts_task = asyncio.create_task(self._tts_pump(turn))
+            if turn.tts_queue is not None:
+                turn.tts_task = asyncio.create_task(self._tts_pump(turn))
             turn_status = 200
             try:
                 if self._pending_clarification:
@@ -508,7 +510,8 @@ class VoiceSession:
                         await turn.tts_queue.put(turn.tts_buffer)
                         turn.tts_buffer = ""
                     await turn.tts_queue.put(None)  # sentinel
-                    await turn.tts_task
+                    if turn.tts_task is not None:
+                        await turn.tts_task
             except asyncio.CancelledError:
                 turn._cancelled = True
                 await self._abort_tts(turn)

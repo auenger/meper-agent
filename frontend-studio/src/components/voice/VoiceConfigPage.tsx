@@ -46,6 +46,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
   })
 
   const [activeProvider, setActiveProvider] = useState<VoiceProvider>('volcano')
+  const [ttsEnabled, setTtsEnabled] = useState(true)
   const [apiKey, setApiKey] = useState('')
   const [ttsVoice, setTtsVoice] = useState('zh_female_vv_uranus_bigtts')
 
@@ -83,6 +84,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
   useEffect(() => {
     if (!cfg) return
     setActiveProvider(cfg.active_provider ?? 'volcano')
+    setTtsEnabled(cfg.tts_enabled ?? true)
     setTtsVoice(cfg.tts.voice_type)
     setZhipuAsrModel(cfg.zhipu.asr_model)
     setZhipuAsrUrl(cfg.zhipu.asr_url)
@@ -161,6 +163,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
     try {
       const saved = await voiceConfigApi.save({
         active_provider: activeProvider,
+        tts_enabled: ttsEnabled,
         api_key: apiKey || null,
         asr: {},
         tts: { voice_type: ttsVoice },
@@ -192,7 +195,7 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
       qc.setQueryData(voiceConfigKeys.detail, saved)
       qc.invalidateQueries({ queryKey: voiceConfigKeys.detail })
       qc.invalidateQueries({ queryKey: voiceConfigKeys.status })
-      setStatus({ type: 'success', msg: '已保存' })
+      setStatus({ type: 'success', msg: '已保存；新建或重新连接语音会话后生效。' })
     } catch (e) {
       setStatus({ type: 'error', msg: getErrorMessage(e, '操作失败') })
     } finally {
@@ -203,6 +206,10 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
   const test = async () => {
     if (cfg?.active_provider !== activeProvider) {
       setStatus({ type: 'info', msg: '切换供应商后请先保存配置，再测试连通。' })
+      return
+    }
+    if (cfg?.tts_enabled !== ttsEnabled) {
+      setStatus({ type: 'info', msg: '修改语音播报开关后请先保存，再测试连通。' })
       return
     }
     setStatus({ type: 'info', msg: '测试中…' })
@@ -270,6 +277,39 @@ export function VoiceConfigPage({ theme }: { theme: 'dark' | 'light' }) {
           </span>
         )}
       </div>
+
+      <section className={`rounded-lg border p-4 ${card}`}>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={ttsEnabled}
+          onClick={() => setTtsEnabled((enabled) => !enabled)}
+          className="flex min-h-11 w-full items-center justify-between gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 cursor-pointer"
+        >
+          <span className="min-w-0">
+            <span className="block text-sm font-medium">语音播报</span>
+            <span className={`mt-1 block text-xs leading-relaxed ${dark ? 'text-[#71717a]' : 'text-slate-400'}`}>
+              关闭后语音对话仅做语音识别，智能体回复以文字显示，不再合成播报。
+            </span>
+          </span>
+          <span
+            className={`relative h-6 w-11 shrink-0 rounded-full border transition-colors duration-200 ${
+              ttsEnabled
+                ? 'border-indigo-400 bg-indigo-500'
+                : dark
+                  ? 'border-[#52525b] bg-[#27272a]'
+                  : 'border-slate-300 bg-slate-200'
+            }`}
+            aria-hidden="true"
+          >
+            <span
+              className={`absolute top-0.5 h-4.5 w-4.5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+                ttsEnabled ? 'translate-x-5' : 'translate-x-0.5'
+              }`}
+            />
+          </span>
+        </button>
+      </section>
 
       <section className={`rounded-lg border p-4 space-y-3 ${card}`}>
         <h3 className="text-sm font-medium">语音供应商</h3>

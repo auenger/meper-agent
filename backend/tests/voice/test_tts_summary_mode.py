@@ -62,7 +62,7 @@ class FakeSummaryLLM:
         return SimpleNamespace(content=self.content)
 
 
-def runtime_config() -> VoiceRuntimeConfig:
+def runtime_config(*, tts_enabled: bool = True) -> VoiceRuntimeConfig:
     return VoiceRuntimeConfig(
         asr=ASRRuntime(api_key="key", resource_id="asr", url="wss://asr"),
         tts=TTSRuntime(
@@ -73,17 +73,20 @@ def runtime_config() -> VoiceRuntimeConfig:
         vad_mode="energy",
         vad_threshold=0.12,
         vad_silence_ms=600,
+        tts_enabled=tts_enabled,
     )
 
 
-def make_session() -> tuple[FakeWebSocket, VoiceSession]:
+def make_session(
+    *, tts_enabled: bool = True, tts_factory: Any = FakeTTS
+) -> tuple[FakeWebSocket, VoiceSession]:
     ws = FakeWebSocket()
     session = VoiceSession(
         ws,  # type: ignore[arg-type]
         "user-1",
-        cfg=runtime_config(),
+        cfg=runtime_config(tts_enabled=tts_enabled),
         asr_factory=FakeASR,  # type: ignore[arg-type]
-        tts_factory=FakeTTS,  # type: ignore[arg-type]
+        tts_factory=tts_factory,
     )
     return ws, session
 
@@ -203,3 +206,34 @@ async def test_short_reply_streams_normally() -> None:
         m["content"] for m in ws.messages if m["type"] == P.SERVER_AGENT_TEXT_DELTA
     ]
     assert deltas == ["今天天气不错。", "适合出去走走。"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_tts_keeps_text_reply_without_starting_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden_tts_factory() -> FakeTTS:
+        raise AssertionError("TTS factory must not be called when playback is disabled")
+
+    ws, session = make_session(
+        tts_enabled=False,
+        tts_factory=forbidden_tts_factory,
+    )
+
+    async def fake_exec_brain(turn: TurnContext) -> None:
+        await session._on_brain_event(
+            {"type": "text_delta", "content": "只显示文字回复。"}, turn
+        )
+
+    monkeypatch.setattr(session, "_exec_brain", fake_exec_brain)
+
+    await session._run_turn("问题")
+
+    message_types = [message["type"] for message in ws.messages]
+    assert P.SERVER_AGENT_TEXT_DELTA in message_types
+    assert P.STATE_SPEAKING not in [
+        message.get("state")
+        for message in ws.messages
+        if message["type"] == P.SERVER_VOICE_STATE
+    ]
+    assert session._tts is None
