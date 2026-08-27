@@ -40,6 +40,7 @@ export interface AliyunVoiceConfig {
 }
 export interface VoiceConfig {
   active_provider: VoiceProvider
+  tts_enabled: boolean
   api_key_masked: string
   asr: VoiceASRConfig
   tts: VoiceTTSConfig
@@ -53,6 +54,7 @@ export interface VoiceConfig {
 
 export interface VoiceConfigInput {
   active_provider: VoiceProvider
+  tts_enabled: boolean
   api_key: string | null
   asr: Record<string, never>
   tts: { voice_type: string }

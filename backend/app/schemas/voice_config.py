@@ -72,6 +72,7 @@ class AliyunConfigUpdate(BaseModel):
 
 class VoiceConfigUpdate(BaseModel):
     active_provider: Literal["volcano", "zhipu", "aliyun"] = "volcano"
+    tts_enabled: bool | None = None
     api_key: str | None = Field(default=None, description="留空=不修改")
     asr: ASRConfigUpdate = Field(default_factory=ASRConfigUpdate)
     tts: TTSConfigUpdate = Field(default_factory=TTSConfigUpdate)
@@ -134,6 +135,7 @@ class AliyunConfigResponse(BaseModel):
 
 class VoiceConfigResponse(BaseModel):
     active_provider: Literal["volcano", "zhipu", "aliyun"]
+    tts_enabled: bool
     api_key_masked: str
     asr: ASRConfigResponse
     tts: TTSConfigResponse

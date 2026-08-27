@@ -12,6 +12,7 @@ def test_legacy_document_defaults_to_volcano() -> None:
     cfg = VoiceConfig.model_validate({"_id": "voice_config", "api_key_enc": "key"})
 
     assert cfg.active_provider == "volcano"
+    assert cfg.tts_enabled is True
     assert cfg.zhipu == ZhipuConfig()
     assert cfg.aliyun == AliyunConfig()
 
@@ -48,6 +49,7 @@ async def test_is_configured_uses_active_provider(
 async def test_runtime_config_selects_aliyun(monkeypatch) -> None:
     cfg = VoiceConfig(
         active_provider="aliyun",
+        tts_enabled=False,
         aliyun=AliyunConfig(
             api_key_enc="encrypted",
             asr_model="asr-model",
@@ -72,11 +74,13 @@ async def test_runtime_config_selects_aliyun(monkeypatch) -> None:
     assert runtime.tts.provider == "aliyun"
     assert runtime.tts.resource_id == "tts-model"
     assert runtime.tts.language_type == "Chinese"
+    assert runtime.tts_enabled is False
 
 
 @pytest.mark.asyncio
 async def test_save_preserves_other_provider_keys(monkeypatch) -> None:
     existing = VoiceConfig(
+        tts_enabled=False,
         api_key_enc="volcano-encrypted",
         zhipu=ZhipuConfig(api_key_enc="zhipu-encrypted"),
         aliyun=AliyunConfig(api_key_enc="aliyun-encrypted"),
@@ -113,6 +117,13 @@ async def test_save_preserves_other_provider_keys(monkeypatch) -> None:
     result = await VoiceConfigService.save_config(body)
 
     assert result.api_key_enc == "volcano-encrypted"
+    assert result.tts_enabled is False
     assert result.zhipu.api_key_enc == "encrypted:new-zhipu-key"
     assert result.aliyun.api_key_enc == "aliyun-encrypted"
     assert saved["active_provider"] == "zhipu"
+    assert saved["tts_enabled"] is False
+
+    enabled = await VoiceConfigService.save_config(
+        VoiceConfigUpdate(tts_enabled=True)
+    )
+    assert enabled.tts_enabled is True

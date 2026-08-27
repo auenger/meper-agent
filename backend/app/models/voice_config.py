@@ -70,6 +70,7 @@ class VoiceConfig(BaseModel):
 
     id: str = Field(default=CONFIG_DOC_ID, alias="_id")
     active_provider: Literal["volcano", "zhipu", "aliyun"] = "volcano"
+    tts_enabled: bool = True
     api_key_enc: str = ""  # Agent Plan dedicated API Key, AES-256-GCM encrypted
     asr: ASRConfig = Field(default_factory=ASRConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)

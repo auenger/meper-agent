@@ -72,25 +72,28 @@ async def test_voice_config() -> dict:
     finally:
         if asr is not None:
             await asr.close()
-    try:
-        runtime = await get_runtime_config()
-        tts = create_tts_client(runtime)
-        probe = getattr(tts, "probe", None)
-        if probe is not None:
-            await probe()
-        else:
-            audio_bytes = 0
-            async for chunk in tts.synth_stream("语音连接测试"):
-                audio_bytes += len(chunk)
-            if audio_bytes == 0:
-                raise RuntimeError("TTS 连接成功，但没有返回音频数据")
-        messages.append("TTS 连接成功")
-    except Exception as exc:
-        success = False
-        messages.append(f"TTS 连接失败：{exc}")
-    finally:
-        if tts is not None:
-            await tts.close()
+    if cfg.tts_enabled:
+        try:
+            runtime = await get_runtime_config()
+            tts = create_tts_client(runtime)
+            probe = getattr(tts, "probe", None)
+            if probe is not None:
+                await probe()
+            else:
+                audio_bytes = 0
+                async for chunk in tts.synth_stream("语音连接测试"):
+                    audio_bytes += len(chunk)
+                if audio_bytes == 0:
+                    raise RuntimeError("TTS 连接成功，但没有返回音频数据")
+            messages.append("TTS 连接成功")
+        except Exception as exc:
+            success = False
+            messages.append(f"TTS 连接失败：{exc}")
+        finally:
+            if tts is not None:
+                await tts.close()
+    else:
+        messages.append("TTS 已关闭，跳过测试")
 
     await VoiceConfigService.update_test_result(success)
     return {"success": success, "message": "; ".join(messages)}
