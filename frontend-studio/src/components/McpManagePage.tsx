@@ -9,6 +9,7 @@ import { useState, useMemo, type FormEvent, type ReactNode } from 'react';
 import {
   Plug, Plus, Search, Zap, Pencil, Trash2, Eye, X, Loader2,
   CircleCheck, CircleSlash, AlertCircle, PlugZap, Folder,
+  ChevronRight, ListTree, Table,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -166,6 +167,10 @@ export function McpManagePage() {
   const [viewingConn, setViewingConn] = useState<McpConnection | null>(null);
   const [categoryFilter, setCategoryFilter] = useState('all');
   const [categoryModalOpen, setCategoryModalOpen] = useState(false);
+  // 视图模式：默认按分组折叠的树形，可切回平铺表格
+  const [viewMode, setViewMode] = useState<'tree' | 'table'>('tree');
+  // 已展开的分组 id 集合（默认全部折叠；搜索/过滤时强制展开以露出匹配项）
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const { data, isLoading } = useQuery({
     queryKey: mcpKeys.list({ page: 1, page_size: 100 }),
@@ -188,6 +193,36 @@ export function McpManagePage() {
   const filtered = connections
     .filter((c) => (categoryFilter === 'all' ? true : (c.category_id ?? '') === categoryFilter))
     .filter((c) => (search.trim() ? c.name.toLowerCase().includes(search.trim().toLowerCase()) : true));
+
+  // 搜索或按分组过滤时：强制展开所有分组 + 隐藏空分组，保证匹配项可见
+  const filterActive = search.trim() !== '' || categoryFilter !== 'all';
+
+  // 树形视图数据：分组（后端已按 sort 升序）→ 连接，未分组桶固定最后
+  const treeGroups = useMemo<TreeGroup[]>(() => {
+    const buckets: TreeGroup[] = categories.map((c) => ({
+      id: c.id,
+      name: c.name,
+      description: c.description || '',
+      conns: [],
+    }));
+    const ungrouped: TreeGroup = { id: '', name: '未分组', description: '', conns: [] };
+    for (const conn of filtered) {
+      const bucket = buckets.find((b) => b.id === (conn.category_id ?? ''));
+      if (bucket) bucket.conns.push(conn);
+      else ungrouped.conns.push(conn);
+    }
+    const withUngrouped = ungrouped.conns.length ? [...buckets, ungrouped] : buckets;
+    return filterActive ? withUngrouped.filter((b) => b.conns.length > 0) : withUngrouped;
+  }, [categories, filtered, filterActive]);
+
+  const toggleGroup = (id: string) => {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const stats = {
     total: connections.length,
@@ -353,13 +388,34 @@ export function McpManagePage() {
             <Folder className="w-4 h-4" /> 管理分组
           </button>
         )}
+        {/* 视图切换：树形（按分组折叠）/ 列表（平铺表格） */}
+        <div className="ml-auto flex items-center rounded-lg border border-[#27272a] overflow-hidden shrink-0">
+          <button
+            onClick={() => setViewMode('tree')}
+            title="树形视图（按分组折叠）"
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition cursor-pointer ${
+              viewMode === 'tree' ? 'bg-indigo-600 text-white' : 'text-[#a1a1aa] hover:bg-[#18181b] hover:text-white'
+            }`}
+          >
+            <ListTree className="w-4 h-4" /> 树形
+          </button>
+          <button
+            onClick={() => setViewMode('table')}
+            title="列表视图（平铺表格）"
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold transition cursor-pointer border-l border-[#27272a] ${
+              viewMode === 'table' ? 'bg-indigo-600 text-white' : 'text-[#a1a1aa] hover:bg-[#18181b] hover:text-white'
+            }`}
+          >
+            <Table className="w-4 h-4" /> 列表
+          </button>
+        </div>
       </div>
 
       {error && (
         <div className="p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 text-rose-300 text-xs">{error}</div>
       )}
 
-      {/* Table */}
+      {/* Tree / Table view */}
       <div className="rounded-xl border border-[#27272a] bg-[#18181b] overflow-hidden">
         {isLoading ? (
           <div className="flex items-center justify-center py-16 text-[#71717a]">
@@ -370,6 +426,19 @@ export function McpManagePage() {
             <Plug className="w-8 h-8 mb-2 opacity-40" />
             <p className="text-sm">暂无 MCP 连接，点击右上角新建</p>
           </div>
+        ) : viewMode === 'tree' ? (
+          <ConnectionTree
+            groups={treeGroups}
+            expanded={expandedGroups}
+            forceExpand={filterActive}
+            onToggleGroup={toggleGroup}
+            canWrite={canWrite}
+            testingId={testingId}
+            onTest={(c) => { setError(null); testM.mutate(c); setTestingId(c.id); }}
+            onView={(c) => setViewingConn(c)}
+            onEdit={(c) => { setError(null); setForm(connToForm(c)); setEditing(c); }}
+            onDelete={handleDelete}
+          />
         ) : (
           <table className="w-full text-sm">
             <thead>
@@ -580,6 +649,130 @@ export function McpManagePage() {
 
       {/* Category manage Modal */}
       {categoryModalOpen && <McpCategoryModal onClose={() => setCategoryModalOpen(false)} />}
+    </div>
+  );
+}
+
+/* ─── 分组树视图：分组 → 连接 两层 ─── */
+
+/** 树形视图的分组节点：分组（或"未分组"桶）→ 连接 两层。 */
+interface TreeGroup {
+  id: string;
+  name: string;
+  description: string;
+  conns: McpConnection[];
+}
+
+/**
+ * ConnectionTree — 按分组折叠的连接树（页面默认视图，默认全部折叠）。
+ *
+ * 分组节点行可展开/折叠（ChevronRight 旋转，风格同 PermissionTree）；
+ * 连接节点行复用表格的操作语义：状态点、URL/协议/工具数、测试/查看
+ * 工具/编辑/删除按钮。空分组显示「暂无连接」占位；调用方在过滤态下
+ * 直接隐藏空分组。
+ */
+function ConnectionTree({
+  groups,
+  expanded,
+  forceExpand,
+  onToggleGroup,
+  canWrite,
+  testingId,
+  onTest,
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  groups: TreeGroup[];
+  expanded: Set<string>;
+  /** 搜索/过滤态下强制展开，保证匹配项可见 */
+  forceExpand: boolean;
+  onToggleGroup: (id: string) => void;
+  canWrite: boolean;
+  testingId: string | null;
+  onTest: (c: McpConnection) => void;
+  onView: (c: McpConnection) => void;
+  onEdit: (c: McpConnection) => void;
+  onDelete: (c: McpConnection) => void;
+}) {
+  return (
+    <div>
+      {groups.map((g) => {
+        const open = forceExpand || expanded.has(g.id);
+        return (
+          <div key={g.id || 'ungrouped'}>
+            {/* 分组节点 */}
+            <button
+              type="button"
+              onClick={() => onToggleGroup(g.id)}
+              className="w-full flex items-center gap-2 px-4 py-3 hover:bg-[#1c1c1f] transition text-left cursor-pointer"
+            >
+              <ChevronRight className={`w-4 h-4 text-[#71717a] shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+              <Folder className="w-4 h-4 text-indigo-400 shrink-0" />
+              <span className="text-xs font-bold text-white shrink-0">{g.name}</span>
+              <span className="px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 text-[10px] font-semibold font-mono shrink-0">
+                {g.conns.length}
+              </span>
+              {g.description && <span className="text-[11px] text-[#71717a] truncate">{g.description}</span>}
+            </button>
+            {/* 连接节点 */}
+            {open && (
+              g.conns.length === 0 ? (
+                <p className="pl-11 pr-4 pb-3 text-[11px] text-[#52525b]">暂无连接</p>
+              ) : (
+                <div className="pb-1">
+                  {g.conns.map((c) => {
+                    const st = STATUS_STYLES[c.status] ?? STATUS_STYLES.disconnected;
+                    return (
+                      <div key={c.id} className="flex items-center gap-3 pl-11 pr-4 py-2.5 hover:bg-[#1c1c1f] transition">
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <st.Icon
+                            className={`w-3.5 h-3.5 shrink-0 ${st.color} ${c.status === 'connecting' ? 'animate-spin' : ''}`}
+                          />
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold text-white truncate">{c.name}</span>
+                              <span className={`text-[11px] font-bold shrink-0 ${st.color}`}>{st.label}</span>
+                            </div>
+                            {c.description && <p className="text-[11px] text-[#71717a] truncate">{c.description}</p>}
+                          </div>
+                        </div>
+                        <span className="hidden lg:block text-[11px] text-[#a1a1aa] font-mono max-w-[220px] truncate shrink-0" title={c.url}>{c.url}</span>
+                        <span className="hidden xl:block text-[11px] text-[#a1a1aa] shrink-0">{c.protocol ?? '—'}</span>
+                        <span className="text-[11px] text-[#71717a] font-mono shrink-0">{c.tool_count ?? 0} 工具</span>
+                        <div className="flex items-center justify-end gap-1 shrink-0">
+                          {canWrite && (
+                            <button onClick={() => onTest(c)} title="测试连接 + 发现工具" disabled={testingId === c.id}
+                              className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-amber-400 hover:bg-[#27272a] transition cursor-pointer disabled:opacity-50">
+                              {testingId === c.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
+                            </button>
+                          )}
+                          <button onClick={() => onView(c)} title="查看工具"
+                            className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-sky-400 hover:bg-[#27272a] transition cursor-pointer">
+                            <Eye className="w-4 h-4" />
+                          </button>
+                          {canWrite && (
+                            <button onClick={() => onEdit(c)} title="编辑"
+                              className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-indigo-400 hover:bg-[#27272a] transition cursor-pointer">
+                              <Pencil className="w-4 h-4" />
+                            </button>
+                          )}
+                          {canWrite && (
+                            <button onClick={() => onDelete(c)} title="删除"
+                              className="p-1.5 rounded-lg text-[#a1a1aa] hover:text-rose-400 hover:bg-[#27272a] transition cursor-pointer">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
