@@ -11,11 +11,13 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from app.engine.harness_integration.adapters.content import (
+    extract_answer_text,
+    extract_thinking_text,
+)
 from app.engine.harness_integration.adapters.stream_events import (
     _build_interrupt_event,
     _extract_interrupt,
-    _extract_text_content,
-    _extract_thinking_content,
     _StreamingAccumulator,
     stream_events_to_app_events,
 )
@@ -497,19 +499,19 @@ class TestBuildInterruptEvent:
 
 class TestExtractContent:
     def test_string_content(self):
-        assert _extract_text_content(_Chunk(content="hello")) == "hello"
+        assert extract_answer_text("hello") == "hello"
 
     def test_list_content(self):
         chunk = _Chunk(content=[{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
-        assert _extract_text_content(chunk) == "ab"
+        assert extract_answer_text(chunk.content) == "ab"
 
     def test_empty_content(self):
-        assert _extract_text_content(_Chunk(content="")) == ""
+        assert extract_answer_text("") == ""
 
     def test_thinking_from_additional_kwargs(self):
         chunk = _Chunk(additional_kwargs={"reasoning_content": "reasoning"})
-        assert _extract_thinking_content(chunk) == "reasoning"
+        assert extract_thinking_text(chunk) == "reasoning"
 
     def test_thinking_from_content_blocks(self):
         chunk = _Chunk(content=[{"type": "thinking", "thinking": "deep thought"}])
-        assert _extract_thinking_content(chunk) == "deep thought"
+        assert extract_thinking_text(chunk) == "deep thought"

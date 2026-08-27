@@ -34,6 +34,7 @@ from .app_event import (
     ToolCallStartEvent,
     ToolResultEvent,
 )
+from .content import extract_answer_text, extract_thinking_text
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -179,12 +180,12 @@ async def stream_events_to_app_events(
             if chunk is None:
                 continue
 
-            text = _extract_text_content(chunk)
+            text = extract_answer_text(getattr(chunk, "content", None))
             if text:
                 await on_event(TextDeltaEvent(content=text))
 
             if enable_thinking:
-                thinking = _extract_thinking_content(chunk)
+                thinking = extract_thinking_text(chunk)
                 if thinking:
                     await on_event(ThinkingDeltaEvent(content=thinking))
 
@@ -202,10 +203,10 @@ async def stream_events_to_app_events(
             output = data.get("output")
             if output is not None:
                 if enable_thinking:
-                    reasoning = _extract_thinking_content(output)
+                    reasoning = extract_thinking_text(output)
                     if reasoning:
                         await on_event(ThinkingEvent(content=reasoning))
-                content = _extract_text_content(output)
+                content = extract_answer_text(getattr(output, "content", None))
                 if content:
                     await on_event(TextEvent(content=content))
                 # 直接发出所有 tool_call 事件（不再缓冲到 on_tool_start）。
@@ -366,13 +367,13 @@ async def _emit_model_end(
 
     # 1. Complete thinking (only when enabled).
     if enable_thinking:
-        reasoning = _extract_thinking_content(output)
+        reasoning = extract_thinking_text(output)
         if reasoning:
             await on_event(ThinkingEvent(content=reasoning))
 
     # 2. Text — emitted whenever there is content, including the
     #    "intermediate text persisted" case (content + tool_calls together).
-    content = _extract_text_content(output)
+    content = extract_answer_text(getattr(output, "content", None))
     if content:
         await on_event(TextEvent(content=content))
 
@@ -456,59 +457,9 @@ class _StreamingAccumulator:
 
 
 # ---------------------------------------------------------------------------
-# Content extraction helpers (str / list-of-blocks tolerant)
+# Content extraction helpers — 迁移至 content.py（str / 块列表 / GLM quirk
+# 单块 dict 统一容忍），此处仅保留 tool_calls 提取。
 # ---------------------------------------------------------------------------
-
-
-def _extract_text_content(message: Any) -> str:
-    """Pull the answer text delta from a chunk / message.
-
-    Handles plain-string ``content`` and list-of-blocks ``content``
-    (``[{"type": "text", "text": "..."}, ...]``).
-    """
-    content = getattr(message, "content", None)
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text") or "")
-            elif isinstance(block, str):
-                parts.append(block)
-        return "".join(parts)
-    return ""
-
-
-def _extract_thinking_content(message: Any) -> str:
-    """Pull reasoning text from a chunk / message.
-
-    Looks first at ``additional_kwargs.reasoning_content`` (OpenAI-style),
-    then falls back to ``reasoning_content`` attribute, then to
-    ``type="thinking"`` blocks in ``content`` (Anthropic-style).
-    """
-    additional = getattr(message, "additional_kwargs", None) or {}
-    reasoning = additional.get("reasoning_content")
-    if isinstance(reasoning, str) and reasoning:
-        return reasoning
-
-    direct = getattr(message, "reasoning_content", None)
-    if isinstance(direct, str) and direct:
-        return direct
-
-    content = getattr(message, "content", None)
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                parts.append(block.get("thinking") or "")
-        joined = "".join(parts)
-        if joined:
-            return joined
-    return ""
 
 
 def _iter_tool_calls(message: Any) -> list[dict[str, Any]]:

@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
-from app.services.message_converters import messages_to_timeline_entries
+from app.services.message_converters import (
+    extract_final_answer,
+    messages_to_timeline_entries,
+)
 from langchain_core.messages import AIMessage, ToolMessage
 
 
@@ -72,3 +75,73 @@ def test_mixed_success_and_error_tools() -> None:
     by_id = {e["tool_call_id"]: e for e in entries}
     assert by_id["c1"].get("is_error") is not True
     assert by_id["c2"]["is_error"] is True
+
+
+# ---------------------------------------------------------------------------
+# GLM anthropic-compat quirk：正文藏在 thinking 块的额外 text 字段
+# ---------------------------------------------------------------------------
+
+_GLM_QUIRK_BLOCK = {
+    "signature": "b6ff287f29a4407e9b68ebee",
+    "thinking": "Vague but can proceed.",
+    "type": "thinking",
+    "text": "好的！这是最终回答。",
+}
+
+
+def test_glm_quirk_timeline_keeps_answer_when_thinking_disabled() -> None:
+    """enable_thinking=False 时 quirk 块的正文不能被整块丢弃。"""
+    messages = [AIMessage(content=[dict(_GLM_QUIRK_BLOCK)])]
+    entries = messages_to_timeline_entries(messages, enable_thinking=False)
+
+    texts = [e for e in entries if e.get("type") == "text"]
+    thinks = [e for e in entries if e.get("type") == "thinking"]
+    assert len(texts) == 1
+    assert texts[0]["content"] == "好的！这是最终回答。"
+    # 思考过程按开关抑制
+    assert thinks == []
+
+
+def test_glm_quirk_timeline_shows_thinking_when_enabled() -> None:
+    """enable_thinking=True 时思考与正文并存。"""
+    messages = [AIMessage(content=[dict(_GLM_QUIRK_BLOCK)])]
+    entries = messages_to_timeline_entries(messages, enable_thinking=True)
+
+    texts = [e for e in entries if e.get("type") == "text"]
+    thinks = [e for e in entries if e.get("type") == "thinking"]
+    assert len(texts) == 1
+    assert texts[0]["content"] == "好的！这是最终回答。"
+    assert len(thinks) == 1
+    assert thinks[0]["content"] == "Vague but can proceed."
+
+
+def test_standard_blocks_timeline_unchanged() -> None:
+    """标准 Anthropic thinking+text 两块：thinking 随开关、正文恒在。"""
+    messages = [AIMessage(content=[
+        {"type": "thinking", "thinking": "推理", "signature": "sig"},
+        {"type": "text", "text": "回答"},
+    ])]
+    entries = messages_to_timeline_entries(messages, enable_thinking=False)
+    assert [e["content"] for e in entries if e["type"] == "text"] == ["回答"]
+    assert [e for e in entries if e["type"] == "thinking"] == []
+
+
+def test_extract_final_answer_from_glm_quirk_block() -> None:
+    """chat invoke 路径：quirk 块只取正文，signature 不进答案。"""
+    messages = [AIMessage(content=[dict(_GLM_QUIRK_BLOCK)])]
+    answer = extract_final_answer(messages)
+    assert answer == "好的！这是最终回答。"
+    assert "signature" not in answer
+
+
+def test_extract_final_answer_from_standard_blocks() -> None:
+    messages = [AIMessage(content=[
+        {"type": "thinking", "thinking": "推理", "signature": "sig"},
+        {"type": "text", "text": "正文"},
+    ])]
+    assert extract_final_answer(messages) == "正文"
+
+
+def test_extract_final_answer_plain_string() -> None:
+    messages = [AIMessage(content="纯文本回答")]
+    assert extract_final_answer(messages) == "纯文本回答"

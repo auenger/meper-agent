@@ -23,11 +23,8 @@ from .app_event import (
     ToolCallEvent,
     ToolResultEvent,
 )
-from .stream_events import (
-    _extract_text_content,
-    _extract_thinking_content,
-    _iter_tool_calls,
-)
+from .content import extract_answer_text, extract_thinking_text
+from .stream_events import _iter_tool_calls
 
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
@@ -99,14 +96,14 @@ def _emit_ai_message(
     """Emit thinking / final-answer / tool-call events for an AIMessage."""
     # 1. Thinking (full, only when enabled).
     if enable_thinking:
-        reasoning = _extract_thinking_content(msg)
+        reasoning = extract_thinking_text(msg)
         if reasoning:
             events.append(ThinkingEvent(content=reasoning))
 
     # 2. Text — emitted whenever there is text content, *including*
     #    the "intermediate text persisted" case (content + tool_calls), so the
     #    output matches stream_events_to_app_events exactly.
-    text = _extract_text_content(msg)
+    text = extract_answer_text(getattr(msg, "content", None))
     if text:
         events.append(TextEvent(content=text))
 
@@ -131,7 +128,7 @@ def _emit_tool_message(msg: BaseMessage, events: list[AppEvent]) -> None:
     retrieve the original content after compression.
     """
     tool_name = getattr(msg, "name", "") or ""
-    content = _extract_text_content(msg) or str(getattr(msg, "content", "") or "")
+    content = extract_answer_text(getattr(msg, "content", None)) or str(getattr(msg, "content", "") or "")
     events.append(
         ToolResultEvent(
             tool_name=tool_name,

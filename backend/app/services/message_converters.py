@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 
+from app.engine.harness_integration.adapters.content import extract_answer_text
+
 
 def safe_json(obj) -> str:
     """Safely serialize to JSON, falling back to ``str()``."""
@@ -43,13 +45,15 @@ def extract_final_answer(messages: list) -> str:
     """Extract the final answer text from the message list.
 
     Finds the last AIMessage with textual content (no tool_calls)
-    and returns its content string.
+    and returns its content as a plain string.
     """
     from langchain_core.messages import AIMessage
 
     for msg in reversed(messages):
         if isinstance(msg, AIMessage) and msg.content and not msg.tool_calls:
-            return safe_str(msg.content)
+            # content 可能是块列表（thinking+text）或 GLM quirk 单块 dict，
+            # 统一提取正文，避免把 signature 等元数据 json.dumps 进答案。
+            return extract_answer_text(msg.content)
     return str(messages[-1]) if messages else ""
 
 
@@ -99,10 +103,17 @@ def messages_to_sse_events(
 
             for piece in _iter_content_blocks(msg):
                 ptype = piece.get("type")
-                if ptype == "thinking" and enable_thinking:
-                    t = piece.get("thinking") or ""
-                    if t:
-                        thinking_parts.append(safe_str(t))
+                if ptype == "thinking":
+                    if enable_thinking:
+                        t = piece.get("thinking") or ""
+                        if t:
+                            thinking_parts.append(safe_str(t))
+                    # GLM anthropic-compat quirk：最终回答藏在 thinking 块的
+                    # 额外 text 字段里——正文不受 enable_thinking 开关影响，
+                    # 必须并入正文，否则 timeline 会整块丢失回答。
+                    answer = piece.get("text") or ""
+                    if answer:
+                        text_parts.append(safe_str(answer))
                 elif ptype == "text":
                     t = piece.get("text") or ""
                     if t:
