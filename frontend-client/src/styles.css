@@ -342,19 +342,105 @@ textarea {
   font-weight: 700;
 }
 
+/* 欢迎词 Markdown：与聊天气泡 .message-content 共用排版 token，
+   轴线对齐 composer（820px），段落居中、列表/代码/引用左对齐 */
 .welcome-message {
-  width: min(100%, 560px);
+  width: min(100%, 820px);
   margin: 0 auto 8px;
   color: var(--client-text);
   font-size: 14px;
-  line-height: 1.7;
+  line-height: 1.72;
   text-align: center;
 }
 .welcome-message p {
-  margin: 0 0 8px;
+  margin: 0.65em 0;
 }
-.welcome-message p:last-child {
+.welcome-message > :first-child {
+  margin-top: 0;
+}
+.welcome-message > :last-child {
   margin-bottom: 0;
+}
+.welcome-message h1,
+.welcome-message h2,
+.welcome-message h3,
+.welcome-message h4 {
+  margin: 1.1em 0 0.45em;
+  line-height: 1.35;
+}
+.welcome-message h1 {
+  font-size: 1.3rem;
+}
+.welcome-message h2 {
+  font-size: 1.18rem;
+}
+.welcome-message h3,
+.welcome-message h4 {
+  font-size: 1.08rem;
+}
+.welcome-message strong {
+  font-weight: 600;
+}
+.welcome-message a {
+  color: var(--client-accent);
+  text-underline-offset: 2px;
+}
+.welcome-message ul,
+.welcome-message ol {
+  width: fit-content;
+  margin: 0.65em auto;
+  padding-left: 20px;
+  text-align: left;
+}
+.welcome-message li {
+  margin: 0.25em 0;
+}
+.welcome-message pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0.65em auto;
+  padding: 13px 15px;
+  border: 1px solid var(--client-border);
+  border-radius: 12px;
+  background: var(--client-code);
+  color: var(--client-text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.65;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.welcome-message :not(pre) > code {
+  padding: 0.15em 0.38em;
+  border-radius: 6px;
+  background: var(--client-code);
+  font-size: 0.88em;
+}
+.welcome-message blockquote {
+  width: fit-content;
+  max-width: 100%;
+  margin: 0.8em auto;
+  padding-left: 14px;
+  border-left: 3px solid var(--client-border);
+  color: var(--client-text-muted);
+  text-align: left;
+}
+.welcome-message img {
+  max-width: 100%;
+  border-radius: 10px;
+}
+.welcome-message table {
+  display: block;
+  max-width: 100%;
+  margin: 0.65em auto;
+  overflow-x: auto;
+  text-align: left;
+}
+.welcome-message hr {
+  margin: 1em auto;
+  border: 0;
+  border-top: 1px solid var(--client-border);
 }
 
 .message-viewport {
@@ -1045,6 +1131,7 @@ textarea {
 }
 
 .composer-quick-actions {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
@@ -1053,14 +1140,53 @@ textarea {
   padding: 0 2px;
 }
 
+/* 折叠态：单行展示，放不下的按钮收纳进行尾「⋯」（点击在容器内展开） */
+.composer-quick-actions[data-collapsed] {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+/* 隐藏量尺行：按真实按钮宽度测量单行可容纳数量 */
+.quick-actions-measure {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 6px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .composer-quick-actions .quick-action {
+  flex: 0 0 auto;
   height: 26px;
+  max-width: 220px;
   padding: 0 12px;
   font-size: 12px;
   border-radius: 999px;
   border-color: color-mix(in srgb, var(--client-accent) 30%, var(--client-border));
   background: var(--client-surface);
   color: var(--client-accent);
+}
+
+.composer-quick-actions .quick-action > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-quick-actions .quick-action-more {
+  min-width: 30px;
+  padding: 0 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+/* 展开态行尾收起按钮：纯图标（⌃），与「⋯」同宽的圆形胶囊 */
+.composer-quick-actions .quick-action-collapse {
+  min-width: 30px;
+  padding: 0;
 }
 
 .composer-quick-actions .quick-action:hover:not(:disabled) {
@@ -1420,6 +1546,10 @@ textarea {
 
   .composer-dock {
     padding: 7px 10px max(8px, env(safe-area-inset-bottom));
+  }
+
+  .composer-quick-actions .quick-action {
+    height: 30px;
   }
 
   .composer-note {

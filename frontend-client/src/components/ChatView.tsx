@@ -36,6 +36,7 @@ import type { AgentSummary } from '../types'
 import { GeneratedFiles } from './GeneratedFiles'
 import { MessageContent } from './MessageContent'
 import { collectSessionTasks, WorkflowBoard } from './WorkflowBoard'
+import { QuickActionsBar } from './QuickActionsBar'
 import { sessionFeedback, voteMessage, type SessionFeedbackItem } from '../api/chat'
 import { ClarificationFormCard } from './clarification-form-card'
 import { VoiceComposer } from './voice/VoiceComposer'
@@ -701,24 +702,17 @@ export function ChatView({
               />
             ) : null}
             {agent.recommendedItems && agent.recommendedItems.length > 0 ? (
-              <div className="composer-quick-actions">
-                {agent.recommendedItems.map((item, index) => (
-                  <Button
-                    key={`${index}:${item.label}`}
-                    className="quick-action"
-                    disabled={running || Boolean(hitl)}
-                    onClick={() =>
-                      submit(
-                        item.prompt || item.label,
-                        // prompt 为空时发送的就是 label 本身，无需额外展示文案
-                        item.prompt ? item.label : undefined,
-                      )
-                    }
-                  >
-                    {item.label}
-                  </Button>
-                ))}
-              </div>
+              <QuickActionsBar
+                items={agent.recommendedItems}
+                disabled={running || Boolean(hitl)}
+                onSelect={(item) =>
+                  submit(
+                    item.prompt || item.label,
+                    // prompt 为空时发送的就是 label 本身，无需额外展示文案
+                    item.prompt ? item.label : undefined,
+                  )
+                }
+              />
             ) : null}
             {inputMode === 'voice' && voiceAvailable ? (
               <VoiceComposer
