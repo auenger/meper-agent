@@ -65,13 +65,50 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+# Rough per-image vision-token estimate used when a message carries multimodal
+# image blocks. Providers charge by tiles/resolution (roughly 700-3000 tokens
+# for a ~2K-edge image); a mid value keeps compression decisions sane without
+# counting the base64 payload (which would inflate estimates ~100×).
+_IMAGE_BLOCK_TOKEN_ESTIMATE = 1200
+
+
+def _estimate_block_content_tokens(content: Any) -> int:
+    """Estimate tokens for a multimodal (list-of-blocks) content.
+
+    Text blocks count normally; image blocks count as a fixed per-image
+    estimate (base64 payload itself is never counted); unknown block types
+    fall back to their string repr (e.g. audio/file blocks carry small refs).
+    """
+    tokens = 0
+    for block in content:
+        if isinstance(block, dict):
+            btype = block.get("type", "")
+            if btype == "text":
+                tokens += estimate_tokens(str(block.get("text", "")))
+            elif btype == "image_url":
+                tokens += _IMAGE_BLOCK_TOKEN_ESTIMATE
+            else:
+                tokens += estimate_tokens(str(block))
+        else:
+            tokens += estimate_tokens(str(block))
+    return tokens
+
+
 def estimate_message_tokens(message: BaseMessage | dict[str, Any]) -> int:
-    """Estimate token count for a single message (LangChain or dict)."""
+    """Estimate token count for a single message (LangChain or dict).
+
+    Multimodal list content goes through :func:`_estimate_block_content_tokens`
+    — image blocks are estimated per-image instead of by base64 length, so
+    vision messages don't blow past the oversized-tool-result guard.
+    """
     if isinstance(message, dict):
-        content = str(message.get("content", ""))
+        content = message.get("content", "")
     else:
-        content = str(message.content)
-    tokens = estimate_tokens(content)
+        content = message.content
+    if isinstance(content, list):
+        tokens = _estimate_block_content_tokens(content)
+    else:
+        tokens = estimate_tokens(str(content))
     tokens += 4  # approximate metadata overhead (role, etc.)
     return tokens
 

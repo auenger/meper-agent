@@ -203,6 +203,9 @@ _VALID_FIELD_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _VALID_FIELD_TYPES = {"string", "number", "boolean", "enum", "object"}
 
+# 嵌套防御上限：对象可继续嵌套（业务建议 ≤3 层），超深层在归一化时剥离
+_MAX_SCHEMA_DEPTH = 5
+
 
 def _normalize_response_schema(node_config: dict[str, Any]) -> dict[str, Any] | None:
     """归一化 agent 节点的 response 结构声明，未声明/无效返回 None。
@@ -215,27 +218,28 @@ def _normalize_response_schema(node_config: dict[str, Any]) -> dict[str, Any] | 
     """
     raw = node_config.get("response_schema")
     if isinstance(raw, dict) and raw.get("type") in ("object", "array"):
-        fields = _clean_schema_fields(raw.get("fields"), depth=0)
+        fields = _clean_schema_fields(raw.get("fields"))
         if fields:
             return {"type": raw["type"], "fields": fields}
         return None
     # 兼容旧 output_schema（未发布格式，直接转译）
     legacy = node_config.get("output_schema")
     if isinstance(legacy, list):
-        fields = _clean_schema_fields(legacy, depth=0)
+        fields = _clean_schema_fields(legacy)
         if fields:
             return {"type": "object", "fields": fields}
     return None
 
 
-def _clean_schema_fields(fields: Any, *, depth: int) -> list[dict[str, Any]]:
-    """清洗字段列表：过滤非法项；第一层 object 字段保留一层子 fields。
+def _clean_schema_fields(fields: Any, *, depth: int = 0) -> list[dict[str, Any]]:
+    """清洗字段列表：过滤非法项，object 字段递归保留子 fields。
 
     每个字段可带 ``is_list``（列表标志，任何基础类型都可为列表——
-    string 列表 / enum 列表 / object 列表）；第二层允许标量列表，
-    object 列表只能出现在第一层（其 fields 即第二层）。
+    string 列表 / enum 列表 / object 列表，任意层级均可）。嵌套可继续
+    深入，防御上限 ``_MAX_SCHEMA_DEPTH`` 层（超深层剥离，validator
+    保存时拦截）。
     """
-    if not isinstance(fields, list):
+    if not isinstance(fields, list) or depth >= _MAX_SCHEMA_DEPTH:
         return []
     cleaned: list[dict[str, Any]] = []
     for f in fields:
@@ -250,12 +254,8 @@ def _clean_schema_fields(fields: Any, *, depth: int) -> list[dict[str, Any]]:
         entry = dict(f)
         entry["name"], entry["type"] = name, ftype
         entry["is_list"] = bool(f.get("is_list"))
-        if ftype == "object" and depth == 0:
-            # 第二层：剥离再嵌套的 fields（不可再嵌）
-            sub = _clean_schema_fields(f.get("fields"), depth=1)
-            for g in sub:
-                g.pop("fields", None)
-            entry["fields"] = sub
+        if ftype == "object":
+            entry["fields"] = _clean_schema_fields(f.get("fields"), depth=depth + 1)
         else:
             entry.pop("fields", None)
         cleaned.append(entry)
@@ -269,9 +269,11 @@ def _validate_schema_fields(
     path: str = "",
     depth: int = 0,
 ) -> str:
-    """校验 dict 是否符合字段契约（嵌套最多两层），返回错误串或空串。"""
+    """校验 dict 是否符合字段契约（递归嵌套），返回错误串或空串。"""
     if not isinstance(obj, dict):
         return f"{path or '值'} 应为对象"
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return ""  # 防御上限（配置侧已剥/拦，运行时不再深入）
     for f in fields:
         name = str(f.get("name") or "").strip()
         if not name:
@@ -311,8 +313,6 @@ def _validate_field_value(
     if ftype == "object":
         if not isinstance(value, dict):
             return f"字段 {label} 应为 object，实际为 {type(value).__name__}"
-        if depth >= 1:
-            return ""  # 第二层不允许再嵌（配置侧已拦，运行时防御）
         return _validate_schema_fields(
             value, f.get("fields") or [], path=label, depth=depth + 1,
         )

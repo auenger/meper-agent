@@ -145,6 +145,13 @@ def compress_tool_outputs(
                 skipped_unconsumed += 1
                 result.append(m)
                 continue
+            if isinstance(m.content, list):
+                # 多模态 content(view_image 的 [IMAGE 标记]+image 块):不走
+                # str() 截断——那会把 base64 全量转字符串并毁掉块结构。
+                # 其中 image 块的降级由 stale-image downgrade 流程统一负责
+                # (标记块很短,无需文本压缩),这里原样保留。
+                result.append(m)
+                continue
             original = str(m.content)
             shortened = summarize_tool_content(original, max_output=max_output)
             if shortened != original:

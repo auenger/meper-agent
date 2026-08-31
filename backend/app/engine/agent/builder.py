@@ -462,6 +462,25 @@ def _build_builtin_tool_declaration(
             "",
         ])
 
+    # view_image is always available (capability tool, like ask_clarification)
+    from app.engine.agent.image_tool import IMAGE_TOOL_BY_NAME
+
+    _view = IMAGE_TOOL_BY_NAME.get("view_image")
+    if _view is not None:
+        _view_desc = (_view.description or "").split("\n")[0].strip()
+        lines.extend([
+            "",
+            "### Image Review",
+            "",
+            f"- **view_image**: {_view_desc}",
+            "Images the user attached earlier are kept in context only for the turn",
+            "they arrive; after that they degrade to a placeholder carrying a",
+            "`file_id`. When you need to look at an image again (e.g. the user asks",
+            "about \"the chart I sent earlier\"), call `view_image(file_id=...)` to",
+            "re-load it into context.",
+            "",
+        ])
+
     if execution_context == "workflow":
         # 工作流无人值守语义：ask_clarification 已剥离，不生成 Clarification 段
         # （自主执行规则由 build_tool_declaration 作为独立段注入）。

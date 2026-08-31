@@ -72,6 +72,8 @@ def build_config(
     recursion_limit: int = 75,
     cancel_checker: Callable[[], Awaitable[bool]] | None = None,
     tool_output_reference_formatter: Callable[[str], str] | None = None,
+    image_reference_formatter: Callable[[str, str], str] | None = None,
+    image_keep_recent: int | None = None,
     protected_turns: int | None = None,
     compression_threshold: float | None = None,
     hard_limit_ratio: float | None = None,
@@ -109,6 +111,12 @@ def build_config(
             ``tool_call_id`` into a reference note appended to truncated tool
             outputs (so the agent knows how to recall the full original).
             Application-supplied — harness never hardcodes the recall mechanism.
+        image_reference_formatter: Optional callable ``(file_id, name) -> str``
+            producing the placeholder shown when stale image blocks are
+            downgraded out of context (multimodal history management).
+            Application-supplied — harness never hardcodes the recall tool.
+        image_keep_recent: Keep the most recent N images un-degraded when
+            downgrading stale images (0 = degrade all; None = feature off).
 
     Returns:
         A ``RunnableConfig`` dict ready to pass to ``graph.ainvoke``.
@@ -137,6 +145,10 @@ def build_config(
         configurable["tool_output_reference_formatter"] = (
             tool_output_reference_formatter
         )
+    if image_reference_formatter is not None:
+        configurable["image_reference_formatter"] = image_reference_formatter
+    if image_keep_recent is not None:
+        configurable["image_keep_recent"] = image_keep_recent
     if protected_turns is not None:
         configurable["protected_turns"] = protected_turns
     if compression_threshold is not None:

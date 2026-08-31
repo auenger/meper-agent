@@ -16,6 +16,10 @@ Provider behaviour:
 * **Anthropic** (``claude-*``): ``thinking={"type": "enabled",
   "budget_tokens": ...}``; requires ``max_tokens > budget``.
 * **OpenAI o-series** (``o1-*`` / ``o3-*`` / ``o4-*``): ``reasoning_effort="high"``.
+* **Qwen** (``qwen*``, DashScope/vLLM OpenAI 兼容端点):
+  ``extra_body={"enable_thinking": True/False}`` — 商用端点默认关思考,
+  必须显式开启;开源部署默认开,需要显式关闭。
+* **GLM** (``glm*``): ``extra_body={"thinking": {"type": ...}}``.
 * **Others**: silently degrade (no exception).
 """
 
@@ -36,12 +40,31 @@ _ANTHROPIC_PREFIXES: tuple[str, ...] = ("claude-",)
 # OpenAI reasoning models that support reasoning_effort.
 _OPENAI_REASONING_PREFIXES: tuple[str, ...] = ("o1-", "o3-", "o4-")
 
+# Qwen 系(DashScope / vLLM 兼容端点):enable_thinking 布尔开关。
+_QWEN_MARKERS: tuple[str, ...] = ("qwen",)
+# GLM 系(智谱 OpenAI 兼容端点):thinking 对象开关。
+_GLM_MARKERS: tuple[str, ...] = ("glm",)
+
 # Default token budget for Claude extended thinking.
 _ANTHROPIC_THINKING_BUDGET = 5000
 
 # Anthropic requires budget_tokens >= 1024; below this max_tokens there is no
 # room for a meaningful thinking budget + answer, so thinking is disabled.
 _MIN_THINKING_MAX_TOKENS = 2048
+
+
+def _openai_thinking_kwargs(model_id: str, enable_thinking: bool) -> dict[str, Any]:
+    """OpenAI 兼容端点的思考开关:按模型名 dispatch 到各家扩展参数。
+
+    互不兼容的厂商参数各自独立(未识别的参数会被端点忽略),不混发,
+    避免一家报 unknown parameter。
+    """
+    lowered = model_id.lower()
+    if any(m in lowered for m in _QWEN_MARKERS):
+        return {"extra_body": {"enable_thinking": enable_thinking}}
+    if any(m in lowered for m in _GLM_MARKERS):
+        return {"extra_body": {"thinking": {"type": "enabled" if enable_thinking else "disabled"}}}
+    return {}
 
 
 def build_thinking_kwargs(
@@ -66,8 +89,11 @@ def build_thinking_kwargs(
     """
     if not enable_thinking:
         # Explicitly disable thinking for providers that default to returning
-        # reasoning content (e.g. DeepSeek).
+        # reasoning content (e.g. DeepSeek / 开源 Qwen3 默认开思考).
         if provider_or_compatibility == "openai":
+            vendor = _openai_thinking_kwargs(model_id, False)
+            if vendor:
+                return vendor
             return {"extra_body": {"thinking": {"type": "disabled"}}}
         if provider_or_compatibility == "anthropic":
             return {"thinking": {"type": "disabled"}}
@@ -103,10 +129,14 @@ def build_thinking_kwargs(
             kwargs["max_tokens"] = budget * 4
         return kwargs
 
-    # OpenAI o-series path.
+    # OpenAI path: o-series → reasoning_effort;Qwen/GLM → 厂商扩展参数;
+    # 其余静默降级。
     if provider_or_compatibility == "openai":
         if any(model_id.startswith(p) for p in _OPENAI_REASONING_PREFIXES):
             return {"reasoning_effort": "high"}
+        vendor = _openai_thinking_kwargs(model_id, True)
+        if vendor:
+            return vendor
         logger.info("llm_thinking_not_supported", model_id=model_id)
         return {}
 
@@ -180,7 +210,12 @@ def supports_thinking(model_id: str, compatibility: str) -> bool:
     if compatibility == "anthropic":
         return True
     if compatibility == "openai":
-        return any(model_id.startswith(p) for p in _OPENAI_REASONING_PREFIXES)
+        if any(model_id.startswith(p) for p in _OPENAI_REASONING_PREFIXES):
+            return True
+        lowered = model_id.lower()
+        return any(m in lowered for m in _QWEN_MARKERS) or any(
+            m in lowered for m in _GLM_MARKERS
+        )
     return False
 
 

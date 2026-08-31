@@ -126,9 +126,16 @@ def _emit_tool_message(msg: BaseMessage, events: list[AppEvent]) -> None:
     no ``name`` (older LangChain versions); the result content is always
     stringified. ``tool_call_id`` is carried over so recall_tool_result can
     retrieve the original content after compression.
+
+    多模态 list content（view_image 的图片块）：extract_answer_text 只收
+    text 块（image 块无 text 字段自然丢弃），为空时给占位——绝不能 fallback
+    ``str(content)`` 把 base64 全量带给前端。
     """
     tool_name = getattr(msg, "name", "") or ""
-    content = extract_answer_text(getattr(msg, "content", None)) or str(getattr(msg, "content", "") or "")
+    raw = getattr(msg, "content", None)
+    content = extract_answer_text(raw)
+    if not content:
+        content = "[图片已载入]" if isinstance(raw, list) else str(raw or "")
     events.append(
         ToolResultEvent(
             tool_name=tool_name,

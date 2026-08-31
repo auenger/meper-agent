@@ -396,6 +396,32 @@ def _compress_by_turns(
     else:
         messages = paired
 
+    # ⓪-b 旧图降级:protected_turns 外的 image 块换成可回取占位。独立于
+    # token 阈值——图片按张计费视觉 token,每轮 LLM 调用都在烧钱,尽早回收。
+    # formatter 由应用层注入(harness 不硬编码回看工具名);未注入=功能关闭。
+    image_formatter = _configurable(config).get("image_reference_formatter")
+    if image_formatter is not None:
+        from agent_flow_harness.context_engineering.images import (
+            downgrade_stale_images,
+        )
+
+        keep_recent = int(_configurable(config).get("image_keep_recent", 0) or 0)
+        messages, degraded_images = downgrade_stale_images(
+            messages,
+            protected_turns=protected_turns,
+            keep_recent=keep_recent,
+            formatter=image_formatter,
+        )
+        if degraded_images:
+            changed = True
+            actions_parts.append(f"旧图降级×{degraded_images}")
+            logger.info(
+                "stale_images_downgraded",
+                session_id=session_id,
+                count=degraded_images,
+                keep_recent=keep_recent,
+            )
+
     cached = summary_cache.get(session_id) if session_id else None
     if cached:
         messages, inserted = apply_cached_summary(messages, cached)

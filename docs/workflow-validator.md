@@ -68,13 +68,15 @@ agent 节点的输出模型与 opt-in 配置另有专项校验：
   目标节点存在且不指向自身（计入连边索引，参与 DAG/孤儿检测）。
 - **`response_schema`（response 返回结构）**：`{type: "text"|"object"|"array",
   fields: [...]}`；字段 `{name, type: string|number|boolean|enum|object,
-  required, enum_values, description, fields(第二层)}`，**嵌套最多两层**。
-  校验：type 白名单、字段名须为合法标识符（特殊字符会破坏
-  `{{node.response.field}}` 引用）、enum 必须带非空 `enum_values`、第三层嵌套
-  报错。运行时 Agent 最终回复必须是符合契约的 JSON（违规自动带反馈重试一次，
-  二次违规按 `AGENT_OUTPUT_SCHEMA_VIOLATION` 失败），解析后的原生 dict/list
-  写入 `response`，下游 `{{node.response.field.sub}}` 直接取值；array 用数字
-  下标（`{{node.response.0.title}}`）。
+  required, is_list, enum_values, description, fields}`——**is_list 列表标志
+  可作用于任意层级的任意类型**（文本列表 / 枚举列表 / 对象列表），对象可继续
+  嵌套（建议 ≤3 层，防御上限 5 层）。校验：type 白名单、字段名须为合法标识符
+  （特殊字符会破坏 `{{node.response.field}}` 引用）、enum 必须带非空
+  `enum_values`、超 5 层嵌套报错。运行时 Agent 最终回复必须是符合契约的
+  JSON（违规自动带反馈重试一次，二次违规按 `AGENT_OUTPUT_SCHEMA_VIOLATION`
+  失败），解析后的原生 dict/list 写入 `response`，下游
+  `{{node.response.field.sub}}` 直接取值；array 用数字下标
+  （`{{node.response.0.title}}`）。
 
 注意：DAG 不允许回边，信息不足分支澄清后不能回环重跑原 agent 节点，需由作者
 接续新节点。

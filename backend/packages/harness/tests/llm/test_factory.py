@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import pytest
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessageChunk
 from langchain_openai import ChatOpenAI
 
 from agent_flow_harness.llm import build_client_from_doc, build_client_from_env
 from agent_flow_harness.llm.providers.openai_compat import (
+    ReasoningChatOpenAI,
     build_auth_kwargs,
     parse_custom_auth_headers,
 )
@@ -31,19 +33,12 @@ def test_build_client_from_env_anthropic() -> None:
     assert isinstance(llm, ChatAnthropic)
 
 
-def test_build_client_from_env_unknown_provider_raises() -> None:
-    """A model name that maps to no known provider raises ValueError."""
-    # detect_provider falls back to openai for anything non-claude, so to
-    # exercise the unsupported branch we patch the known-providers map.
-    import agent_flow_harness.llm.providers.openai_compat as mod
-
-    original = mod._KNOWN_PROVIDERS.copy()
-    try:
-        mod._KNOWN_PROVIDERS.clear()
-        with pytest.raises(ValueError, match="Unsupported"):
-            build_client_from_env("gpt-4o")
-    finally:
-        mod._KNOWN_PROVIDERS.update(original)
+def test_build_client_from_env_openai_uses_reasoning_subclass(monkeypatch) -> None:
+    """openai 路径统一用 ReasoningChatOpenAI(思考增量透传)。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    llm = build_client_from_env("qwen3.8-max")
+    assert isinstance(llm, ReasoningChatOpenAI)
+    assert isinstance(llm, ChatOpenAI)
 
 
 # ---------------------------------------------------------------------------
@@ -128,3 +123,66 @@ def test_build_auth_kwargs_unknown_falls_back() -> None:
 def test_parse_custom_auth_headers_json_and_plain() -> None:
     assert parse_custom_auth_headers("Bearer {key}", "sk") == {"Authorization": "Bearer sk"}
     assert parse_custom_auth_headers('{"X-Key": "{key}"}', "sk") == {"X-Key": "sk"}
+
+
+# ---------------------------------------------------------------------------
+# ReasoningChatOpenAI — 第三方端点思考增量透传
+# ---------------------------------------------------------------------------
+
+
+def _make_reasoning_llm() -> ReasoningChatOpenAI:
+    import os
+
+    return ReasoningChatOpenAI(
+        model="qwen3.8-max", api_key=os.environ.get("OPENAI_API_KEY", "sk-test"),
+    )
+
+
+def _stream_chunk(reasoning: str = "", content: str = "") -> dict:
+    """模拟 Qwen/DeepSeek 兼容端点的流式 delta chunk。"""
+    delta: dict = {}
+    if reasoning:
+        delta["reasoning_content"] = reasoning
+    if content:
+        delta["content"] = content
+    return {"choices": [{"delta": delta, "index": 0}]}
+
+
+def test_reasoning_content_passes_through() -> None:
+    """标准 ChatOpenAI 丢弃 delta.reasoning_content;子类必须补回
+    additional_kwargs(否则思考增量永远到不了 extract_thinking_text)。"""
+    llm = _make_reasoning_llm()
+    gen = llm._convert_chunk_to_generation_chunk(
+        _stream_chunk(reasoning="让我想一想"), AIMessageChunk, None
+    )
+    assert gen is not None
+    assert gen.message.additional_kwargs.get("reasoning_content") == "让我想一想"
+
+
+def test_reasoning_chunks_merge_to_full_text() -> None:
+    """流式多片增量 merge 后是完整思考文本(on_chat_model_end 消费)。"""
+    from langchain_core.messages import AIMessageChunk as _Chunk
+
+    llm = _make_reasoning_llm()
+    g1 = llm._convert_chunk_to_generation_chunk(
+        _stream_chunk(reasoning="第一步"), _Chunk, None
+    )
+    g2 = llm._convert_chunk_to_generation_chunk(
+        _stream_chunk(reasoning="第二步"), _Chunk, None
+    )
+    assert g1 is not None and g2 is not None
+    merged = g1.message + g2.message  # LangChain 流式合并(字符串自动拼接)
+    assert merged.additional_kwargs["reasoning_content"] == "第一步第二步"
+
+
+def test_plain_content_chunk_unaffected() -> None:
+    """无思考字段的普通 chunk 行为不变。"""
+    from langchain_core.messages import AIMessageChunk as _Chunk
+
+    llm = _make_reasoning_llm()
+    gen = llm._convert_chunk_to_generation_chunk(
+        _stream_chunk(content="你好"), _Chunk, None
+    )
+    assert gen is not None
+    assert gen.message.content == "你好"
+    assert "reasoning_content" not in gen.message.additional_kwargs

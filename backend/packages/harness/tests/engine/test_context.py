@@ -33,6 +33,22 @@ def test_estimate_message_tokens_handles_message_and_dict() -> None:
     assert estimate_message_tokens({"role": "user", "content": "hello"}) > 0
 
 
+def test_estimate_message_tokens_multimodal_not_counting_base64() -> None:
+    """image 块按固定估值计,base64 载荷绝不进 len//4。"""
+    huge_b64 = "x" * 400_000  # 若误按 str() 估算会是 ~10 万 token
+    blocks = [
+        {"type": "text", "text": "hello world"},
+        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{huge_b64}"}},
+    ]
+    msg = HumanMessage(content=blocks)
+    tokens = estimate_message_tokens(msg)
+    # 文本 ~3 + image 固定估值(1200) + 元数据 4 —— 远小于 10 万。
+    assert tokens < 2_000
+    assert tokens > 1_200
+    # dict 形态同样处理。
+    assert estimate_message_tokens({"role": "user", "content": blocks}) == tokens
+
+
 def test_extract_model_name_reads_attribute() -> None:
     assert extract_model_name(_NamedLLM("gpt-4o-mini")) == "gpt-4o-mini"
 

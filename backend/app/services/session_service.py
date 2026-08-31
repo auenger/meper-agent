@@ -314,6 +314,69 @@ class MessageService:
             update_doc["$set"]["token_usage"] = token_usage
         await col.update_one({"_id": last_msg["_id"]}, update_doc)
 
+    # 忽略标记文案——与 resume 的 tool_result 同构持久化，前端卡片
+    # 已答态直接展示该文本。
+    DISMISSED_RESULT_TEXT = "(用户已忽略此问题)"
+    _INTERRUPT_TOOL_NAMES = ("ask_clarification", "confirm_workflow")
+
+    @staticmethod
+    async def dismiss_pending_clarification(session_id: str) -> bool:
+        """Close the pending ask_clarification/confirm_workflow card.
+
+        用户不想回答 agent 的追问（问题不对 / 想改传文件）时关闭待答卡片：
+        给最后一条 agent 消息里未答的 interrupt tool_call 追加一条合成
+        tool_result（与 resume 持久化答案完全同构，前端按 tool_call_id
+        配对合并）。卡片进入已答态后，下一次发送即走普通 stream 新一轮。
+
+        LLM 上下文不受影响——checkpointer 里的 pending interrupt 由下一次
+        普通 stream 输入自然丢弃（annotate_interruptions 合成
+        「执行被中断」ToolMessage 补齐孤儿 tool call 配对）。
+
+        Returns:
+            True 表示找到并关闭了待答卡片；False 表示没有待答卡片（幂等）。
+        """
+        col = MessageService._collection()
+        last_msg = await col.find_one(
+            {"session_id": session_id, "role": "agent"},
+            sort=[("created_at", -1)],
+        )
+        if last_msg is None:
+            return False
+
+        entries = last_msg.get("timeline_entries") or []
+        # 已应答 tool_call 的配对键集合（tool_call_id 优先，回退
+        # tool_name——与前端 agentMessageToDisplay 的合并逻辑一致）。
+        answered_keys: set[str] = set()
+        for e in entries:
+            if e.get("type") == "tool_result":
+                answered_keys.add(e.get("tool_call_id") or e.get("tool_name") or "")
+        # 倒序定位最后一个未答的 interrupt tool_call（checkpointer 同时
+        # 只挂起一个 interrupt，即流式结束前的最后一次追问）。
+        for e in reversed(entries):
+            if e.get("type") != "tool_call":
+                continue
+            name = e.get("tool_name") or ""
+            if name not in MessageService._INTERRUPT_TOOL_NAMES:
+                continue
+            if (e.get("id") or name) in answered_keys:
+                continue
+            await col.update_one(
+                {"_id": last_msg["_id"]},
+                {
+                    "$push": {
+                        "timeline_entries": {
+                            "type": "tool_result",
+                            "tool_name": name,
+                            "content": MessageService.DISMISSED_RESULT_TEXT,
+                            "status": "success",
+                            "tool_call_id": e.get("id") or "",
+                        }
+                    }
+                },
+            )
+            return True
+        return False
+
     @staticmethod
     async def list_messages(session_id: str) -> list[dict]:
         """List all messages for a session, ordered by creation time."""

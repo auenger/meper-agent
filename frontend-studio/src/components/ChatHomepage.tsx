@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, FormEvent, useCallback, type MouseEvent, type ChangeEvent } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, FormEvent, useCallback, type MouseEvent, type ChangeEvent } from 'react';
 import { Agent, Message, type ChatAttachment, type TimelineEntry } from '../types';
 import {
   Send, Plus, Sparkles, Trash2, FileCode, CheckCircle,
@@ -23,7 +23,11 @@ import { detectPreviewKind } from './FilePreview';
 import { FilePreviewModal } from './FilePreviewModal';
 import { WorkflowTaskCard, parseTaskCreated } from './WorkflowTaskCard';
 import WorkflowProposalCard from './workflow-proposal-card';
-import { ClarificationFormCard, type ClarificationField } from './clarification-form-card';
+import {
+  ClarificationFormCard,
+  DISMISSED_CLARIFICATION_TEXT,
+  type ClarificationField,
+} from './clarification-form-card';
 import { ChatVoiceComposer } from './voice/ChatVoiceComposer';
 import { voiceConfigApi, voiceConfigKeys } from '../services/voice-config-api';
 
@@ -349,7 +353,9 @@ function ChatAttachmentCard({
               <img
                 src={thumbUrl}
                 alt={att.name}
-                className="max-h-48 max-w-full object-contain block"
+                // 固定尺寸 + cover:与 loading/error 占位(w-48 h-32)一致,
+                // 竖图/横图/多图排列整齐无跳动,点击弹窗看原图(不裁剪)。
+                className="w-48 h-32 object-cover block"
                 draggable={false}
               />
             )
@@ -557,6 +563,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
   const messageEndRef = useRef<HTMLDivElement>(null);
   // 对话滚动容器：贴底判定用（只有输出贴底时才自动跟随，见 isPinnedToBottom）。
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  // 每次消息更新【前】捕获的贴底状态：DOM 提交后据此决定是否跟随滚动。
+  // 不能在 effect 里现测——新内容撑高后距底必超阈值，守卫会永久脱锁，
+  // 表现为流式输出不再自动跟随（需手动滚动）。
+  const pinnedRef = useRef(true);
   const abortRef = useRef<AbortController | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const filesPanelRef = useRef<SessionFilesPanelHandle>(null);
@@ -579,12 +589,23 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
 
   /** 输出是否贴底（距底部 120px 内）。自动跟随滚动只在贴底时发生——
    *  用户上翻阅读历史、或点开工具/思考详情时，即使 liveMessages 变化
-   *  （流式输出/展开收起）也不会把视口拽到底部。 */
+   *  （流式输出/展开收起）也不会把视口拽到底部。
+   *  注意：只允许在消息更新【前】调用（DOM 反映用户真实阅读位置），
+   *  更新后检测会把"单帧新增内容超 120px"误判为用户上翻。 */
   const isPinnedToBottom = useCallback((): boolean => {
     const el = chatScrollRef.current;
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
+
+  /** 统一的流式消息更新入口：更新前捕获贴底状态，滚动 effect 据此跟随。 */
+  const updateLiveMessages = useCallback(
+    (updater: Message[] | ((prev: Message[]) => Message[])) => {
+      pinnedRef.current = isPinnedToBottom();
+      setLiveMessages(updater);
+    },
+    [isPinnedToBottom],
+  );
 
   /** 把累积的 delta flush 进 agent 消息的 timeline（追加到当前 text entry 或新建）。 */
   const flushDelta = useCallback(() => {
@@ -593,7 +614,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
     if (!buf) return;
     deltaBufferRef.current = null;
     const { agentMsgId, delta } = buf;
-    setLiveMessages((prev) =>
+    updateLiveMessages((prev) =>
       prev.map((m) => {
         if (m.id !== agentMsgId) return m;
         const tl = [...(m.timeline ?? [])];
@@ -621,10 +642,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
         return { ...m, timeline: tl };
       }),
     );
-    if (isPinnedToBottom()) {
-      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [isPinnedToBottom]);
+    // 滚动统一交给 liveMessages 的 layout effect（依据更新前 pinnedRef）。
+  }, [updateLiveMessages]);
 
   /** 累积 text_delta 进 buffer，调度 RAF flush（一帧一次）。 */
   const appendDelta = useCallback(
@@ -669,9 +688,12 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
     const sid = activeSessionId;
     if (!sid) {
       setLiveMessages([]);
+      pinnedRef.current = true;
       return;
     }
     setLiveMessages([]);
+    // 会话切换/清空后回到贴底初始态：加载完成即定位到最新消息。
+    pinnedRef.current = true;
     setStreamError(null);
 
     // Session switched away mid-stream: the backend asyncio task keeps running and
@@ -697,6 +719,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
               );
             }
           }
+          // 会话加载完成回到贴底：最新消息就在底部。
+          pinnedRef.current = true;
           setLiveMessages(mapped);
           // 检测未答的 interrupt（ask_clarification/confirm_workflow）：页面跳转后
           // SSE 中断导致 pendingInterruptRef 丢失，从历史恢复，使下次发送走 /resume。
@@ -726,6 +750,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
           if (status === 404 || /不存在|not found/i.test(msg)) {
             setActiveSessionId(null);
             setLiveMessages([]);
+            pinnedRef.current = true;
             pendingBackgroundSessionsRef.current.delete(sid);
             return;
           }
@@ -740,12 +765,16 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
     };
   }, [activeSessionId]);
 
-  useEffect(() => {
-    // 仅贴底时跟随（流式输出滚屏）；用户上翻或展开详情时不打扰。
-    if (isPinnedToBottom()) {
-      messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [liveMessages, isPinnedToBottom]);
+  // 贴底时跟随滚动（流式输出/展开收起）。依据 pinnedRef（更新前捕获）而非现测
+  // 几何距离——新内容渲染后距底必超阈值，现测会把内容增长误判为用户上翻，
+  // 守卫永久脱锁导致流式输出不再跟随。瞬时跳底（paint 前）避免 smooth 动画
+  // 在高频 delta 下被打断、滞后累积。
+  useLayoutEffect(() => {
+    if (!pinnedRef.current) return;
+    const el = chatScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    else messageEndRef.current?.scrollIntoView();
+  }, [liveMessages]);
 
   const refreshSessions = useCallback(() => {
     qc.invalidateQueries({ queryKey: sessionKeys.lists() });
@@ -809,6 +838,44 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
   };
 
   /** Send a message and consume the SSE stream into liveMessages. */
+  // 忽略待答的澄清/确认卡片：持久化忽略标记（后端合成 tool_result，刷新后
+  // 不复活），本地关闭卡片交互态并清 pending 路由——之后用户正常发送的
+  // 消息/附件走 /stream 新一轮（挂起的 interrupt 由后端新输入自然丢弃）。
+  const handleDismissInterrupt = async (msgId: string) => {
+    const sessionId = activeSessionId;
+    const agent = activeAgent;
+    if (!sessionId || !agent || isStreaming) return;
+    try {
+      await agentApi.dismissInterrupt(agent.id, sessionId);
+    } catch (err) {
+      setStreamError(`忽略失败：${(err as Error).message}`);
+      return;
+    }
+    updateLiveMessages((prev) =>
+      prev.map((m) => {
+        if (m.id !== msgId) return m;
+        // 把 timeline 里第一个未答的 interrupt tool entry 填上忽略标记。
+        let dismissed = false;
+        const tl = (m.timeline ?? []).map((e) => {
+          if (
+            !dismissed &&
+            e.type === 'tool' &&
+            (e.toolName === 'ask_clarification' || e.toolName === 'confirm_workflow') &&
+            !e.result
+          ) {
+            dismissed = true;
+            return { ...e, result: DISMISSED_CLARIFICATION_TEXT };
+          }
+          return e;
+        });
+        return { ...m, isInterrupted: false, timeline: tl };
+      }),
+    );
+    if (pendingInterruptRef.current?.toolMsgId === msgId) {
+      pendingInterruptRef.current = null;
+    }
+  };
+
   const handleSendMessage = async (e?: FormEvent, overrideText?: string) => {
     e?.preventDefault();
     const sessionId = activeSessionId;
@@ -858,13 +925,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       setPendingFiles([]);
     }
 
-    // If only files were attached with no text, the upload already persisted a
-    // FileRef; refresh the session/files panels and stop here.
-    if (!prompt) {
-      refreshSessions();
-      filesPanelRef.current?.refresh();
-      return;
-    }
+    // 仅附件无文本也继续执行（后端 ExecutionRequest 允许 input 为空但需
+    // 携带 file_ids）：图片多模态场景"只贴图不打字"是核心用法。
+    // userMsg.content 为空串时气泡只内联渲染附件。
 
     const userMsg: Message = {
       id: 'msg_user_' + Date.now(),
@@ -907,7 +970,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       [...liveMessages].reverse().find((m) => m.isInterrupted)?.id;
     const isResume = !!resumeMsgId;
 
-    setLiveMessages((prev) => {
+    updateLiveMessages((prev) => {
       if (isResume && resumeMsgId) {
         // 回答作为旧中断卡片的 timeline tool entry 的 result，关闭中断态；
         // 不渲染独立用户气泡。
@@ -934,6 +997,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       }
       return [...prev, userMsg, agentMsg];
     });
+    // 用户主动发消息 = 明确要看新回复：无条件恢复跟随（即使发送前在上翻），
+    // 避免整个流式过程都不跟随。下方 RAF 内的 smooth 滚动同样是无条件的。
+    pinnedRef.current = true;
     // 用户主动发消息：无条件滚到底部跟随新回复（贴底守卫仅约束流式/展开场景）。
     requestAnimationFrame(() => {
       messageEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -948,7 +1014,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       const res = isResume
         ? await agentApi.resume(agent.id, {
             session_id: sessionId,
-            answer: prompt,
+            // resume 的 answer 不允许为空(ResumeRequest min_length=1):
+            // 澄清回答时只贴图不打字 → 占位让请求可过,agent 从上下文理解。
+            answer: prompt || '(用户上传了附件)',
             enable_thinking: enableThinking,
           }, controller.signal)
         : await agentApi.stream(agent.id, {
@@ -1002,7 +1070,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
           setFeedbackTick((t) => t + 1);  // 本轮可能 load 了技能——刷新反馈态
           // 收敛残留 pending/running 的 tool entry 为 success（跳过 ask_clarification/
           // confirm_workflow —— 它们 interrupt 等待用户），并挂 usage。
-          setLiveMessages((prev) =>
+          updateLiveMessages((prev) =>
             prev.map((m) => {
               if (m.id !== agentMsgId) return m;
               const tl = (m.timeline ?? []).map((e) =>
@@ -1040,7 +1108,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
               thinkingText = '';
               thinkingEntryId = null;
             }
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1054,7 +1122,11 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
                 } else {
                   tl.push({ id: pushId, type: 'thinking', content: text, expanded: !isFinal });
                 }
-                return { ...m, status: 'thinking', timeline: tl };
+                // final = 本轮思考结束（on_chat_model_end）。注意事件顺序：final 常
+                // 晚于 tool_call_start 到达（后者已把 status 清为 undefined），此处
+                // 若无条件设回 'thinking'，工具执行期间（tool_call/tool_result 均不
+                // 动 status）气泡会一直错误显示"思考中"，直到下一个 text_delta。
+                return { ...m, status: isFinal ? undefined : 'thinking', timeline: tl };
               }),
             );
             break;
@@ -1070,11 +1142,12 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
-            // tool_call_start 不带 tool_name（名字在后续 tool_call 事件里），
-            // 先 push 一个 pending entry（toolName 空），tool_call 到达时补全。
-            const toolName = '';
+            // tool_call_start 携带首个 chunk 里已流出的工具名（多数模型此刻
+            // 已有名字；个别模型 name 在后续 chunk 才到则为空，此时先显示
+            // "调用工具…"占位），完整名字/args 由后续 tool_call 事件补全。
+            const toolName = evt.tool_name || '';
             const toolEntryId = `${agentMsgId}-tool-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1099,7 +1172,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             rafIdRef.current = null;
             textEntryIdRef.current = null;
             textStartedRef.current = false;
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1149,7 +1222,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
                 }
               }
             }
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1176,7 +1249,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
           case 'text_delta':
             // 走 RAF 批处理（appendDelta/flushDelta），平滑且多轮顺序正确。
             appendDelta(agentMsgId, evt.content);
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => (m.id === agentMsgId ? { ...m, status: undefined } : m)),
             );
             break;
@@ -1187,7 +1260,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
               if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
               deltaBufferRef.current = null;
               rafIdRef.current = null;
-              setLiveMessages((prev) =>
+              updateLiveMessages((prev) =>
                 prev.map((m) => {
                   if (m.id !== agentMsgId) return m;
                   const tl = [...(m.timeline ?? [])];
@@ -1211,7 +1284,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             // 错误可能来自中途（如某个工具的加载失败），后续仍可能有事件。
             const errContent = evt.content || '执行出错';
             setStreamError(errContent);
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1227,7 +1300,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
             // 后端在 interrupt 事件里把 question/options/fields/context 作为顶级
             // 字段下发（权威来源），这里回填到对应 ask_clarification tool entry 的
             // args——即使 tool_call 的 args 缺失/延迟，卡片也能正常渲染。
-            setLiveMessages((prev) =>
+            updateLiveMessages((prev) =>
               prev.map((m) => {
                 if (m.id !== agentMsgId) return m;
                 const tl = [...(m.timeline ?? [])];
@@ -1275,7 +1348,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       if (!controller.signal.aborted) {
         const msg = (err as Error).message || '流式请求失败';
         setStreamError(msg);
-        setLiveMessages((prev) =>
+        updateLiveMessages((prev) =>
           prev.map((m) => {
             if (m.id !== agentMsgId) return m;
             const tl = [...(m.timeline ?? [])];
@@ -1305,7 +1378,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
   const handleVoiceTranscriptFinal = (text: string) => {
     const transcript = text.trim();
     if (!transcript) return;
-    setLiveMessages((prev) => [
+    // 语音输入 = 发送语义：无条件恢复跟随（与文本发送一致）。
+    pinnedRef.current = true;
+    updateLiveMessages((prev) => [
       ...prev,
       {
         id: `msg_voice_user_${Date.now()}`,
@@ -1330,7 +1405,9 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
       cancelAnimationFrame(rafIdRef.current);
       rafIdRef.current = null;
     }
-    setLiveMessages((prev) => [
+    // 新一轮语音回复开始生成：恢复跟随。
+    pinnedRef.current = true;
+    updateLiveMessages((prev) => [
       ...prev,
       {
         id: agentMsgId,
@@ -1360,7 +1437,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
 
     const agentMsgId = voiceAgentMsgIdRef.current;
     if (agentMsgId) {
-      setLiveMessages((prev) =>
+      updateLiveMessages((prev) =>
         prev.map((item) =>
           item.id === agentMsgId ? { ...item, status: undefined } : item,
         ),
@@ -1386,6 +1463,8 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
           );
         }
       }
+      // 重载完成回到贴底：最新消息就在底部。
+      pinnedRef.current = true;
       setLiveMessages(mapped);
       const pending = [...mapped].reverse().find((item) => item.isInterrupted);
       pendingInterruptRef.current = pending ? { toolMsgId: pending.id } : null;
@@ -1700,7 +1779,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
                               entry={entry}
                               streaming={msg.status === 'thinking' && isLastThinking}
                               onToggle={() =>
-                                setLiveMessages((prev) =>
+                                updateLiveMessages((prev) =>
                                   prev.map((m) =>
                                     m.id === msg.id
                                       ? {
@@ -1736,6 +1815,7 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
                             msgId={msg.id}
                             interrupted={!!msg.isInterrupted}
                             onAnswer={(a) => handleSendMessage(undefined, a)}
+                            onDismiss={() => handleDismissInterrupt(msg.id)}
                           />
                         );
                       })}
@@ -1753,9 +1833,10 @@ export function ChatHomepage({ agents: agentsProp, theme = 'dark', fixedAgentId,
                     {msg.content
                       ? <Markdown content={msg.content} />
                       : (msg.status === 'thinking' ? '…' : '')}
-                    {/* 可预览附件挂在气泡内部（紧随正文，非独立一行）。 */}
+                    {/* 可预览附件挂在气泡内部。有正文时隔开 + 分隔线；
+                        仅附件（无文字）时直接贴边，不留空隙不画线。 */}
                     {msg.attachments && msg.attachments.length > 0 && (
-                      <div className={`flex flex-wrap gap-2 mt-3 pt-3 border-t border-current/10 ${isUser ? 'justify-end' : ''}`}>
+                      <div className={`flex flex-wrap gap-2 ${msg.content ? 'mt-3 pt-3 border-t border-current/10' : ''} ${isUser ? 'justify-end' : ''}`}>
                         {msg.attachments.map((att, i) => (
                           <ChatAttachmentCard
                             key={`${msg.id}-att-${i}-${att.ref}`}
@@ -2176,21 +2257,30 @@ function ToolEntryCard({
   msgId,
   interrupted,
   onAnswer,
+  onDismiss,
 }: {
   entry: TimelineEntry;
   msgId: string;
   interrupted: boolean;
   onAnswer?: (answer: string) => void;
+  onDismiss?: () => void;
 }) {
   // ask_clarification 走专门的交互卡片（按 clarification_type 分样式）。
   if (entry.toolName === 'ask_clarification') {
-    return <ClarificationCard entry={entry} interrupted={interrupted} onAnswer={onAnswer} />;
+    return (
+      <ClarificationCard
+        entry={entry}
+        interrupted={interrupted}
+        onAnswer={onAnswer}
+        onDismiss={onDismiss}
+      />
+    );
   }
   // confirm_workflow：工作流确认卡片（从 tool_call args 渲染，tool_result 决定终态）。
   if (entry.toolName === 'confirm_workflow') {
     const args = entry.args ?? {};
     const resultText = entry.result ?? '';
-    const isRejection = /取消|拒绝|cancel/i.test(resultText);
+    const isRejection = /取消|拒绝|忽略|cancel/i.test(resultText);
     const forceAction = entry.result ? (isRejection ? 'rejected' : 'confirmed') : undefined;
     return (
       <WorkflowProposalCard
@@ -2205,6 +2295,7 @@ function ToolEntryCard({
           onAnswer?.(`确认执行 ${wfName}`);
           return true;
         }}
+        onDismiss={onDismiss}
       />
     );
   }
@@ -2266,7 +2357,10 @@ function ToolEntryCard({
           <Wrench className={`w-3.5 h-3.5 shrink-0 ${cfg.icon}`} />
         )}
         <span className={`text-xs font-semibold truncate ${cfg.icon}`}>
-          {isParseResult ? `文件解析 · ${parseLabel}` : entry.toolName || 'unknown_tool'}
+          {isParseResult
+            ? `文件解析 · ${parseLabel}`
+            : entry.toolName ||
+              (status === 'pending' || status === 'running' ? '调用工具…' : 'unknown_tool')}
         </span>
         {isParseResult && parseMeta && (
           <span className={`shrink-0 px-1.5 py-0.5 rounded text-[9px] font-medium bg-white/5 border border-white/10 ${cfg.icon} opacity-80`}>
@@ -2342,10 +2436,12 @@ function ClarificationCard({
   entry,
   interrupted,
   onAnswer,
+  onDismiss,
 }: {
   entry: TimelineEntry;
   interrupted: boolean;
   onAnswer?: (answer: string) => void;
+  onDismiss?: () => void;
 }) {
   const args = entry.args ?? {};
   const question = args.question ? String(args.question) : '';
@@ -2392,6 +2488,7 @@ function ClarificationCard({
         answered={answered}
         result={entry.result}
         onSubmit={(jsonStr) => onAnswer?.(jsonStr)}
+        onDismiss={onDismiss}
       />
     );
   }
@@ -2408,6 +2505,7 @@ function ClarificationCard({
   const isSuggestion = clarificationType === 'suggestion';
   const verticalOptions =
     clarificationType === 'approach_choice' || clarificationType === 'ambiguous_requirement';
+  const dismissed = entry.result === DISMISSED_CLARIFICATION_TEXT;
 
   // 配色完全复用 TOOL_STATUS_CFG 的视觉语言（已验证好看 + 协调）：
   // 外层用淡彩透明底（/10）+ 彩色边框（/30），标题文字用彩色（-400）。
@@ -2430,8 +2528,18 @@ function ClarificationCard({
         )}
         <span className={`text-xs font-semibold truncate ${accent.icon}`}>澄清提问</span>
         <span className={`text-[10px] ${accent.icon} opacity-70`}>
-          {answered ? '已回答' : '等待回答'}
+          {answered ? (dismissed ? '已忽略' : '已回答') : '等待回答'}
         </span>
+        {/* 忽略：不回答此问题，恢复自由输入（下一次发送走普通 stream） */}
+        {interactive && onDismiss && (
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="ml-auto px-2 py-0.5 rounded text-[10px] text-[#a1a1aa] hover:text-[#fafafa] hover:bg-white/5 border border-transparent hover:border-[#3f3f46] transition cursor-pointer"
+          >
+            忽略
+          </button>
+        )}
       </div>
 
       {/* 问题正文 + 交互区：实底深色内嵌区块（bg-[#121214]）+ 白字，可读性优先 */}
@@ -2534,8 +2642,13 @@ function ClarificationCard({
             )}
 
             {/* 已答：答案在卡片内部展示（紧贴问题下方，与 ClarificationFormCard 一致），
-                不再渲染独立的右对齐气泡。 */}
-            {answered && entry.result && !options.includes(entry.result) && (
+                不再渲染独立的右对齐气泡。已忽略则只给一行提示。 */}
+            {dismissed && (
+              <div className="mt-3 pt-3 border-t border-[#27272a] text-xs text-[#71717a]">
+                已忽略此问题——可直接在输入框重新描述需求或上传文件
+              </div>
+            )}
+            {answered && entry.result && !dismissed && !options.includes(entry.result) && (
               <div className="mt-3 pt-3 border-t border-[#27272a] flex items-baseline gap-2 text-xs">
                 <span className={`shrink-0 ${accent.icon}`}>你的回答:</span>
                 <span className="text-[#fafafa] font-medium break-all whitespace-pre-wrap">

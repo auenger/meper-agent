@@ -18,7 +18,12 @@ from loguru import logger
 from app.core.config import settings
 from app.core.errors import NotFoundError, ValidationError
 from app.engine.agent.builder import build_system_prompt
-from app.schemas.execution import ExecutionRequest, ExecutionResponse, ResumeRequest
+from app.schemas.execution import (
+    DismissRequest,
+    ExecutionRequest,
+    ExecutionResponse,
+    ResumeRequest,
+)
 from app.services.agent_service import AgentService
 from app.services.file_rendering import (
     render_attachments_block,
@@ -438,6 +443,31 @@ class AgentExecutionService:
         ))
         return event_queue, request_id, session_id
 
+    # ------------------------------------------------------------------
+    # Dismiss (close a pending clarification card without resuming)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def dismiss_interrupt(agent_id: str, body: DismissRequest, user_id: str) -> bool:
+        """Dismiss the pending clarification card; the user re-enters freely.
+
+        与 resume() 对称的入口，但不触发任何 LLM/graph 执行：仅持久化忽略
+        标记（合成 tool_result，见 MessageService.dismiss_pending_clarification）。
+        用户之后正常发送的消息走 stream 新一轮，checkpointer 里的 pending
+        interrupt 被 LangGraph 新输入自然丢弃。
+        """
+        exec_doc = await AgentService.get_agent(agent_id)
+        if exec_doc is None:
+            raise NotFoundError(code="AGENT_NOT_FOUND", message=f"Agent {agent_id} 不存在")
+
+        dismissed = await MessageService.dismiss_pending_clarification(body.session_id)
+        logger.info(
+            "agent_interrupt_dismissed",
+            agent_id=agent_id, session_id=body.session_id,
+            user_id=user_id, dismissed=dismissed,
+        )
+        return dismissed
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -609,14 +639,32 @@ async def _build_system_prompt_checked(exec_doc: dict, user_id: str = "") -> str
     return system_text
 
 
-async def _build_user_content(body: ExecutionRequest, user_id: str, session_id: str) -> str:
-    """Embed uploaded file contents into the user message text."""
+async def _build_user_content(
+    body: ExecutionRequest, user_id: str, session_id: str,
+) -> str | list[dict]:
+    """Embed uploaded file contents into the user message.
+
+    Returns plain text (no images) or multimodal content blocks
+    ``[{type:text,...},{type:image_url,...}...]`` — HumanMessage.content
+    accepts both; images are downsampled/budgeted by file_rendering.
+    入库语义不变：session Message.content 存原始 body.input，本函数的
+    拼接结果只进 LLM 上下文。
+    """
     user_content = body.input
     try:
         if body.file_ids:
-            blocks = await render_files_by_ids(body.file_ids)
+            from app.services.file_rendering import load_images_for_context
+
+            images, skipped = await load_images_for_context(body.file_ids)
+            # 只有被省略的图片渲染 <file> 占位(模型据此拿 file_id 回看);
+            # 成功注入的图片由 [IMAGE 标记]+image 块承担,不重复渲染。
+            blocks = await render_files_by_ids(body.file_ids, image_notes=skipped)
             if blocks:
                 user_content += render_attachments_block(blocks)
+            if images:
+                from app.services.file_rendering import build_multimodal_content
+
+                return build_multimodal_content(user_content, images)
         elif body.file_paths:
             from app.engine.tool.workspace import WorkspaceManager
             ws = WorkspaceManager.get_workspace(user_id, session_id)
@@ -624,12 +672,17 @@ async def _build_user_content(body: ExecutionRequest, user_id: str, session_id: 
             if blocks:
                 user_content += render_attachments_block(blocks)
     except Exception:
-        pass
+        # 附件装配失败降级为纯文本输入,但绝不静默——多模态注入是否
+        # 成功直接影响"模型能不能看到图",必须可排查。
+        logger.exception("user_content_build_failed", session_id=session_id)
     return user_content
 
 
-def _assemble_messages(system_text: str, user_content: str) -> list:
-    """Build the initial messages list (System + User)."""
+def _assemble_messages(system_text: str, user_content: str | list[dict]) -> list:
+    """Build the initial messages list (System + User).
+
+    user_content 为纯文本或多模态 content blocks（含图片时）。
+    """
     messages: list = []
     if system_text:
         messages.append(SystemMessage(content=system_text, id="sys"))
@@ -733,10 +786,11 @@ async def _emit_stream_error(
     can't block the caller's finally cleanup.
     """
     from app.engine.harness_integration.adapters.app_event import ErrorEvent
+    from app.utils.llm_errors import translate_llm_error
 
     try:
         err_evt = ErrorEvent(
-            message=str(exc),
+            message=translate_llm_error(str(exc)),
             source=_classify_error_source(exc),
         ).model_dump()
         err_evt["content"] = err_evt.pop("message", "")

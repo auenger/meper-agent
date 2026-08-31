@@ -15,7 +15,7 @@ from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.api.v1.ext import auth_and_rate_limit, resolve_user_id
 from app.api.v1.sessions import (
@@ -141,6 +141,48 @@ async def upload_chat_file(
         file=FileRefResponse(**file_ref.model_dump(by_alias=True)),
         message=message_response,
         workspace_path=str(input_path.relative_to(ws.input_dir)),
+    )
+
+
+@router.get(
+    "/files/{file_id}/download",
+    summary="Download an uploaded file by id (external)",
+    responses={404: {"description": "File not found"}},
+)
+async def download_file(
+    file_id: str,
+    svc: FileService = Depends(_get_file_service),
+    principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
+) -> Response:
+    """按 file_id 下载已上传的文件（external）。
+
+    所有权校验与内部 ``/files/{file_id}/download`` 一致：owner 为解析出的
+    终端用户，或 ``"agent"``（chat agent 产出的公共文件，任何已认证用户
+    可访问）。补齐 ext 模式"点击已上传附件下载"的链路——此前 ext 未暴露
+    按 id 下载，前端只能报下载失败。
+    """
+    principal.require_scope("agents:invoke")
+    user_id = resolve_user_id(principal)
+
+    file_ref = await svc.get(file_id)
+    if file_ref is None or (
+        file_ref.owner_user_id != "agent" and file_ref.owner_user_id != user_id
+    ):
+        raise NotFoundError(
+            code="FILE_NOT_FOUND", message=f"文件 {file_id} 不存在"
+        )
+
+    try:
+        data = await svc._storage.load(file_ref.storage_key)
+    except FileNotFoundError:
+        raise NotFoundError(
+            code="FILE_CONTENT_NOT_FOUND", message="文件内容不存在"
+        ) from None
+
+    return Response(
+        content=data,
+        media_type=file_ref.mime_type,
+        headers={"Content-Disposition": build_content_disposition(file_ref.name)},
     )
 
 

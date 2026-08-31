@@ -36,6 +36,12 @@ _TOOL_INTERRUPTED = "[执行被中断：此工具未完成，没有结果]"
 _MARK_TOOLS_UNREPORTED = "（上一轮执行被中断：工具结果尚未汇报给用户）"
 _MARK_NO_OUTPUT = "（上一轮回复被中断，未产生输出）"
 
+# tool_wrapper 多模态规范化注入的 follow-up HumanMessage id 前缀(携带
+# 工具结果里的 image 块)。它不是用户输入、不开启新一轮,中断检测必须
+# 放行——否则"AIMessage(tool_calls)→ToolMessage→注入图片 Human"会被
+# case ② 误判为"工具结果未汇报被中断"。
+TOOL_IMAGE_FOLLOW_UP_PREFIX = "tool-image-"
+
 
 def annotate_interruptions(messages: "list[BaseMessage]") -> "tuple[list[BaseMessage], dict[str, Any]]":
     """检测并标注上一轮的中断形态。返回 (messages, info)。
@@ -46,6 +52,10 @@ def annotate_interruptions(messages: "list[BaseMessage]") -> "tuple[list[BaseMes
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
     if not messages or not isinstance(messages[-1], HumanMessage):
+        return messages, {"changed": False, "case": ""}
+
+    # 工具图片 follow-up(系统注入,非用户轮次):完全放行,不做中断标注。
+    if str(getattr(messages[-1], "id", "") or "").startswith(TOOL_IMAGE_FOLLOW_UP_PREFIX):
         return messages, {"changed": False, "case": ""}
 
     prior = messages[:-1]

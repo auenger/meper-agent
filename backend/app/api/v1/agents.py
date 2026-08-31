@@ -27,6 +27,7 @@ from app.schemas.agent import (
     AgentUpdate,
 )
 from app.schemas.execution import (
+    DismissRequest,
     ExecutionRequest,
     ExecutionResponse,
     PreviewRequest,
@@ -466,3 +467,21 @@ async def resume_agent(
             "X-Session-Id": session_id,
         },
     )
+
+
+@router.post(
+    "/{agent_id}/interrupt/dismiss",
+    summary="Dismiss the pending clarification card (ask_clarification)",
+)
+async def dismiss_interrupt(
+    agent_id: str,
+    body: DismissRequest,
+    user: UserResponse = Depends(require_permission("agent:invoke")),
+) -> dict:
+    """关闭待答的 ask_clarification/confirm_workflow 卡片（不恢复执行）。
+
+    用户不想回答追问（问题不对 / 想直接重新输入或传文件）时使用：
+    卡片进入已忽略态，下一次发送走普通 stream 新一轮。
+    """
+    dismissed = await AgentExecutionService.dismiss_interrupt(agent_id, body, user.id)
+    return {"dismissed": dismissed, "session_id": body.session_id}

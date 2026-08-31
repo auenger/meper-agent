@@ -25,6 +25,8 @@ interface WorkflowProposalCardProps {
   proposal: WorkflowProposal;
   /** Called when the user clicks 确认执行. */
   onConfirm: (workflowName: string) => Promise<boolean> | boolean | void;
+  /** 忽略此确认（不回答，恢复自由输入）——持久化忽略标记，不恢复执行。 */
+  onDismiss?: () => void;
   /** Force the card into a terminal state on mount — used for history backfill
    *  where the user has already confirmed/rejected (tool_result is present). */
   forceAction?: 'confirmed' | 'rejected';
@@ -33,6 +35,7 @@ interface WorkflowProposalCardProps {
 export default function WorkflowProposalCard({
   proposal,
   onConfirm,
+  onDismiss,
   forceAction,
 }: WorkflowProposalCardProps) {
   const [action, setAction] = useState<'idle' | 'confirming' | 'confirmed' | 'rejected'>(
@@ -124,6 +127,15 @@ export default function WorkflowProposalCard({
                 <XCircle size={13} />
                 拒绝
               </button>
+              {onDismiss && (
+                <button
+                  type="button"
+                  onClick={onDismiss}
+                  className="text-xs text-[#71717a] hover:text-[#a1a1aa] transition cursor-pointer"
+                >
+                  忽略
+                </button>
+              )}
             </>
           )}
           {action === 'confirming' && (

@@ -90,6 +90,26 @@ class Settings(BaseSettings):
     # (the background LLM summary will backfill once ready).
     COMPRESSION_HARD_LIMIT_RATIO: float = 0.9
 
+    # Image multimodal input (chat attachments → LLM image_url blocks).
+    # Per-turn image count cap; excess images degrade to text placeholders.
+    IMAGE_MAX_PER_TURN: int = 4
+    # Downscale long edge (px) before base64-encoding into the LLM message.
+    IMAGE_MAX_EDGE: int = 2048
+    # Per-image size cap AFTER downscaling (bytes); larger images are
+    # re-compressed harder, and give up with a text placeholder.
+    IMAGE_MAX_SIZE_BYTES: int = 1024 * 1024
+    # Per-turn TOTAL budget (bytes of base64 source bytes, summed). This is
+    # the hard guardrail against the 16MB BSON document limit — LangGraph
+    # checkpoints serialize the whole message state into a single Mongo
+    # document per superstep, so oversized multimodal messages would crash
+    # the run with DocumentTooLarge. Tune per-image/count caps freely, but
+    # keep this one comfortably below 16MB.
+    IMAGE_MAX_TOTAL_BYTES: int = 8 * 1024 * 1024
+    # Keep the most recent N images un-degraded when the compression layer
+    # downgrades stale images out of context (0 = degrade all stale images;
+    # each kept image still costs vision tokens on every turn).
+    IMAGE_KEEP_RECENT_N: int = 0
+
     # Task scheduler (poll interval in seconds; set to 0 to disable)
     TASK_SCHEDULER_POLL_INTERVAL: int = 10
 

@@ -29,7 +29,7 @@ def get_checkpointer() -> Any:
 # 保证「端点展示的 = 运行时注入的」。
 _INJECTED_BUILTIN_TOOL_NAMES: tuple[str, ...] = (
     "bash", "read", "write", "edit", "glob", "grep", "ask_clarification",
-    "run_code", "parse_file",
+    "run_code", "parse_file", "view_image",
 )
 
 # 可配子集 —— 用户可在 Agent 配置页勾选的内建工具(其余始终开启、不可关闭)。
@@ -115,6 +115,7 @@ def _resolve_builtin_tools(agent: dict, execution_context: str = "chat") -> list
 
     from app.core.config import settings
     from app.engine.agent.chart_tool import _CHART_TOOLS
+    from app.engine.agent.image_tool import IMAGE_TOOL_BY_NAME
     from app.engine.agent.parse_tool import PARSE_TOOL_BY_NAME
     from app.engine.agent.workflow_executor import _TASK_TOOLS, _WORKFLOW_CONTEXT_TOOLS
 
@@ -132,8 +133,12 @@ def _resolve_builtin_tools(agent: dict, execution_context: str = "chat") -> list
         builtin_config |= {"read", "write", "edit"}
 
     for name in _INJECTED_BUILTIN_TOOL_NAMES:
-        # parse_file 是 app 层工具,harness 注册表取不到,补 PARSE_TOOL_BY_NAME 查找。
-        tool = BUILTIN_TOOLS.get(name) or PARSE_TOOL_BY_NAME.get(name)
+        # parse_file / view_image 是 app 层工具,harness 注册表取不到,补查找表。
+        tool = (
+            BUILTIN_TOOLS.get(name)
+            or PARSE_TOOL_BY_NAME.get(name)
+            or IMAGE_TOOL_BY_NAME.get(name)
+        )
         if tool is None:
             continue
         if name == "ask_clarification" and execution_context == "workflow":
@@ -645,6 +650,11 @@ async def resolve_harness_context(
         # 决策——具体用什么工具回溯(recall_tool_result)由 app 层定义,harness
         # 不硬编码工具名,只透传这个 formatter。
         "tool_output_reference_formatter": _make_tool_output_reference_formatter(),
+        # 图片降级同理:旧轮 image 块被移出上下文时,用此 formatter 生成
+        # 可回取占位(file_id 供 view_image 使用)。harness 只做机械替换。
+        "image_reference_formatter": _make_image_reference_formatter(),
+        # 降级时保留最近 N 张真图(0 = 全部降级,最省 token)。
+        "image_keep_recent": settings.IMAGE_KEEP_RECENT_N,
     }
 
 
@@ -660,6 +670,19 @@ def _make_tool_output_reference_formatter():
             f"\n\n[此结果已被压缩,完整原文已存档,"
             f'可用 recall_tool_result(tool_call_id="{tool_call_id}") 查看]'
         )
+
+    return _format
+
+
+def _make_image_reference_formatter():
+    """构造图片降级占位生成器(供 harness 图片降级使用)。
+
+    与 tool_output formatter 同构:压缩是"可逆"的——图片字节仍在 FileRef
+    存储,占位文案携带 file_id,LLM 可用 view_image 随时拉回当轮查看。
+    """
+
+    def _format(file_id: str, name: str) -> str:
+        return f'[图片 {name}(file_id="{file_id}")已移出上下文,可用 view_image(file_id="{file_id}") 查看]'
 
     return _format
 

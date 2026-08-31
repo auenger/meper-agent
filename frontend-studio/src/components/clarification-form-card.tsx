@@ -25,6 +25,10 @@ export interface ClarificationField {
   description?: string | null;
 }
 
+/** 忽略标记文案——与后端 MessageService.DISMISSED_RESULT_TEXT 保持一致
+ *  （dismiss 持久化的合成 tool_result 内容）。 */
+export const DISMISSED_CLARIFICATION_TEXT = '(用户已忽略此问题)';
+
 interface Props {
   question: string;
   context?: string | null;
@@ -32,6 +36,8 @@ interface Props {
   answered: boolean;
   result?: string;
   onSubmit: (jsonStr: string) => void;
+  /** 忽略此问题（不回答，恢复自由输入）。 */
+  onDismiss?: () => void;
 }
 
 export function ClarificationFormCard({
@@ -41,6 +47,7 @@ export function ClarificationFormCard({
   answered,
   result,
   onSubmit,
+  onDismiss,
 }: Props) {
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, unknown>>(() => {
@@ -119,6 +126,23 @@ export function ClarificationFormCard({
   };
 
   if (answered) {
+    // 已忽略：不解析字段摘要（忽略标记不是 JSON），给一行提示即可。
+    if (result === DISMISSED_CLARIFICATION_TEXT) {
+      return (
+        <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans shadow-sm opacity-70">
+          <div className="flex items-center gap-2 px-3.5 py-2.5">
+            <CheckCircle className="w-3.5 h-3.5 shrink-0 text-zinc-500" />
+            <span className="text-xs font-semibold text-indigo-400 truncate">澄清提问</span>
+            <span className="text-[10px] text-zinc-500 opacity-70">已忽略</span>
+          </div>
+          <div className="mx-2.5 mb-2.5 rounded-lg bg-[#121214] border border-[#27272a] px-3.5 py-3">
+            <div className="text-xs text-[#a1a1aa]">
+              已忽略此问题——可直接在输入框重新描述需求或上传文件
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="rounded-xl rounded-tl-none border border-indigo-500/30 bg-indigo-500/10 overflow-hidden font-sans shadow-sm">
         <div className="flex items-center gap-2 px-3.5 py-2.5">
@@ -250,15 +274,26 @@ export function ClarificationFormCard({
             )}
 
             <div className="flex justify-between items-center mt-3">
-              <button
-                type="button"
-                onClick={handlePrev}
-                disabled={step === 0}
-                className="inline-flex items-center gap-1 text-xs text-[#d4d4d8] hover:text-[#e4e4e7] disabled:opacity-30 disabled:cursor-not-allowed transition"
-              >
-                <ChevronLeft size={13} />
-                上一题
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handlePrev}
+                  disabled={step === 0}
+                  className="inline-flex items-center gap-1 text-xs text-[#d4d4d8] hover:text-[#e4e4e7] disabled:opacity-30 disabled:cursor-not-allowed transition"
+                >
+                  <ChevronLeft size={13} />
+                  上一题
+                </button>
+                {onDismiss && (
+                  <button
+                    type="button"
+                    onClick={onDismiss}
+                    className="text-xs text-[#71717a] hover:text-[#a1a1aa] transition cursor-pointer"
+                  >
+                    忽略此问题
+                  </button>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={handleNext}

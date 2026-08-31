@@ -41,9 +41,11 @@ def _check_agent_response_schema(
     规则：type ∈ {text, object, array}（text 等价未声明）；object/array
     必须带非空 fields；字段名须为合法标识符（点号/特殊字符会破坏下游
     {{node.response.field}} 平铺引用）；enum 必须带非空 enum_values；
-    嵌套最多两层（第一层 object 字段可带子 fields，第二层不可再嵌）。
+    嵌套可继续深入，防御上限 5 层（超深报错——对象列表/嵌套对象任意
+    层级可用，建议不超过 3 层）。
     """
     issues: list[ValidationIssue] = []
+    max_schema_depth = 5
 
     def err(message: str) -> None:
         issues.append(ValidationIssue(
@@ -81,8 +83,8 @@ def _check_agent_response_schema(
             if ftype == "enum" and not (f.get("enum_values") or []):
                 err(f"response_schema 字段 '{name}' 为 enum 类型，必须提供非空 enum_values")
             if ftype == "object":
-                if layer >= 2:
-                    err(f"response_schema 嵌套最多两层：'{name}' 已在第二层，不可再为 object")
+                if layer >= max_schema_depth:
+                    err(f"response_schema 嵌套超过 {max_schema_depth} 层上限：'{name}'")
                     continue
                 sub_fields = f.get("fields")
                 if sub_fields is not None:

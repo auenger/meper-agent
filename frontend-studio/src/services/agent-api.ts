@@ -173,6 +173,10 @@ export interface ToolCallEvent {
 /** AI started generating a tool call (args not yet complete) */
 export interface ToolCallStartEvent {
   type: 'tool_call_start'
+  /** Tool name if already streamed in the first chunk (may be empty —
+   *  some models deliver the name in a later chunk; the subsequent
+   *  tool_call event always carries the full name). */
+  tool_name: string
 }
 
 /** Tool returned a result */
@@ -415,6 +419,23 @@ export const agentApi = {
   ): Promise<Response> {
     const url = `${ENV.API_BASE_URL}/api/v1/agents/${encodeURIComponent(agentId)}/resume`
     return this._streamWithRetry(url, body, signal)
+  },
+
+  /**
+   * Dismiss the pending clarification card (ask_clarification) without
+   * answering — for when the user doesn't want to fill the card and prefers
+   * to re-enter freely (plain text or files). The backend persists a
+   * synthetic tool_result so the card stays dismissed after refresh; the
+   * next message goes through the normal stream path (fresh turn — the
+   * suspended interrupt is dropped on new input).
+   * POST /api/v1/agents/{id}/interrupt/dismiss
+   */
+  async dismissInterrupt(agentId: string, sessionId: string): Promise<boolean> {
+    const res = await apiClient.post<{ dismissed: boolean }>(
+      `/api/v1/agents/${encodeURIComponent(agentId)}/interrupt/dismiss`,
+      { session_id: sessionId },
+    )
+    return res.data.dismissed
   },
 
   /**

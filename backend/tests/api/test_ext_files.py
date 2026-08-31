@@ -122,17 +122,17 @@ class TestSessionFileSuccess:
         cleanup = _override_auth(principal)
         try:
             with patch(
-                "app.services.session_service.SessionService.get_session",
-                new=AsyncMock(
-                    return_value={"_id": "s1", "user_id": "mcptok_alt"}
-                ),
-            ), patch(
-                "app.engine.tool.workspace.WorkspaceManager.list_output_files",
-                return_value=[],
-            ), patch(
-                "app.engine.tool.workspace.WorkspaceManager.get_workspace",
-                return_value=object(),
-            ) as mock_get_ws:
+                    "app.services.session_service.SessionService.get_session",
+                    new=AsyncMock(
+                        return_value={"_id": "s1", "user_id": "mcptok_alt"}
+                    ),
+                ), patch(
+                    "app.engine.tool.workspace.WorkspaceManager.list_output_files",
+                    return_value=[],
+                ), patch(
+                    "app.engine.tool.workspace.WorkspaceManager.get_workspace",
+                    return_value=object(),
+                ) as mock_get_ws:
                 resp = client.get("/api/v1/ext/sessions/s1/files")
             assert resp.status_code == 200
             assert resp.json() == []
@@ -140,3 +140,94 @@ class TestSessionFileSuccess:
             assert mock_get_ws.call_args.args[0] == "mcptok_alt"
         finally:
             cleanup()
+
+
+class TestDownloadUploadedFile:
+    """按 file_id 下载已上传文件（补齐 ext 模式"点击附件下载"链路）。"""
+
+    def _mock_svc(self, fref):
+        from unittest.mock import MagicMock
+
+        svc = MagicMock()
+        svc.get = AsyncMock(return_value=fref)
+        svc._storage.load = AsyncMock(return_value=b"file-bytes")
+        return svc
+
+    def _fref(self, owner: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            owner_user_id=owner,
+            storage_key=f"files/{owner}/x.pdf",
+            mime_type="application/pdf",
+            name="x.pdf",
+        )
+
+    def test_download_owner_match_200(self, client, full_principal) -> None:
+        from app.api.v1.sessions import _get_file_service
+
+        cleanup = _override_auth(full_principal)
+        svc = self._mock_svc(self._fref("mcptok_test"))
+        app.dependency_overrides[_get_file_service] = lambda: svc
+        try:
+            resp = client.get("/api/v1/ext/files/file_1/download")
+        finally:
+            del app.dependency_overrides[_get_file_service]
+            cleanup()
+        assert resp.status_code == 200
+        assert resp.content == b"file-bytes"
+        assert resp.headers["content-type"].startswith("application/pdf")
+
+    def test_download_agent_owned_file_allowed(self, client, full_principal) -> None:
+        """agent 产出的公共文件（owner="agent"）任何已认证终端用户可下载。"""
+        from app.api.v1.sessions import _get_file_service
+
+        cleanup = _override_auth(full_principal)
+        svc = self._mock_svc(self._fref("agent"))
+        app.dependency_overrides[_get_file_service] = lambda: svc
+        try:
+            resp = client.get("/api/v1/ext/files/file_pub/download")
+        finally:
+            del app.dependency_overrides[_get_file_service]
+            cleanup()
+        assert resp.status_code == 200
+
+    def test_download_other_user_404(self, client, full_principal) -> None:
+        from app.api.v1.sessions import _get_file_service
+
+        cleanup = _override_auth(full_principal)
+        svc = self._mock_svc(self._fref("someone-else"))
+        app.dependency_overrides[_get_file_service] = lambda: svc
+        try:
+            resp = client.get("/api/v1/ext/files/file_1/download")
+        finally:
+            del app.dependency_overrides[_get_file_service]
+            cleanup()
+        assert resp.status_code == 404
+
+    def test_download_missing_file_404(self, client, full_principal) -> None:
+        from app.api.v1.sessions import _get_file_service
+
+        cleanup = _override_auth(full_principal)
+        svc = self._mock_svc(None)
+        app.dependency_overrides[_get_file_service] = lambda: svc
+        try:
+            resp = client.get("/api/v1/ext/files/file_missing/download")
+        finally:
+            del app.dependency_overrides[_get_file_service]
+            cleanup()
+        assert resp.status_code == 404
+
+    def test_download_scope_denied_403(self, client) -> None:
+        principal = ApiKeyPrincipal(
+            key_id="k",
+            owner_user_id="u",
+            scopes=["agents:read"],  # no agents:invoke
+            bindings={},
+        )
+        cleanup = _override_auth(principal)
+        try:
+            resp = client.get("/api/v1/ext/files/file_1/download")
+        finally:
+            cleanup()
+        assert resp.status_code == 403

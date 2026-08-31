@@ -65,6 +65,24 @@ def test_thinking_openai_non_oseries_silently_degrades() -> None:
     assert out == {}
 
 
+def test_thinking_qwen_enables_via_enable_thinking() -> None:
+    """Qwen(DashScope/vLLM 兼容端点)用 enable_thinking 布尔开关——
+    此前 openai 路径只认 o 系前缀,Qwen 思考开关根本没传给模型。"""
+    out = build_thinking_kwargs("qwen3.8-vl-plus", "openai", enable_thinking=True)
+    assert out == {"extra_body": {"enable_thinking": True}}
+    # 关闭:开源 Qwen3 默认开思考,必须显式传 False
+    out_off = build_thinking_kwargs("qwen3.8-vl-plus", "openai", enable_thinking=False)
+    assert out_off == {"extra_body": {"enable_thinking": False}}
+
+
+def test_thinking_glm_enables_via_thinking_object() -> None:
+    """GLM 开启:与禁用对称的 thinking 对象(此前开启分支返回空)。"""
+    out = build_thinking_kwargs("glm-4.5", "openai", enable_thinking=True)
+    assert out == {"extra_body": {"thinking": {"type": "enabled"}}}
+    out_off = build_thinking_kwargs("glm-4.5", "openai", enable_thinking=False)
+    assert out_off == {"extra_body": {"thinking": {"type": "disabled"}}}
+
+
 def test_thinking_unknown_provider_silently_degrades() -> None:
     out = build_thinking_kwargs("some-model", "weird", enable_thinking=True)
     assert out == {}
@@ -79,6 +97,8 @@ def test_supports_thinking_matrix() -> None:
     assert supports_thinking("claude-x", "anthropic") is True
     assert supports_thinking("o3-mini", "openai") is True
     assert supports_thinking("gpt-4o", "openai") is False
+    assert supports_thinking("qwen3.8-vl-plus", "openai") is True
+    assert supports_thinking("glm-4.5", "openai") is True
     assert supports_thinking("x", "unknown") is False
 
 

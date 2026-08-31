@@ -168,6 +168,23 @@ async def test_tool_result_from_tool_end():
             "status": "success", "tool_call_id": ""} in emitted
 
 
+@pytest.mark.asyncio
+async def test_tool_result_multimodal_content_never_leaks_base64():
+    """view_image 的多模态 ToolMessage:只提取 text 块,base64 绝不进 SSE。"""
+    blocks = [
+        {"type": "text", "text": '[IMAGE file_id="f1" name="a.png"]'},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJDREVG"}},
+    ]
+    events = [{
+        "event": "on_tool_end", "name": "view_image",
+        "data": {"output": _ToolMessage(content=blocks)},
+    }]
+    emitted = await _run(events)
+    result = next(e for e in emitted if e.get("type") == "tool_result")
+    assert result["content"] == '[IMAGE file_id="f1" name="a.png"]'
+    assert "QUJDREVG" not in result["content"]
+
+
 async def _collect_tool_end_events(tool_message: ToolMessage) -> list[Any]:
     """Helper: 模拟一个 on_tool_end 事件，收集发出的 AppEvent。"""
     events: list[Any] = []

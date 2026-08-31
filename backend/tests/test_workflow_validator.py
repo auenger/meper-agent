@@ -301,19 +301,39 @@ class TestAgentNodeNewConfigs:
         assert not result.is_valid
         assert any(i.code == "INVALID_RESPONSE_SCHEMA" for i in result.errors)
 
-    def test_response_schema_third_level_rejected(self):
-        """嵌套最多两层：第三层 object 报错。"""
+    def test_response_schema_deep_nesting_allowed(self):
+        """三层嵌套 + 第二层对象列表合法（嵌套可继续深入）。"""
         workflow = _make_workflow([
             {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
             {"node_id": "agent1", "type": "agent", "config": {
                 "agent_id": "agent_xxx",
                 "response_schema": {"type": "object", "fields": [
-                    {"name": "a", "type": "object", "fields": [
-                        {"name": "b", "type": "object", "fields": [
-                            {"name": "c", "type": "string"},
+                    {"name": "report", "type": "object", "fields": [
+                        {"name": "sections", "type": "object", "fields": [
+                            {"name": "title", "type": "string"},
                         ]},
                     ]},
                 ]},
+            }},
+            {"node_id": "end", "type": "end", "config": {}},
+        ])
+
+        result = validate_workflow(workflow)
+        assert result.is_valid
+
+    def test_response_schema_beyond_depth_limit_rejected(self):
+        """嵌套超过防御上限（5 层）报错。"""
+        def nested(level: int) -> dict:
+            node = {"name": "leaf", "type": "string"}
+            for _ in range(level):
+                node = {"name": "n", "type": "object", "fields": [node]}
+            return node
+
+        workflow = _make_workflow([
+            {"node_id": "start", "type": "start", "config": {"next_nodes": [{"target": "agent1"}]}},
+            {"node_id": "agent1", "type": "agent", "config": {
+                "agent_id": "agent_xxx",
+                "response_schema": {"type": "object", "fields": [nested(6)]},
             }},
             {"node_id": "end", "type": "end", "config": {}},
         ])

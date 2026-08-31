@@ -1,13 +1,15 @@
 """Execution-related Pydantic schemas for invoke/stream API."""
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ExecutionRequest(BaseModel):
     """Request body for agent invoke/stream endpoints."""
 
-    input: str = Field(..., min_length=1, max_length=50000, description="User input text")
+    # input 允许为空——"仅附件"轮次(如只发一张图问这是什么)。
+    # 空输入必须携带 file_ids/file_paths 之一(validator 拦全空请求)。
+    input: str = Field(..., max_length=50000, description="User input text; may be empty when files/images are attached")
     display_text: str | None = Field(
         default=None,
         max_length=500,
@@ -29,6 +31,12 @@ class ExecutionRequest(BaseModel):
         description="本次上传的文件 ID 列表",
     )
 
+    @model_validator(mode="after")
+    def _require_input_or_files(self) -> ExecutionRequest:
+        if not self.input.strip() and not self.file_ids and not self.file_paths:
+            raise ValueError("input 与 file_ids/file_paths 至少提供其一（仅附件轮次 input 可为空）")
+        return self
+
 
 class ExecutionResponse(BaseModel):
     """Response from a synchronous agent invocation."""
@@ -47,6 +55,16 @@ class ResumeRequest(BaseModel):
     session_id: str = Field(..., description="被中断的 session ID")
     answer: str = Field(..., min_length=1, max_length=50000, description="用户的回答")
     enable_thinking: bool = Field(default=False, description="启用 LLM 推理模式")
+
+
+class DismissRequest(BaseModel):
+    """Request body for dismissing a pending clarification card.
+
+    用户不想回答 agent 的追问（问题不对 / 想直接重新输入或传文件）时关闭
+    待答卡片：不恢复执行，之后发送的消息走普通 stream 新一轮。
+    """
+
+    session_id: str = Field(..., description="待忽略澄清卡片所属的 session ID")
 
 
 class StopRequest(BaseModel):

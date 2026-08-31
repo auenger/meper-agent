@@ -237,11 +237,13 @@ async def stream_events_to_app_events(
             output = data.get("output")
             tool_name = event.get("name") or "unknown"
             # Extract content: ToolMessage may stringify with metadata if we
-            # naively str() it; use .content when available.
+            # naively str() it; use .content when available. 多模态 list
+            # content（view_image 的图片块）只取 text 块——base64 绝不能
+            # 推给前端 SSE / 落 timeline。
             if output is None:
                 content = ""
             elif hasattr(output, "content"):
-                content = str(output.content)
+                content = _tool_output_text(output.content)
             else:
                 content = str(output)
             # 检查 ToolMessage 的 status：tool_wrapper 把 ToolException 转成
@@ -471,12 +473,25 @@ def _iter_tool_calls(message: Any) -> list[dict[str, Any]]:
 
 
 def _error_message(data: dict[str, Any]) -> str:
+    from app.utils.llm_errors import translate_llm_error
+
     err = data.get("error")
-    if isinstance(err, BaseException):
-        return str(err)
-    if err is not None:
-        return str(err)
-    return "unknown error"
+    raw = str(err) if err is not None else "unknown error"
+    # 事件路径的 LLM 错误同样过转译（异常路径在 _emit_stream_error 处理）。
+    return translate_llm_error(raw)
+
+
+def _tool_output_text(content: object) -> str:
+    """工具输出 → 前端可展示文本。多模态 list content 只拼接 text 块，
+    空（纯图片结果）时给占位说明。"""
+    if not isinstance(content, list):
+        return str(content)
+    texts = [
+        str(b.get("text", "")) for b in content
+        if isinstance(b, dict) and b.get("type") == "text"
+    ]
+    joined = "\n".join(t for t in texts if t)
+    return joined or "[图片已载入]"
 
 
 __all__ = ["OnEventCallback", "stream_events_to_app_events"]

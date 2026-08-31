@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.models.agent import RecommendedItem
+from app.schemas.file_library import FileRefResponse
 
 
 class ExtAgentCapabilities(BaseModel):
@@ -45,11 +46,11 @@ class ExtAgentListResponse(BaseModel):
 class ExtInvokeRequest(BaseModel):
     """Request body for external Agent invocation."""
 
+    # message 允许为空——"仅附件"轮次(与内部 ExecutionRequest 语义一致)。
     message: str = Field(
         ...,
-        min_length=1,
         max_length=50000,
-        description="发送给 Agent 的消息",
+        description="发送给 Agent 的消息；仅附件轮次可为空",
     )
     display_text: str | None = Field(
         default=None,
@@ -73,6 +74,12 @@ class ExtInvokeRequest(BaseModel):
         default=None,
         description="本次上传文件 ID 列表",
     )
+
+    @model_validator(mode="after")
+    def _require_message_or_files(self) -> ExtInvokeRequest:
+        if not self.message.strip() and not self.file_ids and not self.file_paths:
+            raise ValueError("message 与 file_ids/file_paths 至少提供其一（仅附件轮次 message 可为空）")
+        return self
 
 
 class ExtInvokeResponse(BaseModel):
@@ -99,6 +106,16 @@ class ExtResumeRequest(BaseModel):
         default=False,
         description="启用 LLM 推理模式（与内部 /v1/agents/*/resume 一致）",
     )
+
+
+class ExtDismissRequest(BaseModel):
+    """Request body for dismissing a pending clarification card.
+
+    关闭待答的 ask_clarification 卡片而不作答：不恢复执行，之后发送的
+    消息走普通 invoke 新一轮（与内部 /v1/agents/*/interrupt/dismiss 一致）。
+    """
+
+    session_id: str = Field(..., description="待忽略澄清卡片所属的会话 ID")
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +224,10 @@ class ExtMessageResponse(BaseModel):
     display_text: str = Field(default="", description="展示文案（快捷指令 label）；空则前端回退 content")
     timeline_entries: list[dict] = Field(default_factory=list)
     created_at: str
+    files: list[FileRefResponse] | None = Field(
+        default=None,
+        description="用户消息携带的上传文件详情（由 file_ids 水合）；无附件时为 None",
+    )
 
 
 class ExtSessionDetailResponse(BaseModel):

@@ -11,7 +11,7 @@
 import { useState, useEffect, useMemo, type FC, type ReactNode } from 'react';
 import {
   ArrowLeft, Bot, Save, Loader2, Rocket, Archive, RefreshCw, Cpu, Wrench,
-  ChevronDown, ChevronRight, Sparkles, Plus, Trash2, Mic,
+  ChevronDown, ChevronRight, Sparkles, Plus, Trash2, Mic, ListPlus,
 } from 'lucide-react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentApi, agentKeys, type AgentUpdateInput } from '../services/agent-api';
@@ -21,7 +21,7 @@ import { mcpApi, mcpKeys } from '../services/mcp-api';
 import { workflowsApi, workflowKeys } from '../services/workflows-api';
 import { knowledgeApi, knowledgeKeys } from '../services/knowledge-api';
 import { toStudioAgent, fromStudioAgent } from '../services/adapters';
-import { Select, type SelectOptionGroup } from './ui';
+import { Select, Modal, type SelectOptionGroup } from './ui';
 import { toast } from './ui/toast';
 import type { Agent } from '../types';
 import AvatarField from './AvatarField';
@@ -122,6 +122,12 @@ export function AgentEditorPage({
     onSuccess: () => queryClient.invalidateQueries({ queryKey: agentKeys.all }),
   });
 
+  // 批量添加推荐项弹窗 + 紧凑列表的展开索引（hooks 必须位于 isLoading 早退之前）。
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkText, setBulkText] = useState('');
+  const [expandedItems, setExpandedItems] = useState<Set<number>>(new Set());
+  const bulkParsed = useMemo(() => parseBulkRecommendedItems(bulkText), [bulkText]);
+
   const handleSave = () => {
     if (!form) return;
     if (!form.rolePrompt?.trim() || !form.taskPrompt?.trim()) {
@@ -141,6 +147,50 @@ export function AgentEditorPage({
 
   const isPublished = form.status === 'online';
   const set = (patch: Partial<Agent>) => setForm({ ...form, ...patch });
+
+  // ── 推荐项（快捷输入）操作 ──
+  const recommendedItems = form.recommendedItems ?? [];
+
+  const updateItem = (idx: number, patch: Partial<{ label: string; prompt: string }>) =>
+    set({ recommendedItems: recommendedItems.map((it, i) => (i === idx ? { ...it, ...patch } : it)) });
+
+  // 删除后数组塌缩，需同步平移展开索引（删除项之前的保留，之后的减一）。
+  const removeItem = (idx: number) => {
+    set({ recommendedItems: recommendedItems.filter((_, i) => i !== idx) });
+    const next = new Set<number>();
+    for (const i of expandedItems) {
+      if (i < idx) next.add(i);
+      else if (i > idx) next.add(i - 1);
+    }
+    setExpandedItems(next);
+  };
+
+  const addItem = () => {
+    set({ recommendedItems: [...recommendedItems, { label: '', prompt: '' }] });
+    setExpandedItems((prev) => new Set(prev).add(recommendedItems.length)); // 新项自动展开便于填写
+  };
+
+  const toggleItemExpanded = (idx: number) =>
+    setExpandedItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx);
+      else next.add(idx);
+      return next;
+    });
+
+  const handleBulkAdd = () => {
+    const remaining = MAX_RECOMMENDED_ITEMS - recommendedItems.length;
+    if (remaining <= 0 || bulkParsed.items.length === 0) return;
+    const added = bulkParsed.items.slice(0, remaining);
+    set({ recommendedItems: [...recommendedItems, ...added] });
+    if (bulkParsed.items.length > remaining) {
+      toast.warning(`已达上限 ${MAX_RECOMMENDED_ITEMS} 条：本次添加 ${added.length} 条，其余 ${bulkParsed.items.length - remaining} 条忽略`);
+    } else {
+      toast.success(`已添加 ${added.length} 条推荐项`);
+    }
+    setBulkOpen(false);
+    setBulkText('');
+  };
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -261,30 +311,68 @@ export function AgentEditorPage({
           </Field>
           <Field label="推荐问题 / 操作（终端用户可一键点击发送）">
             <div className="space-y-2">
-              {(form.recommendedItems ?? []).map((item, idx) => (
-                <div key={idx} className="rounded-lg border border-[#27272a] bg-[#121214] p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] text-[#71717a] font-mono">推荐项 #{idx + 1}</span>
-                    <button type="button" onClick={() => set({ recommendedItems: (form.recommendedItems ?? []).filter((_, i) => i !== idx) })} className="flex items-center gap-1 text-[#ef4444] text-[10px] hover:underline cursor-pointer">
-                      <Trash2 className="w-3 h-3" /> 删除
-                    </button>
-                  </div>
-                  <input className={inputCls} placeholder="显示文案（必填），如：导出本月报表" value={item.label} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, label: e.target.value } : it) })} />
-                  <input className={inputCls} placeholder="实际发送内容（留空则同显示文案）" value={item.prompt} onChange={(e) => set({ recommendedItems: (form.recommendedItems ?? []).map((it, i) => i === idx ? { ...it, prompt: e.target.value } : it) })} />
+              {recommendedItems.length > 0 && (
+                <div className="max-h-[420px] overflow-y-auto space-y-1.5 pr-1">
+                  {recommendedItems.map((item, idx) => {
+                    const expanded = expandedItems.has(idx);
+                    return (
+                      <div key={idx} className="rounded-lg border border-[#27272a] bg-[#121214]">
+                        <div className="flex items-center gap-2 px-2.5 py-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleItemExpanded(idx)}
+                            className="flex flex-1 min-w-0 items-center gap-2 text-left cursor-pointer"
+                            title={expanded ? '收起' : '展开编辑'}
+                          >
+                            {expanded
+                              ? <ChevronDown className="w-3.5 h-3.5 text-[#71717a] shrink-0" />
+                              : <ChevronRight className="w-3.5 h-3.5 text-[#71717a] shrink-0" />}
+                            <span className="text-[10px] text-[#71717a] font-mono shrink-0">#{idx + 1}</span>
+                            <span className={`text-xs truncate shrink-0 max-w-[240px] ${item.label ? 'text-white' : 'text-[#52525b] italic'}`}>
+                              {item.label || '（未填写）'}
+                            </span>
+                            <span className="text-[11px] text-[#71717a] truncate">
+                              {item.prompt ? `· ${item.prompt}` : '· 点击直接发送显示文案'}
+                            </span>
+                          </button>
+                          <button type="button" onClick={() => removeItem(idx)} className="flex items-center gap-1 text-[#ef4444] text-[10px] hover:underline cursor-pointer shrink-0">
+                            <Trash2 className="w-3 h-3" /> 删除
+                          </button>
+                        </div>
+                        {expanded && (
+                          <div className="px-3 pb-3 space-y-2">
+                            <input className={inputCls} placeholder="显示文案（必填），如：导出本月报表" value={item.label} onChange={(e) => updateItem(idx, { label: e.target.value })} />
+                            <input className={inputCls} placeholder="实际发送内容（留空则同显示文案）" value={item.prompt} onChange={(e) => updateItem(idx, { prompt: e.target.value })} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-              ))}
-              {(form.recommendedItems ?? []).length === 0 && (
-                <div className="text-xs text-[#71717a] text-center py-3">暂无推荐项，点击下方按钮添加</div>
               )}
-              <button
-                type="button"
-                onClick={() => set({ recommendedItems: [...(form.recommendedItems ?? []), { label: '', prompt: '' }] })}
-                disabled={(form.recommendedItems ?? []).length >= 10}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <Plus className="w-3.5 h-3.5" /> 添加推荐项
-              </button>
-              <div className="text-[11px] text-slate-500">最多 10 条。「实际发送内容」留空时，点击按钮直接发送「显示文案」。</div>
+              {recommendedItems.length === 0 && (
+                <div className="text-xs text-[#71717a] text-center py-3">暂无推荐项，点击下方按钮添加或批量导入</div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={addItem}
+                  disabled={recommendedItems.length >= MAX_RECOMMENDED_ITEMS}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Plus className="w-3.5 h-3.5" /> 添加推荐项
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBulkOpen(true)}
+                  disabled={recommendedItems.length >= MAX_RECOMMENDED_ITEMS}
+                  className="flex items-center gap-1.5 px-3 py-1.5 border border-[#27272a] hover:bg-[#27272a] text-[#a1a1aa] hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <ListPlus className="w-3.5 h-3.5" /> 批量添加
+                </button>
+                <span className="text-[10px] text-[#71717a] font-mono ml-auto">{recommendedItems.length} / {MAX_RECOMMENDED_ITEMS}</span>
+              </div>
+              <div className="text-[11px] text-slate-500">最多 {MAX_RECOMMENDED_ITEMS} 条。「实际发送内容」留空时，点击按钮直接发送「显示文案」。</div>
             </div>
           </Field>
         </Section>
@@ -360,11 +448,137 @@ export function AgentEditorPage({
           </button>
         </div>
       </div>
+
+      {/* 批量添加推荐项弹窗 */}
+      <Modal
+        open={bulkOpen}
+        title="批量添加推荐项"
+        onOk={handleBulkAdd}
+        onCancel={() => setBulkOpen(false)}
+        okText={`添加 ${Math.max(0, Math.min(bulkParsed.items.length, MAX_RECOMMENDED_ITEMS - recommendedItems.length))} 条`}
+        okButtonProps={{ disabled: bulkParsed.items.length === 0 || recommendedItems.length >= MAX_RECOMMENDED_ITEMS }}
+        width={560}
+      >
+        <div className="space-y-3">
+          <div className="text-[11px] text-[#71717a] leading-relaxed">
+            自动识别格式，直接粘贴即可：
+            <br />① 纯文本 — 每行一条 <code className="text-indigo-300">{'显示文案 | 实际发送内容'}</code>，不需要 []，不含 | 时整行即显示文案；
+            <br />② JSON — 整段数组，或每行一个 <code className="text-indigo-300">{'{"label":"…","prompt":"…"}'}</code> 对象（[] 可省略，prompt 可省略）。
+          </div>
+          <textarea
+            rows={8}
+            className={`${inputCls} font-mono text-xs`}
+            placeholder={'导出本月报表 | 帮我导出 2026 年 8 月的销售报表\n写一份周报\n\n也可粘贴 JSON：{"label": "导出本月报表", "prompt": "帮我导出 2026 年 8 月的销售报表"}'}
+            value={bulkText}
+            onChange={(e) => setBulkText(e.target.value)}
+          />
+          {bulkText.trim() && (
+            <div className="text-[11px] leading-relaxed">
+              {bulkParsed.items.length > 0 ? (
+                <span className="text-emerald-400">
+                  解析出 {bulkParsed.items.length} 条（{bulkParsed.mode === 'json' ? 'JSON 格式' : '逐行文本格式'}）
+                  {bulkParsed.items.length > MAX_RECOMMENDED_ITEMS - recommendedItems.length && (
+                    <span className="text-amber-400">，超出上限仅添加前 {Math.max(0, MAX_RECOMMENDED_ITEMS - recommendedItems.length)} 条</span>
+                  )}
+                </span>
+              ) : (
+                <span className="text-rose-400">未解析出有效条目，请检查格式</span>
+              )}
+              {bulkParsed.invalidCount > 0 && (
+                <span className="text-amber-400">
+                  {' '}{bulkParsed.invalidCount} 条格式无效已跳过（label 必填 ≤{RECOMMENDED_LABEL_MAX} 字符，prompt ≤{RECOMMENDED_PROMPT_MAX} 字符）
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }
 
 // ── Sub-components ──
+
+// 推荐项约束 — 与后端 RecommendedItem / recommended_items max_length 保持一致
+const RECOMMENDED_LABEL_MAX = 100;
+const RECOMMENDED_PROMPT_MAX = 500;
+const MAX_RECOMMENDED_ITEMS = 100;
+
+/**
+ * 解析批量输入的推荐项，自动识别格式：
+ * ① 整段 JSON 数组（以 [ 开头）；
+ * ② 每行一个 JSON 对象（可省略外层 []）；
+ * ③ 每行一条纯文本（label | prompt，无 | 则整行为 label）。
+ * 返回有效条目 + 被跳过的无效条数，供弹窗实时预览。
+ */
+function parseBulkRecommendedItems(text: string): {
+  items: { label: string; prompt: string }[];
+  invalidCount: number;
+  mode: 'json' | 'lines' | 'none';
+} {
+  const trimmed = text.trim();
+  if (!trimmed) return { items: [], invalidCount: 0, mode: 'none' };
+
+  const validate = (label: unknown, prompt: unknown): { label: string; prompt: string } | null => {
+    if (typeof label !== 'string') return null;
+    const l = label.trim();
+    const p = typeof prompt === 'string' ? prompt.trim() : '';
+    if (!l || l.length > RECOMMENDED_LABEL_MAX || p.length > RECOMMENDED_PROMPT_MAX) return null;
+    return { label: l, prompt: p };
+  };
+
+  // ① 整段 JSON 数组
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        const items: { label: string; prompt: string }[] = [];
+        let invalidCount = 0;
+        for (const row of parsed) {
+          const rec = (row ?? {}) as Record<string, unknown>;
+          const item = validate(rec.label, rec.prompt);
+          if (item) items.push(item);
+          else invalidCount++;
+        }
+        return { items, invalidCount, mode: 'json' };
+      }
+      // 合法 JSON 但不是数组 — 整体无效
+      return { items: [], invalidCount: 1, mode: 'json' };
+    } catch {
+      // 非法 JSON → 回退逐行解析
+    }
+  }
+
+  // ②/③ 逐行解析：{ 开头尝试单行 JSON 对象，否则按 label | prompt 文本
+  const items: { label: string; prompt: string }[] = [];
+  let invalidCount = 0;
+  let jsonLines = 0;
+  for (const line of trimmed.split('\n')) {
+    const l = line.trim();
+    if (!l) continue;
+    if (l.startsWith('{')) {
+      try {
+        const row = JSON.parse(l) as Record<string, unknown>;
+        const item = validate(row?.label, row?.prompt);
+        if (item) {
+          items.push(item);
+          jsonLines++;
+          continue;
+        }
+        invalidCount++; // JSON 对象但字段无效（缺 label 等）
+        continue;
+      } catch {
+        invalidCount++; // 以 { 开头但不是合法 JSON — 视为无效而非怪异文本
+        continue;
+      }
+    }
+    const sep = l.indexOf('|');
+    const item = validate(sep >= 0 ? l.slice(0, sep) : l, sep >= 0 ? l.slice(sep + 1) : '');
+    if (item) items.push(item);
+    else invalidCount++;
+  }
+  return { items, invalidCount, mode: jsonLines > 0 && jsonLines === items.length ? 'json' : 'lines' };
+}
 
 /** Collapsible section with a title bar. */
 const Section: FC<{ title: string; icon?: ReactNode; defaultOpen?: boolean; children: ReactNode }> = ({

@@ -32,7 +32,7 @@ interface ResponseField {
   required?: boolean
   enum_values?: string[]
   description?: string
-  /** 仅第一层 object 字段可带（第二层，不可再嵌） */
+  /** object 类型字段的子字段（可继续嵌套，建议 ≤3 层，后端防御上限 5 层） */
   fields?: ResponseField[]
 }
 
@@ -41,23 +41,41 @@ interface ResponseSchema {
   fields?: ResponseField[]
 }
 
-const FIELD_TYPE_OPTIONS = [
-  { value: 'string', label: '文本' },
-  { value: 'number', label: '数字' },
-  { value: 'boolean', label: '布尔' },
-  { value: 'enum', label: '枚举' },
-]
-
-const L1_FIELD_TYPE_OPTIONS = [
-  ...FIELD_TYPE_OPTIONS,
-  { value: 'object', label: '对象（嵌套一层）' },
-]
-
 const RESPONSE_TYPE_OPTIONS = [
   { value: 'text', label: '文本（默认）' },
   { value: 'object', label: '对象 { }' },
   { value: 'array', label: '数组 [ ]' },
 ]
+
+/** 类型下拉（所有层级统一；列表/嵌套由开关组合表达） */
+const FIELD_TYPE_OPTIONS = [
+  { value: 'string', label: '文本' },
+  { value: 'number', label: '数字' },
+  { value: 'boolean', label: '布尔' },
+  { value: 'enum', label: '枚举' },
+  { value: 'object', label: '对象' },
+]
+
+/* ─── 路径式字段树操作（支持任意层嵌套的不可变更新的） ─── */
+
+type FieldPath = number[]
+
+function mapAt(
+  list: ResponseField[], path: FieldPath, fn: (f: ResponseField) => ResponseField,
+): ResponseField[] {
+  const [head, ...rest] = path
+  return list.map((f, i) => {
+    if (i !== head) return f
+    if (rest.length === 0) return fn(f)
+    return { ...f, fields: mapAt(f.fields ?? [], rest, fn) }
+  })
+}
+
+function removeAt(list: ResponseField[], path: FieldPath): ResponseField[] {
+  const [head, ...rest] = path
+  if (rest.length === 0) return list.filter((_, i) => i !== head)
+  return list.map((f, i) => (i === head ? { ...f, fields: removeAt(f.fields ?? [], rest) } : f))
+}
 
 /** 「自评模式」一键模板：模糊自判变成封闭枚举，配合网关/信息不足分支路由 */
 const SELF_ASSESS_TEMPLATE: ResponseField[] = [
@@ -71,6 +89,60 @@ const SELF_ASSESS_TEMPLATE: ResponseField[] = [
   { name: 'summary', type: 'string', required: true, description: '结果摘要（信息不足时说明缺什么）' },
   { name: 'assumptions', type: 'string', required: false, description: '执行中所做的关键假设' },
 ]
+
+/* ─── 结构预览：根据当前契约生成示例 JSON，让用户所见即所得 ─── */
+
+/** 生成字段示例占位值（尖括号包字段名，类型可辨；enum 用第一个枚举值） */
+function sampleValue(field: ResponseField): unknown {
+  const base = (): unknown => {
+    switch (field.type) {
+      case 'number':
+        return 0
+      case 'boolean':
+        return true
+      case 'enum':
+        return field.enum_values?.[0] ?? `<${field.name || '值'}>`
+      case 'object': {
+        const obj: Record<string, unknown> = {}
+        for (const g of field.fields ?? []) {
+          if (g.name) obj[g.name] = sampleValue(g)
+        }
+        return obj
+      }
+      default:
+        return `<${field.name || '文本'}>`
+    }
+  }
+  return field.is_list ? [base()] : base()
+}
+
+/** response 的完整示例结构（text = 纯文本示例；array = 单元素示例数组） */
+function buildResponseSample(schema: ResponseSchema | null): unknown {
+  if (!schema || schema.type === 'text') return '<Agent 回复的文本内容>'
+  const obj: Record<string, unknown> = {}
+  for (const f of schema.fields ?? []) {
+    if (f.name) obj[f.name] = sampleValue(f)
+  }
+  return schema.type === 'array' ? [obj] : obj
+}
+
+/** 首个可引用字段的路径（递归钻到第一个叶子；列表带 .0 示例下标） */
+function firstRefPath(schema: ResponseSchema | null): string {
+  if (!schema || schema.type === 'text') return ''
+  const walk = (fields: ResponseField[]): string => {
+    for (const f of fields) {
+      if (!f.name) continue
+      const prefix = f.is_list ? `${f.name}.0` : f.name
+      if (f.type === 'object' && f.fields?.length) {
+        const sub = walk(f.fields)
+        if (sub) return `${prefix}.${sub}`
+      }
+      return prefix
+    }
+    return ''
+  }
+  return walk(schema.fields ?? [])
+}
 
 interface Props {
   config: Record<string, unknown>
@@ -123,42 +195,23 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
     setSchema({ ...(responseSchema as ResponseSchema), fields: next })
   }
 
-  const updateField = (idx: number, patch: Partial<ResponseField>) => {
-    setFields(fields.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
+  /** 路径式更新：patch 指定位置的字段（任意嵌套深度） */
+  const updateAt = (path: FieldPath, patch: Partial<ResponseField>) => {
+    setFields(mapAt(fields, path, (f) => ({ ...f, ...patch })))
   }
 
-  const updateSubField = (idx: number, subIdx: number, patch: Partial<ResponseField>) => {
-    const field = fields[idx]
-    if (!field?.fields) return
-    updateField(idx, {
-      fields: field.fields.map((g, j) => (j === subIdx ? { ...g, ...patch } : g)),
-    })
-  }
-
-  // ── 信息不足分支 ──
-  const handleInsufficientBranchChange = (val: string | null) => {
-    onChange({ ...config, insufficient_branch: val || null })
-  }
-
-  // 信息不足分支候选：画布上除自身外的所有节点（典型：人工审批澄清节点）
-  const branchOptions = allNodes
-    .filter((n) => n.node_id !== currentNodeId)
-    .map((n) => ({ value: n.node_id, label: `${n.type} · ${n.node_id}` }))
-
-  const insufficientBranch = (config.insufficient_branch as string) || null
-
-  /** 渲染一行字段编辑（layer 1 = response 直属字段，layer 2 = object 子字段） */
+  /**
+   * 表单式字段行（任意层通用）：字段名 / 类型 / 必填 / 列表 / 删除 +
+   * 枚举值行 + 说明行；对象（或对象列表）行下递归渲染缩进的子字段区。
+   */
   const renderFieldRow = (
     field: ResponseField,
-    idx: number,
-    layer: 1 | 2,
-    onPatch: (patch: Partial<ResponseField>) => void,
-    onRemove: () => void,
+    path: FieldPath,
   ) => {
-    const typeOptions = layer === 1 ? L1_FIELD_TYPE_OPTIONS : FIELD_TYPE_OPTIONS
+    const onPatch = (patch: Partial<ResponseField>) => updateAt(path, patch)
     return (
-      <div key={`${layer}-${idx}`} className="space-y-1.5 border-t border-slate-700/40 pt-2">
-        <div className="grid grid-cols-[1fr_120px_32px_32px_44px] gap-1.5 items-center">
+      <div key={path.join('.')} className="space-y-1.5 border-t border-[#27272a] pt-2">
+        <div className="grid grid-cols-[1fr_92px_32px_32px_44px] gap-1.5 items-center">
           <Input
             placeholder="字段名（如 status）"
             value={field.name}
@@ -168,7 +221,7 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
             className="w-full"
             value={field.type}
             onChange={(val) => onPatch({ type: (val ?? 'string') as ResponseField['type'] })}
-            options={typeOptions}
+            options={FIELD_TYPE_OPTIONS}
           />
           <div className="flex items-center justify-center" title="必填">
             <Switch
@@ -177,14 +230,14 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
               onChange={(checked) => onPatch({ required: checked })}
             />
           </div>
-          <div className="flex items-center justify-center" title="列表（string 列表 / enum 列表 / object 列表）">
+          <div className="flex items-center justify-center" title="列表（任何类型都可为列表，如对象列表）">
             <Switch
               size="small"
               checked={!!field.is_list}
               onChange={(checked) => onPatch({ is_list: checked })}
             />
           </div>
-          <Button size="small" onClick={onRemove}>删除</Button>
+          <Button size="small" onClick={() => setFields(removeAt(fields, path))}>删除</Button>
         </div>
         {field.type === 'enum' && (
           <Input
@@ -202,15 +255,71 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
           value={field.description ?? ''}
           onChange={(e) => onPatch({ description: e.target.value })}
         />
+
+        {/* 对象（或对象列表）：行下递归渲染缩进的子字段区，任意层可继续嵌套（建议 ≤3 层） */}
+        {field.type === 'object' && (
+          <div className="ml-3 border-l-2 border-[#3f3f46] pl-2.5 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-[#71717a]">
+                {field.name || '（未命名）'}的子字段
+                {field.is_list ? '（对象列表的元素结构）' : '（嵌套对象）'}
+              </span>
+              <Button
+                size="small"
+                onClick={() =>
+                  onPatch({ fields: [...(field.fields ?? []), { name: '', type: 'string' }] })
+                }
+              >
+                加子字段
+              </Button>
+            </div>
+            {(field.fields ?? []).map((sub, subIdx) => renderFieldRow(sub, [...path, subIdx]))}
+          </div>
+        )}
       </div>
     )
   }
 
+  // ── 信息不足分支 ──
+  const handleInsufficientBranchChange = (val: string | null) => {
+    onChange({ ...config, insufficient_branch: val || null })
+  }
+
+  // 信息不足分支候选：画布上除自身外的所有节点（典型：人工审批澄清节点）
+  const branchOptions = allNodes
+    .filter((n) => n.node_id !== currentNodeId)
+    .map((n) => ({ value: n.node_id, label: `${n.type} · ${n.node_id}` }))
+
+  const insufficientBranch = (config.insufficient_branch as string) || null
+
   // ── 放大编辑（Modal 大空间填写，与面板内嵌编辑实时同步同一份 config） ──
   const [zoomOpen, setZoomOpen] = useState(false)
 
-  /** 返回结构编辑器主体（面板内嵌 + 放大 Modal 共用） */
-  const renderSchemaBody = () => (
+  /** 结构预览：示例 JSON + 下游引用写法（改字段即时刷新，所见即所得） */
+  const renderSchemaPreview = () => {
+    const sample = buildResponseSample(responseSchema)
+    const refPath = firstRefPath(responseSchema)
+    const refExample = refPath
+      ? `{{${currentNodeId}.response.${refPath}}}`
+      : `{{${currentNodeId}.response}}`
+    return (
+      <div className="rounded bg-[#09090b] border border-[#27272a] p-2 min-w-0">
+        <div className="text-[10px] text-[#a1a1aa] mb-1">response 数据结构预览</div>
+        <pre className="text-[11px] leading-relaxed font-mono text-[#d4d4d8] whitespace-pre-wrap break-all">
+          {JSON.stringify(sample, null, 2)}
+        </pre>
+        <div className="text-[10px] text-[#a1a1aa] mt-1.5 pt-1.5 border-t border-[#27272a]">
+          下游引用示例：<code className="font-mono text-[#60A5FA] break-all">{refExample}</code>
+        </div>
+        <div className="text-[10px] text-[#71717a] mt-1">
+          另有引擎固定字段：status / files / usage / needed_info（无需配置）
+        </div>
+      </div>
+    )
+  }
+
+  /** 返回结构编辑区：类型选择 + JSON 形态的字段树（操作即展示） */
+  const renderSchemaEditor = () => (
     <>
       <Select
         className="w-full"
@@ -219,11 +328,24 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
         options={RESPONSE_TYPE_OPTIONS}
       />
       <div className="text-[10px] text-[#71717a]">
-        节点输出是类 API 返回体：status/files/usage 等固定字段由引擎恒定提供；
-        response 默认是文本。改为对象/数组后，Agent 最终回复必须是符合下方契约的
-        JSON（违规自动带反馈重试一次），下游用 {'{{'}节点.response.字段{'}'} 直接取值，
-        嵌套最多两层；字段可勾选「列表」（如 tags 文本列表、authors 对象列表）。
+        response 默认是文本（零配置）。改为对象/数组后，Agent 最终回复必须是符合下方
+        契约的 JSON（违规自动带反馈重试一次），预览即下游拿到的数据；支持多层嵌套
+        （建议 ≤3 层），「列表」开关可作用于任何类型（如对象列表），「必填」控制
+        契约校验是否强制该字段。
       </div>
+
+      {schemaType !== 'text' && (
+        <div className="rounded bg-[#09090b] border border-[#27272a] px-2.5 py-2 space-y-2">
+          {fields.map((field, idx) => renderFieldRow(field, [idx]))}
+          <button
+            type="button"
+            onClick={() => setFields([...fields, { name: '', type: 'string' }])}
+            className="text-[10px] text-[#60A5FA] hover:underline cursor-pointer"
+          >
+            + 加字段
+          </button>
+        </div>
+      )}
 
       {schemaType !== 'text' && (
         <div className="flex gap-1.5 justify-end">
@@ -238,59 +360,8 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
           >
             自评模式模板
           </Button>
-          <Button
-            size="small"
-            onClick={() => setFields([...fields, { name: '', type: 'string' }])}
-          >
-            加字段
-          </Button>
         </div>
       )}
-
-      {schemaType !== 'text' && fields.map((field, idx) => (
-        <div key={`l1-${idx}`} className="space-y-1.5">
-          {renderFieldRow(
-            field,
-            idx,
-            1,
-            (patch) => updateField(idx, patch),
-            () => setFields(fields.filter((_, i) => i !== idx)),
-          )}
-          {field.type === 'object' && (
-            <div className="ml-4 border-l-2 border-slate-700/60 pl-2.5 space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[10px] text-slate-500">
-                  {field.name || '（未命名）'}的子字段
-                  {field.is_list ? '（对象列表的元素结构' : '（第二层'}
-                  ，不可再嵌套）
-                </span>
-                <Button
-                  size="small"
-                  onClick={() =>
-                    updateField(idx, {
-                      fields: [...(field.fields ?? []), { name: '', type: 'string' }],
-                    })
-                  }
-                >
-                  加子字段
-                </Button>
-              </div>
-              {(field.fields ?? []).map((sub, subIdx) =>
-                renderFieldRow(
-                  sub,
-                  subIdx,
-                  2,
-                  (patch) => updateSubField(idx, subIdx, patch),
-                  () =>
-                    updateField(idx, {
-                      fields: (field.fields ?? []).filter((_, j) => j !== subIdx),
-                    }),
-                ),
-              )}
-            </div>
-          )}
-        </div>
-      ))}
     </>
   )
 
@@ -411,10 +482,11 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
             ⤢ 放大编辑
           </Button>
         </div>
-        {renderSchemaBody()}
+        {renderSchemaEditor()}
+        {schemaType !== 'text' && renderSchemaPreview()}
       </div>
 
-      {/* 放大编辑：大空间填写长内容（枚举值/说明/嵌套字段），与面板实时同步 */}
+      {/* 放大编辑：左编辑右预览，改字段即时看到最终数据结构 */}
       <Modal
         open={zoomOpen}
         title="返回结构（response）"
@@ -424,7 +496,14 @@ export default function AgentNodeConfig({ config, onChange, currentNodeId, allNo
         onOk={() => setZoomOpen(false)}
         onCancel={() => setZoomOpen(false)}
       >
-        <div className="space-y-2 max-h-[65vh] overflow-y-auto">{renderSchemaBody()}</div>
+        <div className="grid grid-cols-[1fr_260px] gap-3 items-start">
+          <div className="space-y-2 max-h-[65vh] overflow-y-auto pr-1">
+            {renderSchemaEditor()}
+          </div>
+          <div className="sticky top-0 max-h-[65vh] overflow-y-auto">
+            {renderSchemaPreview()}
+          </div>
+        </div>
       </Modal>
     </div>
   )

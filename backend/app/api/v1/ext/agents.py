@@ -9,11 +9,12 @@ from app.core.auth_apikey import ApiKeyPrincipal
 from app.core.errors import NotFoundError
 from app.models.agent import AgentStatus
 from app.models.compat import resolve_default_model, resolve_skill_ids
-from app.schemas.execution import ExecutionRequest, ResumeRequest
+from app.schemas.execution import DismissRequest, ExecutionRequest, ResumeRequest
 from app.schemas.ext_api import (
     ExtAgentCapabilities,
     ExtAgentListResponse,
     ExtAgentResponse,
+    ExtDismissRequest,
     ExtInvokeRequest,
     ExtInvokeResponse,
     ExtResumeRequest,
@@ -270,6 +271,31 @@ async def resume_agent(
     )
 
 
+@router.post(
+    "/agents/{agent_id}/invoke/dismiss",
+    summary="Dismiss the pending clarification card (external)",
+)
+async def dismiss_interrupt(
+    agent_id: str,
+    body: ExtDismissRequest,
+    principal: ApiKeyPrincipal = Depends(auth_and_rate_limit),
+) -> dict:
+    """关闭待答的 ask_clarification 卡片而不作答（不恢复执行）。
+
+    用户不想回答追问时使用：卡片进入已忽略态，下一次发送走普通
+    invoke 新一轮。
+    """
+    principal.require_scope("agents:invoke")
+    principal.require_agent_access(agent_id)
+
+    dismissed = await AgentExecutionService.dismiss_interrupt(
+        agent_id=agent_id,
+        body=DismissRequest(session_id=body.session_id),
+        user_id=resolve_user_id(principal),
+    )
+    return {"dismissed": dismissed, "session_id": body.session_id}
+
+
 # ---------------------------------------------------------------------------
 # Session management
 # ---------------------------------------------------------------------------
@@ -375,13 +401,24 @@ async def get_session_detail(
     from app.services.session_service import MessageService
     messages = await MessageService.list_messages(session_id)
 
+    from app.api.v1.sessions import _get_file_service
     from app.schemas.ext_api import ExtMessageResponse, ExtSessionDetailResponse
-    return ExtSessionDetailResponse(
-        id=session_doc["_id"],
-        title=session_doc.get("title", ""),
-        created_at=session_doc.get("created_at", ""),
-        updated_at=session_doc.get("updated_at", ""),
-        messages=[
+    from app.schemas.file_library import FileRefResponse
+
+    # Populate file details if file_ids present（与内部 /v1/sessions/{id} 一致），
+    # 否则终端用户侧历史消息的上传附件不回显、也无法按 id 下载。
+    msg_responses = []
+    for msg in messages:
+        files = None
+        file_ids = msg.get("file_ids", [])
+        if file_ids:
+            file_svc = _get_file_service()
+            files = []
+            for fid in file_ids:
+                fref = await file_svc.get(fid)
+                if fref:
+                    files.append(FileRefResponse(**fref.model_dump(by_alias=True)))
+        msg_responses.append(
             ExtMessageResponse(
                 id=msg["_id"],
                 role=msg["role"],
@@ -389,9 +426,15 @@ async def get_session_detail(
                 display_text=msg.get("display_text", ""),
                 timeline_entries=msg.get("timeline_entries", []),
                 created_at=msg.get("created_at", ""),
+                files=files,
             )
-            for msg in messages
-        ],
+        )
+    return ExtSessionDetailResponse(
+        id=session_doc["_id"],
+        title=session_doc.get("title", ""),
+        created_at=session_doc.get("created_at", ""),
+        updated_at=session_doc.get("updated_at", ""),
+        messages=msg_responses,
     )
 
 

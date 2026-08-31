@@ -84,7 +84,7 @@ interface _ResponseFieldLike {
   fields?: _ResponseFieldLike[]
 }
 
-/** 把 response_schema 声明的字段平铺为 response.xxx / response.xxx.yyy 引用项。
+/** 把 response_schema 声明的字段递归平铺为 response.xxx 引用项。
  * 列表字段用示例下标 0（Jinja 数字下标语法，如 response.tags.0 / response.authors.0.name）。 */
 function agentDeclaredResponseFields(schema: unknown): NodeOutputField[] {
   if (!schema || typeof schema !== 'object') return []
@@ -98,31 +98,23 @@ function agentDeclaredResponseFields(schema: unknown): NodeOutputField[] {
     return 'string' // string / enum 都按 string 提示
   }
   const out: NodeOutputField[] = []
-  for (const f of s.fields ?? []) {
-    if (!f?.name) continue
-    // 列表字段 → response.field.0；object 列表 → 每元素结构提示
-    const fieldPath = f.is_list ? `${prefix}.${f.name}.0` : `${prefix}.${f.name}`
-    out.push({
-      name: fieldPath,
-      label: f.name,
-      type: toFieldType(f.type),
-      description: (f.is_list ? '列表字段，下标取值（如 .0）' : '') + (f.description ?? ''),
-    })
-    if (f.type === 'object' && Array.isArray(f.fields)) {
-      for (const g of f.fields) {
-        if (!g?.name) continue
-        const subPath = g.is_list
-          ? `${fieldPath}.${g.name}.0`
-          : `${fieldPath}.${g.name}`
-        out.push({
-          name: subPath,
-          label: g.name,
-          type: toFieldType(g.type),
-          description: (g.is_list ? '列表字段，下标取值（如 .0）' : '') + (g.description ?? ''),
-        })
+  const walk = (fields: _ResponseFieldLike[] | undefined, base: string) => {
+    for (const f of fields ?? []) {
+      if (!f?.name) continue
+      // 列表字段 → response.x.0；对象列表 → 每元素结构提示
+      const fieldPath = f.is_list ? `${base}.${f.name}.0` : `${base}.${f.name}`
+      out.push({
+        name: fieldPath,
+        label: f.name,
+        type: toFieldType(f.type),
+        description: (f.is_list ? '列表字段，下标取值（如 .0）' : '') + (f.description ?? ''),
+      })
+      if (f.type === 'object') {
+        walk(f.fields, fieldPath)
       }
     }
   }
+  walk(s.fields, prefix)
   return out
 }
 

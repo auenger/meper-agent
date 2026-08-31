@@ -732,7 +732,7 @@ class TestParseStructuredOutput:
         assert "authors[1]" in err
 
     def test_second_level_scalar_list(self):
-        """第二层标量列表允许；第二层 object 列表（=第三层结构）被归一化剥离。"""
+        """第二层标量列表允许；任意层的 object 列表均支持。"""
         schema = {"type": "object", "fields": [
             {"name": "doc", "type": "object", "fields": [
                 {"name": "keywords", "type": "string", "is_list": True},
@@ -740,6 +740,27 @@ class TestParseStructuredOutput:
         ]}
         parsed, err = self._parse('{"doc": {"keywords": ["k1", "k2"]}}', schema)
         assert parsed is not None and parsed["doc"]["keywords"] == ["k1", "k2"]
+
+    def test_deep_nested_object_list(self):
+        """多层嵌套 + 任意层对象列表：{"report": {"sections": [{"title": ...}]}}。"""
+        schema = {"type": "object", "fields": [
+            {"name": "report", "type": "object", "fields": [
+                {"name": "sections", "type": "object", "is_list": True, "fields": [
+                    {"name": "title", "type": "string", "required": True},
+                ]},
+            ]},
+        ]}
+        parsed, err = self._parse(
+            '{"report": {"sections": [{"title": "a"}, {"title": "b"}]}}', schema,
+        )
+        assert parsed is not None
+        assert parsed["report"]["sections"][1]["title"] == "b"
+
+        parsed, err = self._parse(
+            '{"report": {"sections": [{"title": "a"}, {}]}}', schema,
+        )
+        assert parsed is None
+        assert "sections[1]" in err and "title" in err
 
 
 class TestNormalizeResponseSchema:
@@ -794,8 +815,9 @@ class TestNormalizeResponseSchema:
         assert schema is not None
         assert [f["name"] for f in schema["fields"]] == ["ok"]
 
-    def test_third_level_fields_stripped(self):
-        """第三层嵌套在归一化时剥离（第二层不可再嵌）。"""
+    def test_deep_nesting_beyond_limit_stripped(self):
+        """嵌套可继续深入；超过防御上限（5 层）在归一化时剥离。"""
+        # 三层：保留
         schema = self._normalize({"response_schema": {
             "type": "object",
             "fields": [
@@ -806,9 +828,22 @@ class TestNormalizeResponseSchema:
                 ]},
             ],
         }})
-        third = schema["fields"][0]["fields"][0]
-        assert third["type"] == "object"
-        assert "fields" not in third  # 第三层被剥离
+        third = schema["fields"][0]["fields"][0]["fields"][0]
+        assert third["name"] == "c"
+
+        # 六层：第六层被剥离（_MAX_SCHEMA_DEPTH = 5）
+        deep = {"name": "x6", "type": "string"}
+        node = {"name": "x5", "type": "object", "fields": [deep]}
+        for _ in range(4):
+            node = {"name": "up", "type": "object", "fields": [node]}
+        schema = self._normalize({"response_schema": {
+            "type": "object", "fields": [node],
+        }})
+        walk = schema["fields"][0]
+        for _ in range(4):
+            walk = walk["fields"][0]
+        assert walk["type"] == "object"
+        assert walk.get("fields") == []  # 第六层被剥离
 
     def test_is_list_preserved(self):
         """is_list 标志归一化透传（bool 化）。"""

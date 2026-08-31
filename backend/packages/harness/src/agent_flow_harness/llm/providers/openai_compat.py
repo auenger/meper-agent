@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 from langchain_anthropic import ChatAnthropic
+from langchain_core.messages import AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_openai import ChatOpenAI
 
 from agent_flow_harness.llm.thinking import (
@@ -32,10 +34,43 @@ if TYPE_CHECKING:
 
 logger = structlog.get_logger(__name__)
 
-_KNOWN_PROVIDERS: dict[str, type] = {
-    "openai": ChatOpenAI,
-    "anthropic": ChatAnthropic,
-}
+
+class ReasoningChatOpenAI(ChatOpenAI):
+    """ChatOpenAI + 第三方兼容端点的思考增量透传。
+
+    标准 ``ChatOpenAI`` 只认官方 OpenAI 规范——``_convert_delta_to_message_chunk``
+    只提取 ``content`` / ``tool_calls`` / ``function_call``,delta 里的非标准
+    思考字段(``reasoning_content``,Qwen/DeepSeek/vLLM 等端点使用)被**直接
+    丢弃**,永远到不了 ``additional_kwargs``。指向这类 base_url 时表现为
+    "思考开关已传但全程无思考增量"。本子类把丢失的字段补回
+    ``additional_kwargs``;流式 merge 对字符串字段自动拼接,故每个 chunk
+    只放本片增量即可,on_chat_model_end 的最终消息自然是完整思考。
+    """
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict[str, Any],
+        default_chunk_class: type,
+        base_generation_info: dict[str, Any] | None,
+    ) -> ChatGenerationChunk | None:
+        generation = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if generation is None:
+            return None
+        choices = (
+            chunk.get("choices", [])
+            or chunk.get("chunk", {}).get("choices", [])
+        )
+        if not choices or choices[0].get("delta") is None:
+            return generation
+        delta = choices[0]["delta"] or {}
+        reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+        if isinstance(reasoning, str) and reasoning:
+            msg = generation.message
+            if isinstance(msg, AIMessageChunk):
+                msg.additional_kwargs["reasoning_content"] = reasoning
+        return generation
 
 
 def build_client_from_doc(
@@ -80,7 +115,9 @@ def build_client_from_doc(
     )
 
     if compatibility == "openai":
-        return ChatOpenAI(
+        # ReasoningChatOpenAI:透传第三方端点(Qwen/DeepSeek/vLLM)delta 里的
+        # reasoning_content——标准 ChatOpenAI 会丢弃该字段。
+        return ReasoningChatOpenAI(
             **common_kwargs, base_url=base_url,
             stream_usage=True,
             **auth_kwargs, **thinking_kwargs,
@@ -105,17 +142,15 @@ def build_client_from_env(
     temperature = float(overrides.get("temperature", 0.7))
     provider = detect_provider(model_name)
 
-    cls = _KNOWN_PROVIDERS.get(provider)
-    if cls is None:
-        msg = f"Unsupported LLM provider for model '{model_name}'"
-        raise ValueError(msg)
+    # openai 路径统一用 ReasoningChatOpenAI(思考增量透传,见类 docstring)。
+    cls: type = ReasoningChatOpenAI if provider == "openai" else ChatAnthropic
 
     thinking_kwargs = build_thinking_kwargs(
         model_name, provider, enable_thinking, max_tokens=None
     )
 
     extra_kwargs: dict[str, Any] = {}
-    if cls is ChatOpenAI:
+    if cls is ReasoningChatOpenAI:
         extra_kwargs["stream_usage"] = True
 
     return cast(

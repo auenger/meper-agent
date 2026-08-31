@@ -5,13 +5,24 @@ tool call before execution. This module builds such an interceptor from a
 harness :class:`~agent_flow_harness.middleware.chain.MiddlewareChain`, wiring
 the ``run_before_tool`` / ``run_after_tool`` hooks without giving up the
 native node's error handling, concurrency, and command support.
+
+Multimodal normalization: tools may return content blocks containing images
+(e.g. a ``view_image`` tool). OpenAI's official API accepts image parts in
+``tool`` messages, but most OpenAI-compatible gateways (Zhipu GLM, Qwen, …)
+only honor ``image_url`` blocks in **user** messages and silently drop them
+elsewhere — the model "sees" only the text blocks. The wrapper therefore
+splits image blocks (plus their ``[IMAGE …]`` marker block) into a follow-up
+``HumanMessage`` via ``Command(update=...)``, keeping the ``ToolMessage``
+itself pure text. User-message images are the one multimodal shape every
+provider supports.
 """
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 import structlog
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import ToolException
 from langgraph.errors import GraphBubbleUp
 
@@ -24,6 +35,73 @@ if TYPE_CHECKING:
     from agent_flow_harness.middleware.chain import MiddlewareChain
 
 logger = structlog.get_logger(__name__)
+
+_IMAGE_MARKER_RE = re.compile(r"\[IMAGE file_id=")
+
+
+def _split_multimodal_result(result: ToolMessage) -> "Command[Any] | None":
+    """把含 image 块的 ToolMessage 拆成 (纯文本 ToolMessage + 带图 HumanMessage)。
+
+    image 块及其紧邻的 [IMAGE 标记] text 块进 HumanMessage(标记供压缩降级
+    时反查 file_id);其余 text 块留在 ToolMessage。无 image 块返回 None。
+    """
+    if not isinstance(result.content, list):
+        return None
+    has_image = any(
+        isinstance(b, dict) and b.get("type") in ("image_url", "image")
+        for b in result.content
+    )
+    if not has_image:
+        return None
+
+    from langgraph.types import Command
+
+    tool_blocks: list[str] = []
+    human_blocks: list[Any] = []
+    pending_marker: Any = None
+    for block in result.content:
+        if not isinstance(block, dict):
+            tool_blocks.append(str(block))
+            continue
+        if block.get("type") == "text" and _IMAGE_MARKER_RE.search(str(block.get("text", ""))):
+            pending_marker = block
+            continue
+        if block.get("type") in ("image_url", "image"):
+            if pending_marker is not None:
+                human_blocks.append(pending_marker)
+                pending_marker = None
+            human_blocks.append(block)
+            continue
+        if pending_marker is not None:
+            tool_blocks.append(str(pending_marker.get("text", "")))
+            pending_marker = None
+        tool_blocks.append(str(block.get("text", block)))
+    if pending_marker is not None:
+        tool_blocks.append(str(pending_marker.get("text", "")))
+
+    text_content = "\n".join(t for t in tool_blocks if t).strip() or "[图片已载入，见下一条消息]"
+    tcid = result.tool_call_id or ""
+    normalized = ToolMessage(
+        content=text_content,
+        name=getattr(result, "name", None) or "",
+        tool_call_id=tcid,
+        status=getattr(result, "status", None) or "success",
+    )
+    from agent_flow_harness.context_engineering.interruption import (
+        TOOL_IMAGE_FOLLOW_UP_PREFIX,
+    )
+
+    follow_up = HumanMessage(
+        content=human_blocks,
+        id=f"{TOOL_IMAGE_FOLLOW_UP_PREFIX}{tcid or 'na'}",
+    )
+    logger.info(
+        "tool_multimodal_split",
+        tool_name=getattr(result, "name", "") or "",
+        tool_call_id=tcid,
+        image_count=sum(1 for b in human_blocks if b.get("type") in ("image_url", "image")),
+    )
+    return Command(update={"messages": [normalized, follow_up]})
 
 
 def make_tool_wrapper(
@@ -110,6 +188,13 @@ def make_tool_wrapper(
         # after_tool — middleware observes the result content.
         result_content = result.content if isinstance(result, ToolMessage) else ""
         await chain.run_after_tool(state, tc, str(result_content))
+
+        # 多模态规范化(见模块 docstring):image 块移入紧随的 user 消息,
+        # ToolMessage 保持纯文本 —— 兼容只认 user 消息图片的 provider 网关。
+        if isinstance(result, ToolMessage):
+            split = _split_multimodal_result(result)
+            if split is not None:
+                return split
 
         return result
 
