@@ -1,5 +1,6 @@
 import {
   AudioOutlined,
+  DeploymentUnitOutlined,
   FileOutlined,
   MenuOutlined,
   PaperClipOutlined,
@@ -12,6 +13,7 @@ import { Attachments, Bubble, Sender } from '@ant-design/x'
 import {
   Alert,
   App,
+  Badge,
   Button,
   Empty,
   Image,
@@ -33,9 +35,13 @@ import { fetchVoiceStatus } from '../api/voice'
 import type { AgentSummary } from '../types'
 import { GeneratedFiles } from './GeneratedFiles'
 import { MessageContent } from './MessageContent'
+import { collectSessionTasks, WorkflowBoard } from './WorkflowBoard'
 import { sessionFeedback, voteMessage, type SessionFeedbackItem } from '../api/chat'
 import { ClarificationFormCard } from './clarification-form-card'
 import { VoiceComposer } from './voice/VoiceComposer'
+
+/** 已查看工作流任务 id 的 localStorage key（跨刷新持久，避免角标反复亮起）。 */
+const SEEN_TASKS_KEY = 'meper_client_seen_tasks'
 
 interface ChatViewProps {
   agent: AgentSummary | null
@@ -65,6 +71,20 @@ export function ChatView({
   const [files, setFiles] = useState<File[]>([])
   const [filesOpen, setFilesOpen] = useState(false)
   const [filesRefreshKey, setFilesRefreshKey] = useState(0)
+  // 工作流任务看板：header 按钮 / 消息内一行状态卡进入；focusTaskId 用于定位展开
+  const [boardOpen, setBoardOpen] = useState(false)
+  const [boardFocusTaskId, setBoardFocusTaskId] = useState<string | null>(null)
+  // 已查看过的任务 id——角标只提示「未查看」的新任务，打开看板即全部已读。
+  // 持久化到 localStorage：刷新页面后已读状态不丢（否则角标会反复亮起）
+  const [seenTaskIds, setSeenTaskIds] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem(SEEN_TASKS_KEY)
+      const arr = raw ? (JSON.parse(raw) as unknown) : []
+      return new Set(Array.isArray(arr) ? (arr as string[]) : [])
+    } catch {
+      return new Set()
+    }
+  })
   const [clarificationAnswer, setClarificationAnswer] = useState('')
   const [pendingPreview, setPendingPreview] = useState<{
     name: string
@@ -80,6 +100,7 @@ export function ChatView({
     send,
     cancel,
     answerClarification,
+    dismissClarification,
     voiceAppendUserMessage,
     voiceBeginAssistantTurn,
     voiceAppendDelta,
@@ -91,6 +112,46 @@ export function ChatView({
     () => setFilesRefreshKey((value) => value + 1),
     onSessionChanged,
   )
+
+  // 本会话的工作流任务（从消息流解析 task_created）——只在出现过任务后才显示
+  // header「工作流」按钮；切会话随 messages 重置，天然清空
+  const sessionTasks = useMemo(() => collectSessionTasks(messages), [messages])
+  // 未查看数 = 当前任务 − 已读；antd Badge count=0 时自动隐藏红点
+  const unseenTaskCount = sessionTasks.filter((t) => !seenTaskIds.has(t.task_id)).length
+
+  // 看板打开期间把当前任务标记为已读（含打开期间新到的任务），并持久化
+  useEffect(() => {
+    if (!boardOpen) return
+    setSeenTaskIds((prev) => {
+      const next = new Set(prev)
+      let changed = false
+      for (const task of sessionTasks) {
+        if (!next.has(task.task_id)) {
+          next.add(task.task_id)
+          changed = true
+        }
+      }
+      if (changed) {
+        try {
+          // 上限 500 条防无限增长，超出丢弃最早的 id
+          localStorage.setItem(
+            SEEN_TASKS_KEY,
+            JSON.stringify([...next].slice(-500)),
+          )
+        } catch {
+          /* 存储失败静默——角标退化为本次会话内有效 */
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [boardOpen, sessionTasks])
+
+  // 切换会话：关闭任务看板，避免残留旧会话的任务列表
+  // （已读标记按 task_id 全局持久，不随会话清空）
+  useEffect(() => {
+    setBoardOpen(false)
+    setBoardFocusTaskId(null)
+  }, [sessionId])
 
   // ── 语音输入模式 ─────────────────────────────────────────────────
   const [inputMode, setInputMode] = useState<'text' | 'voice'>('text')
@@ -305,6 +366,21 @@ export function ChatView({
         >
           <span className="desktop-only-label">会话文件</span>
         </Button>
+        {/* 工作流任务看板入口：仅本会话出现过工作流任务时显示；角标=未查看的新任务数 */}
+        {sessionTasks.length > 0 ? (
+          <Badge count={unseenTaskCount} size="small" title="未查看的工作流任务">
+            <Button
+              type="text"
+              icon={<DeploymentUnitOutlined />}
+              onClick={() => {
+                setBoardFocusTaskId(null) // header 进入不定位，平铺看板
+                setBoardOpen(true)
+              }}
+            >
+              <span className="desktop-only-label">工作流</span>
+            </Button>
+          </Badge>
+        ) : null}
       </header>
 
       {!sessionId ? (
@@ -369,7 +445,14 @@ export function ChatView({
                       : chatMessage.status,
                   content: (
                     <div>
-                      <MessageContent message={chatMessage} sessionId={sessionId} />
+                      <MessageContent
+                        message={chatMessage}
+                        sessionId={sessionId}
+                        onOpenTaskBoard={(taskId) => {
+                          setBoardFocusTaskId(taskId)
+                          setBoardOpen(true)
+                        }}
+                      />
                       {chatMessage.role === 'assistant' &&
                         chatMessage.status !== 'loading' &&
                         chatMessage.requestId && (
@@ -488,6 +571,9 @@ export function ChatView({
                         >
                           确认执行
                         </Button>
+                        <Button type="text" disabled={running} onClick={() => void dismissClarification()}>
+                          忽略
+                        </Button>
                       </div>
                     </div>
                   }
@@ -510,14 +596,25 @@ export function ChatView({
                         <Typography.Text type="secondary">{hitl.context}</Typography.Text>
                       ) : null}
                       {hitl.fields && hitl.fields.length > 0 ? (
-                        <ClarificationFormCard
-                          question=""
-                          context={hitl.context}
-                          fields={hitl.fields}
-                          answered={false}
-                          result={undefined}
-                          onSubmit={(jsonStr) => submitClarification(jsonStr)}
-                        />
+                        <>
+                          <ClarificationFormCard
+                            question=""
+                            context={hitl.context}
+                            fields={hitl.fields}
+                            answered={false}
+                            result={undefined}
+                            onSubmit={(jsonStr) => submitClarification(jsonStr)}
+                          />
+                          <div className="clarification-options">
+                            <Button
+                              type="text"
+                              disabled={running}
+                              onClick={() => void dismissClarification()}
+                            >
+                              忽略此问题，直接重新输入
+                            </Button>
+                          </div>
+                        </>
                       ) : (
                       <>
                       {hitl.options.length > 0 ? (
@@ -558,6 +655,13 @@ export function ChatView({
                           onClick={() => submitClarification(clarificationAnswer)}
                         >
                           发送
+                        </Button>
+                        <Button
+                          type="text"
+                          disabled={running}
+                          onClick={() => void dismissClarification()}
+                        >
+                          忽略
                         </Button>
                       </div>
                       </>
@@ -647,6 +751,16 @@ export function ChatView({
               disabled={Boolean(hitl)}
               placeholder={hitl ? '请先处理待确认操作' : '输入消息，Enter 发送'}
               autoSize={{ minRows: 1, maxRows: 6 }}
+              // 默认发送按钮在文本为空时禁用（onSendDisabled: !value），会挡住
+              // "仅附件"轮次——有文件排队时改用显式启用的 SendButton 覆盖
+              // （其 effect 会同步 submitDisabled=false，Enter 发送同样放行）。
+              suffix={(originNode, { components }) =>
+                files.length > 0 && !running ? (
+                  <components.SendButton disabled={false} />
+                ) : (
+                  originNode
+                )
+              }
               prefix={
                 <>
                   {voiceAvailable && (
@@ -693,6 +807,12 @@ export function ChatView({
         open={filesOpen}
         onClose={() => setFilesOpen(false)}
         refreshKey={filesRefreshKey}
+      />
+      <WorkflowBoard
+        tasks={sessionTasks}
+        open={boardOpen}
+        onClose={() => setBoardOpen(false)}
+        focusTaskId={boardFocusTaskId}
       />
       <Modal
         title={pendingPreview?.name}

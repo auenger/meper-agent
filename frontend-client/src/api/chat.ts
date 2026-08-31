@@ -1,5 +1,4 @@
 import {
-  ApiError,
   apiRequest,
   applyApiKeyHeaders,
   ensureAccessToken,
@@ -172,11 +171,11 @@ export async function getSessionFile(
 }
 
 export async function getUploadedFile(fileId: string): Promise<Blob> {
-  if (AUTH_MODE === 'apikey') {
-    // ext API 首期未暴露按 file_id 下载；无状态模式下历史「上传」附件不回显。
-    throw new ApiError('无状态模式下不支持按文件 ID 下载历史附件', 404)
-  }
-  return apiRequest<Blob>(`/v1/files/${encodeURIComponent(fileId)}/download`)
+  const path =
+    AUTH_MODE === 'apikey'
+      ? withVisitor(`/v1/ext/files/${encodeURIComponent(fileId)}/download`)
+      : `/v1/files/${encodeURIComponent(fileId)}/download`
+  return apiRequest<Blob>(path)
 }
 
 export async function downloadUploadedFile(
@@ -339,6 +338,27 @@ export async function* streamConfirmation(
     signal,
   )
   yield* parseSse(response)
+}
+
+/**
+ * 关闭待答的澄清卡片而不作答——用户不想回答（问题不对 / 想直接重新输入
+ * 或传文件）时使用。后端持久化忽略标记（合成 tool_result，刷新后不复活）；
+ * 之后发送的消息走普通 invoke/stream 新一轮（挂起的 interrupt 被新输入
+ * 自然丢弃）。返回 dismissed：false 表示当前没有待答卡片（幂等）。
+ */
+export async function dismissInterrupt(
+  agentId: string,
+  sessionId: string,
+): Promise<boolean> {
+  const path =
+    AUTH_MODE === 'apikey'
+      ? withVisitor(`/v1/ext/agents/${encodeURIComponent(agentId)}/invoke/dismiss`)
+      : `/v1/agents/${encodeURIComponent(agentId)}/interrupt/dismiss`
+  const { dismissed } = await apiRequest<{ dismissed: boolean }>(path, {
+    method: 'POST',
+    body: JSON.stringify({ session_id: sessionId }),
+  })
+  return dismissed === true
 }
 
 /* ── 消息级反馈（§8.2 v2）：赞回复 → 本轮 load 的技能派生加分 ── */

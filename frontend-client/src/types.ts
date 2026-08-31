@@ -178,6 +178,10 @@ export interface HitlState {
   inputPreview?: Record<string, unknown>
 }
 
+/** 忽略标记文案——与后端 MessageService.DISMISSED_RESULT_TEXT 保持一致
+ *  （dismiss 持久化的合成 tool_result 内容）。 */
+export const DISMISSED_CLARIFICATION_TEXT = '(用户已忽略此问题)'
+
 export interface SessionFile {
   id?: string
   name?: string

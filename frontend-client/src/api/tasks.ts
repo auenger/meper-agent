@@ -87,6 +87,8 @@ export interface TaskIntervenePayload {
   action: string
   comment?: CommentValue
   version: number
+  /** rewind 专用：退回目标节点（须在 checkpoint.completed_nodes 中且非当前暂停节点）。 */
+  target_node_id?: string
 }
 
 export interface TaskInterveneResponse {

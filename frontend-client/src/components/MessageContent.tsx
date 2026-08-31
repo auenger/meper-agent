@@ -12,14 +12,21 @@ import {
 } from '@ant-design/icons'
 import { Mermaid } from '@ant-design/x'
 import { App, Button, Collapse, Image, Tag, Tooltip, Typography } from 'antd'
-import { isValidElement, useMemo, useState, type ReactNode } from 'react'
+import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 import { downloadSessionFile, downloadUploadedFile } from '../api/chat'
-import type { AttachmentView, ChatMessage, ContentBlock, ToolRun } from '../types'
+import {
+  DISMISSED_CLARIFICATION_TEXT,
+  type AttachmentView,
+  type ChatMessage,
+  type ContentBlock,
+  type ToolRun,
+} from '../types'
 import { ChartBlock } from './ChartBlock'
-import { WorkflowTaskCard, parseTaskCreated } from './WorkflowTaskCard'
+import { parseTaskCreated } from './WorkflowTaskCard'
+import { WorkflowTaskInlineCard } from './WorkflowTaskInlineCard'
 
 /** 特殊工具:不参与聚合,各自独立渲染(WorkflowTaskCard / chat 层 HITL)。 */
 const SPECIAL_TOOLS = new Set(['dispatch_workflow', 'ask_clarification', 'confirm_workflow'])
@@ -110,6 +117,97 @@ function Markdown({ children }: { children: string }) {
         {children}
       </ReactMarkdown>
     </div>
+  )
+}
+
+/** 中文"字数"口径（Word/WPS 同款，与 studio countZi 一致）：CJK 字符（含中文
+ *  标点）每字计 1，连续的非 CJK 非空白串（英文单词、数字、emoji 等）整体计 1。
+ *  思考内容多为英文，逐字符计数会数倍虚高于视觉感知。 */
+const countZi = (s: string): number => {
+  const cjkRe = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3000-\u30ff\uff00-\uffef]/
+  let n = 0
+  let inRun = false
+  for (const ch of s) {
+    if (cjkRe.test(ch)) {
+      n += 1
+      inRun = false
+    } else if (/\s/.test(ch)) {
+      inRun = false
+    } else if (!inRun) {
+      n += 1
+      inRun = true
+    }
+  }
+  return n
+}
+
+/** 思考面板 —— 对齐 studio ThinkingEntryCard 行为：
+ * - 流式期间（streaming）：展开 + 头部三点动效 + 内容贴底跟随 + 末尾打字光标；
+ * - 本轮思考结束（后续 text/tool 块到达）：自动收起（用户手动操作过则尊重用户），
+ *   头部变静态「思考过程」+ 字数；
+ * - 内容按纯文本 pre-wrap 渲染（思考是原始文本，流式期间半截 Markdown 会渲染错乱），
+ *   限高内部滚动，长思考不撑爆消息流。 */
+function ReasoningPanel({ text, streaming }: { text: string; streaming: boolean }) {
+  const [open, setOpen] = useState(streaming)
+  const [userToggled, setUserToggled] = useState(false)
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  // 流式状态切换时跟随展开/收起（用户手动操作过则不再自动）
+  useEffect(() => {
+    if (userToggled) return
+    setOpen(streaming)
+  }, [streaming, userToggled])
+
+  // 流式期间内容超出限高时，内部滚动贴底跟随最新输出
+  useEffect(() => {
+    if (streaming && contentRef.current) {
+      contentRef.current.scrollTop = contentRef.current.scrollHeight
+    }
+  }, [text, streaming])
+
+  return (
+    <Collapse
+      className="reasoning-panel"
+      ghost
+      size="small"
+      activeKey={open ? ['reasoning'] : []}
+      onChange={(keys) => {
+        setUserToggled(true)
+        setOpen((Array.isArray(keys) ? keys : [keys]).length > 0)
+      }}
+      items={[
+        {
+          key: 'reasoning',
+          label: (
+            <span className="reasoning-label">
+              {streaming ? (
+                <>
+                  正在思考
+                  <span className="streaming-dots" aria-hidden="true">
+                    <span />
+                    <span />
+                    <span />
+                  </span>
+                </>
+              ) : (
+                <>
+                  思考过程
+                  {text ? (
+                    <span className="reasoning-count">{countZi(text)} 字</span>
+                  ) : null}
+                </>
+              )}
+            </span>
+          ),
+          children: (
+            <div ref={contentRef} className="reasoning-text">
+              {text}
+              {streaming ? <span className="reasoning-caret">▍</span> : null}
+            </div>
+          ),
+        },
+      ]}
+    />
   )
 }
 
@@ -332,6 +430,7 @@ function ClarificationAnsweredCard({ tool }: { tool: ToolRun }) {
   const args = parseToolArgs(tool)
   const question = String(args.question ?? '请补充信息后继续。')
   const answered = !!tool.result
+  const dismissed = tool.result === DISMISSED_CLARIFICATION_TEXT
 
   // 解析 fields 拿到 name→label 映射
   const rawFields = args.fields
@@ -371,14 +470,22 @@ function ClarificationAnsweredCard({ tool }: { tool: ToolRun }) {
         <QuestionCircleOutlined />
         <span className="interactive-card-label">澄清提问</span>
         {answered ? (
-          <Tag color="blue" style={{ margin: 0 }}>已回答</Tag>
+          dismissed ? (
+            <Tag style={{ margin: 0 }}>已忽略</Tag>
+          ) : (
+            <Tag color="blue" style={{ margin: 0 }}>已回答</Tag>
+          )
         ) : (
           <Tag style={{ margin: 0 }}>等待回答</Tag>
         )}
       </div>
       <div className="interactive-card-inner">
         <div className="interactive-card-question">{question}</div>
-        {answered && tool.result ? (
+        {dismissed ? (
+          <div className="interactive-card-answer">
+            <span>已忽略此问题——可直接在输入框重新描述需求或上传文件</span>
+          </div>
+        ) : answered && tool.result ? (
           <div className="interactive-card-answer">
             {answerPairs ? (
               <div className="clarification-form-answered">
@@ -408,7 +515,7 @@ function WorkflowConfirmAnsweredCard({ tool }: { tool: ToolRun }) {
   const description = String(args.description ?? '')
   const params = (args.params ?? {}) as Record<string, unknown>
   const answered = !!tool.result
-  const isConfirmed = answered && !/取消|拒绝|cancel/i.test(tool.result ?? '')
+  const isConfirmed = answered && !/取消|拒绝|忽略|cancel/i.test(tool.result ?? '')
 
   return (
     <div className="interactive-card interactive-card-workflow">
@@ -451,12 +558,19 @@ function WorkflowConfirmAnsweredCard({ tool }: { tool: ToolRun }) {
   )
 }
 
-function ToolResult({ tool }: { tool: ToolRun }) {
-  // dispatch_workflow：解析 task_created → 内嵌可展开 task 卡片（自带详情/轮询/操作）。
+function ToolResult({
+  tool,
+  onOpenTaskBoard,
+}: {
+  tool: ToolRun
+  onOpenTaskBoard?: (taskId: string) => void
+}) {
+  // dispatch_workflow：解析 task_created → 单行状态卡（详情/轮询/操作在任务看板）。
   // 解析失败则落到下方通用工具结果渲染。
   if (tool.name === 'dispatch_workflow') {
     const created = parseTaskCreated(tool.result)
-    if (created) return <WorkflowTaskCard created={created} />
+    if (created)
+      return <WorkflowTaskInlineCard created={created} onOpenBoard={onOpenTaskBoard} />
   }
   // ask_clarification：已答时显示"问题→回答"卡片(参考 studio ClarificationCard 已答态)。
   if (tool.name === 'ask_clarification') {
@@ -558,9 +672,11 @@ function AttachmentItem({
 interface MessageContentProps {
   message: ChatMessage
   sessionId: string
+  /** dispatch_workflow 一行状态卡点击 → ChatView 打开工作流任务看板并定位。 */
+  onOpenTaskBoard?: (taskId: string) => void
 }
 
-export function MessageContent({ message, sessionId }: MessageContentProps) {
+export function MessageContent({ message, sessionId, onOpenTaskBoard }: MessageContentProps) {
   const { message: toast } = App.useApp()
   // 快捷指令消息：user 气泡只渲染展示文案（label），隐藏实际发送给 AI 的指令。
   // 下游 segments / charts / fullText（复制）全部基于替换后的内容，保证不泄漏。
@@ -585,21 +701,10 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
     <div className={`message-content message-content-${message.role}`}>
       {segments.map((segment, index) => {
         if (segment.kind === 'reasoning') {
-          return (
-            <Collapse
-              key={`seg:${index}`}
-              className="reasoning-panel"
-              ghost
-              size="small"
-              items={[
-                {
-                  key: 'reasoning',
-                  label: message.status === 'loading' ? '正在思考' : '思考过程',
-                  children: <Markdown>{segment.text}</Markdown>,
-                },
-              ]}
-            />
-          )
+          // 思考进行中 = 整条消息仍在流式 且 该思考块是最后一个内容块
+          // （后续 text/tool 块一旦到达，思考即已结束——studio 同语义）
+          const streaming = message.status === 'loading' && index === segments.length - 1
+          return <ReasoningPanel key={`seg:${index}`} text={segment.text} streaming={streaming} />
         }
         if (segment.kind === 'text') {
           return <Markdown key={`seg:${index}`}>{segment.text}</Markdown>
@@ -608,7 +713,13 @@ export function MessageContent({ message, sessionId }: MessageContentProps) {
         const { group } = segment
         if (group.kind === 'single') {
           // 特殊工具(dispatch_workflow / HITL)走完整操作卡片
-          return <ToolResult key={group.tool.id} tool={group.tool} />
+          return (
+            <ToolResult
+              key={group.tool.id}
+              tool={group.tool}
+              onOpenTaskBoard={onOpenTaskBoard}
+            />
+          )
         }
         // 普通工具(无论单个还是多个)一律走精简聚合样式
         return <ToolRunsGroup key={`group:${index}`} tools={group.tools} />

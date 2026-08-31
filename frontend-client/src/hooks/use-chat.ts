@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
+  dismissInterrupt,
   getSessionFile,
   getUploadedFile,
   listMessages,
@@ -9,14 +10,15 @@ import {
   streamMessage,
   uploadSessionFile,
 } from '../api/chat'
-import type {
-  AttachmentView,
-  ChatMessage,
-  ContentBlock,
-  HitlState,
-  MessageRecord,
-  StreamEvent,
-  ToolRun,
+import {
+  DISMISSED_CLARIFICATION_TEXT,
+  type AttachmentView,
+  type ChatMessage,
+  type ContentBlock,
+  type HitlState,
+  type MessageRecord,
+  type StreamEvent,
+  type ToolRun,
 } from '../types'
 
 /** 生成 UUID。crypto.randomUUID 在非安全上下文（如非 localhost 的 HTTP）
@@ -804,6 +806,38 @@ export function useChat(
     [agentId, hitl, onSessionChanged, process, running, sessionId],
   )
 
+  // 忽略待答的澄清/确认卡片（不回答）：持久化忽略标记（后端合成
+  // tool_result，刷新后不复活），本地关闭 HITL 态——输入框恢复普通发送，
+  // 之后的消息/附件走普通 stream 新一轮。
+  const dismissClarification = useCallback(async () => {
+    if (!agentId || !sessionId || !hitl || running) return
+    const clarificationToolId = hitl.taskId
+    try {
+      await dismissInterrupt(agentId, sessionId)
+    } catch {
+      // 网络失败保持待答态，用户可重试或继续作答。
+      return
+    }
+    setMessages((current) =>
+      current.map((message) => ({
+        ...message,
+        content: message.content.map((block) =>
+          block.type === 'tool' && block.tool.id === clarificationToolId
+            ? {
+                ...block,
+                tool: {
+                  ...block.tool,
+                  result: DISMISSED_CLARIFICATION_TEXT,
+                  status: 'complete' as const,
+                },
+              }
+            : block,
+        ),
+      })),
+    )
+    setHitl(null)
+  }, [agentId, hitl, running, sessionId])
+
   // cancel 需要当前 agentId，但为了保持回调 identity 稳定用 ref 同步（与 runningRef 同模式）。
   const cancelAgentRef = useRef<string | null>(agentId)
   cancelAgentRef.current = agentId
@@ -906,6 +940,7 @@ export function useChat(
     send,
     cancel,
     answerClarification,
+    dismissClarification,
     voiceAppendUserMessage,
     voiceBeginAssistantTurn,
     voiceAppendDelta,

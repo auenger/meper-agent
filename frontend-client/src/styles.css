@@ -548,6 +548,51 @@ textarea {
   transition: border-color 0.2s;
 }
 
+/* 思考面板：标题行（正在思考 + 三点动效，复用 streaming-dots） */
+.reasoning-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--client-text-muted);
+  font-size: 12px;
+}
+
+.reasoning-count {
+  font-size: 10px;
+  opacity: 0.6;
+}
+
+/* 思考内容：纯文本（流式半截 Markdown 会渲染错乱）、限高内部滚动 */
+.reasoning-text {
+  max-height: 256px;
+  overflow-y: auto;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--client-text-muted);
+  font-style: italic;
+}
+
+/* 流式期间末尾打字光标（参考 studio caret-blink） */
+.reasoning-caret {
+  display: inline-block;
+  font-style: normal;
+  animation: reasoning-caret-blink 1s steps(1) infinite;
+}
+
+@keyframes reasoning-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-caret {
+    animation: none;
+  }
+}
+
 .reasoning-panel .ant-collapse-content,
 .tool-run .ant-collapse-content {
   border-top: 1px solid var(--client-border);
@@ -812,6 +857,112 @@ textarea {
   border-top-color: rgba(114, 46, 209, 0.15);
 }
 
+/* ── 工作流任务:消息内单行状态卡 + 右上角任务看板 Drawer ── */
+
+/* 单行状态卡(dispatch_workflow):详情收进看板,整行可点开 */
+.workflow-task-inline {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--client-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--client-surface-muted) 50%, transparent);
+  color: var(--client-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.workflow-task-inline:hover {
+  border-color: var(--client-accent);
+  background: var(--client-accent-soft);
+}
+
+.workflow-task-inline-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  color: var(--client-text-muted);
+}
+
+/* 运行态图标与 tool-run-running 同色 */
+.workflow-task-inline-pending .workflow-task-inline-icon,
+.workflow-task-inline-running .workflow-task-inline-icon {
+  color: #c88c28;
+}
+
+.workflow-task-inline-failed {
+  border-color: color-mix(in srgb, var(--client-danger) 55%, var(--client-border));
+  background: color-mix(in srgb, var(--client-danger) 5%, transparent);
+}
+
+.workflow-task-inline-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.workflow-task-inline-warn {
+  flex-shrink: 0;
+  color: var(--client-text-muted);
+}
+
+.workflow-task-inline-meta {
+  flex-shrink: 0;
+  color: var(--client-text-muted);
+  font-size: 11px;
+}
+
+.workflow-task-inline-action {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--client-accent);
+  font-size: 12px;
+}
+
+/* 等待人工审批:紫色高亮(工作流语义),保证审批入口不因精简而弱化 */
+.workflow-task-inline-waiting_human {
+  border-color: rgba(114, 46, 209, 0.4);
+  background: rgba(114, 46, 209, 0.06);
+}
+
+.workflow-task-inline-waiting_human:hover {
+  border-color: rgba(114, 46, 209, 0.65);
+  background: rgba(114, 46, 209, 0.1);
+}
+
+.workflow-task-inline-waiting_human .workflow-task-inline-action {
+  color: #722ed1;
+  font-weight: 500;
+}
+
+:root[data-theme='dark'] .workflow-task-inline-waiting_human .workflow-task-inline-action {
+  color: #b37feb;
+}
+
+/* 任务看板 Drawer:完整任务卡片纵向平铺 */
+.workflow-board-drawer .ant-drawer-body {
+  padding: 12px 16px;
+}
+
+.workflow-board-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.workflow-board-list .workflow-task-card {
+  margin: 0;
+}
+
 .message-attachments {
   display: flex;
   flex-wrap: wrap;
@@ -870,6 +1021,18 @@ textarea {
   border-color: var(--client-border);
   background: var(--client-surface);
   box-shadow: 0 10px 30px rgb(20 35 50 / 9%);
+}
+
+/* Sender 内部 textarea 是 borderless 形态：antd v6 的 focus outline 会在文字区
+   画一个紧贴内容的蓝色内框，与 Sender 外框形成双层错位线并压住文字边缘。
+   去掉内层 outline，聚焦态改由 Sender 外框整体高亮（单一视觉焦点）。 */
+.composer-dock .ant-sender .ant-input:focus,
+.composer-dock .ant-sender .ant-input:focus-visible {
+  outline: none;
+}
+
+.composer-dock .ant-sender:focus-within {
+  border-color: var(--client-accent);
 }
 
 .composer-attachments {
