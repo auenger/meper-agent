@@ -114,11 +114,24 @@ class AuthService:
 
         # Verify password
         if not verify_password(password, user_doc["password_hash"]):
-            await AuthService.record_failed_login(username)
-            logger.info(
-                "login_failed_bad_password",
-                username=username,
+            # Admin 账户豁免失败锁定（防止爆破触发锁定把管理入口完全堵死）。
+            # admin 永远不会写入 locked key，查库前的 is_account_locked 检查
+            # 对其天然无影响；历史遗留的锁 key 由 TTL 自动过期。
+            is_admin = (
+                user_doc.get("role") == UserRole.ADMIN.value
+                or bool(user_doc.get("is_super_admin"))
             )
+            if is_admin:
+                logger.info(
+                    "login_failed_bad_password_admin_no_lockout",
+                    username=username,
+                )
+            else:
+                await AuthService.record_failed_login(username)
+                logger.info(
+                    "login_failed_bad_password",
+                    username=username,
+                )
             raise UnauthorizedError(
                 code="INVALID_CREDENTIALS",
                 message="用户名或密码错误",

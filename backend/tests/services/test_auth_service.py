@@ -86,14 +86,46 @@ class TestLogin:
         """AC5: Wrong password returns INVALID_CREDENTIALS + increments failure."""
         mock_redis.get.return_value = None  # not locked
         mock_redis.incr.return_value = 1
-        mock_user_service.get_user_by_username.return_value = _make_user_doc()
+        mock_user_service.get_user_by_username.return_value = _make_user_doc(
+            username="dev", role="developer"
+        )
 
         with pytest.raises(UnauthorizedError) as exc:
-            await AuthService.login("admin", "WrongPassword1")
+            await AuthService.login("dev", "WrongPassword1")
         assert exc.value.code == "INVALID_CREDENTIALS"
         # Failed attempt recorded
         mock_redis.incr.assert_called_once()
         mock_redis.expire.assert_called_once()
+
+    async def test_login_wrong_password_admin_no_lockout(
+        self, mock_redis, mock_user_service
+    ) -> None:
+        """Admin 账户密码错误仍返回 INVALID_CREDENTIALS，但不计数、不锁定。"""
+        mock_redis.get.return_value = None  # not locked
+        mock_user_service.get_user_by_username.return_value = _make_user_doc(
+            username="admin", role="admin"
+        )
+
+        with pytest.raises(UnauthorizedError) as exc:
+            await AuthService.login("admin", "WrongPassword1")
+        assert exc.value.code == "INVALID_CREDENTIALS"
+        # No failure counter, no lock key
+        mock_redis.incr.assert_not_called()
+        mock_redis.set.assert_not_called()
+
+    async def test_login_wrong_password_super_admin_no_lockout(
+        self, mock_redis, mock_user_service
+    ) -> None:
+        """超级管理员（即使角色非 admin）同样豁免失败锁定。"""
+        mock_redis.get.return_value = None
+        user_doc = _make_user_doc(username="root", role="developer")
+        user_doc["is_super_admin"] = True
+        mock_user_service.get_user_by_username.return_value = user_doc
+
+        with pytest.raises(UnauthorizedError) as exc:
+            await AuthService.login("root", "WrongPassword1")
+        assert exc.value.code == "INVALID_CREDENTIALS"
+        mock_redis.incr.assert_not_called()
 
     async def test_login_locked_account(self, mock_redis, mock_user_service) -> None:
         """AC2: Locked account returns ACCOUNT_LOCKED even with correct password."""
@@ -101,7 +133,7 @@ class TestLogin:
         mock_redis.ttl.return_value = 600  # 10 min remaining
 
         with pytest.raises(UnauthorizedError) as exc:
-            await AuthService.login("admin", "Strong1234")
+            await AuthService.login("dev", "Strong1234")
         assert exc.value.code == "ACCOUNT_LOCKED"
         assert "15 分钟" in exc.value.message
         # Should NOT check password when locked
@@ -132,14 +164,16 @@ class TestAccountLockout:
         """After 5th failure, account gets locked."""
         mock_redis.get.return_value = None  # not locked yet
         mock_redis.incr.return_value = 5  # 5th attempt
-        mock_user_service.get_user_by_username.return_value = _make_user_doc()
+        mock_user_service.get_user_by_username.return_value = _make_user_doc(
+            username="dev", role="developer"
+        )
 
         with pytest.raises(UnauthorizedError) as exc:
-            await AuthService.login("admin", "WrongPassword1")
+            await AuthService.login("dev", "WrongPassword1")
         assert exc.value.code == "INVALID_CREDENTIALS"
         # Lock key should be set
         mock_redis.set.assert_called_once()
-        assert "auth:locked:admin" in mock_redis.set.call_args[0][0]
+        assert "auth:locked:dev" in mock_redis.set.call_args[0][0]
 
     async def test_lock_auto_expires(self, mock_redis) -> None:
         """Lock key has 15min TTL."""
