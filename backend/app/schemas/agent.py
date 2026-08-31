@@ -117,8 +117,8 @@ class AgentUpdate(BaseModel):
     )
     recommended_items: list[RecommendedItem] = Field(
         default_factory=list,
-        max_length=100,
-        description="首屏推荐问题/操作快捷项（≤100 条）",
+        max_length=200,
+        description="首屏推荐问题/操作快捷项（≤200 条）",
     )
     prompt_slots: dict[str, str] = Field(
         default_factory=dict,

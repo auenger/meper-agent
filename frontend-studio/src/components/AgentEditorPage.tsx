@@ -502,7 +502,7 @@ export function AgentEditorPage({
 // 推荐项约束 — 与后端 RecommendedItem / recommended_items max_length 保持一致
 const RECOMMENDED_LABEL_MAX = 100;
 const RECOMMENDED_PROMPT_MAX = 500;
-const MAX_RECOMMENDED_ITEMS = 100;
+const MAX_RECOMMENDED_ITEMS = 200;
 
 /**
  * 解析批量输入的推荐项，自动识别格式：

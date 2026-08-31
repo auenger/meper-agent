@@ -51,7 +51,7 @@ class Agent(BaseModel):
         default="", max_length=2000, description="终端用户首屏欢迎词（Markdown）"
     )
     recommended_items: list[RecommendedItem] = Field(
-        default_factory=list, max_length=100, description="首屏推荐问题/操作快捷项（≤100 条）"
+        default_factory=list, max_length=200, description="首屏推荐问题/操作快捷项（≤200 条）"
     )
     prompt_slots: dict[str, str] = Field(default_factory=dict)
     # --- Deprecated: kept for backward compat ---
