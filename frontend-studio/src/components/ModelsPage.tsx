@@ -314,7 +314,6 @@ export function ModelsPage() {
             <thead>
               <tr className="border-b border-[#27272a] text-[#71717a] text-[11px] uppercase tracking-wider">
                 <th className="text-left font-semibold px-4 py-3">模型</th>
-                <th className="text-left font-semibold px-4 py-3">协议</th>
                 <th className="text-left font-semibold px-4 py-3">认证</th>
                 <th className="text-left font-semibold px-4 py-3">上下文</th>
                 <th className="text-left font-semibold px-4 py-3">状态</th>
@@ -328,13 +327,6 @@ export function ModelsPage() {
                   <td className="px-4 py-3">
                     <p className="font-semibold text-white">{m.name}</p>
                     <p className="text-[11px] text-[#71717a] font-mono">{m.model_id}</p>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                      m.compatibility_type === 'openai' ? 'bg-sky-500/10 text-sky-400' : 'bg-orange-500/10 text-orange-400'
-                    }`}>
-                      {COMPATIBILITY_LABELS[m.compatibility_type]}
-                    </span>
                   </td>
                   <td className="px-4 py-3 text-[11px] text-[#a1a1aa]">{AUTH_LABELS[m.auth_type]}</td>
                   <td className="px-4 py-3 text-[11px] text-[#a1a1aa] font-mono">
